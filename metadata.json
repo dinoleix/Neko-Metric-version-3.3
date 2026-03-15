@@ -1,0 +1,7 @@
+{
+  "name": "Neko Metrics v1.33",
+  "description": "Optimized for Vercel deployment with SPA routing",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
