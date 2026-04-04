@@ -212,8 +212,13 @@ const SalesHub: React.FC<{ user: User }> = ({ user }) => {
     const yieldEfficiency = totalGoodGross > 0 ? ((totals.posGoodNet + totals.onlineGoodNet + totals.eventRevenue) / totalGoodGross) * 100 : 0;
     const maxHourVal = Math.max(...totals.hourlyIntensity, 1);
 
+    const numMonths = endVal - startVal + 1;
+    const totalDays = isSingleMonth ? 30 : numMonths * 30;
+    const avgDailyOrders = totals.settledOrderCount / totalDays;
+    const avgBillValue = totals.settledOrderCount > 0 ? totalGoodGross / totals.settledOrderCount : 0;
+
     return { 
-      ...totals, yieldEfficiency, 
+      ...totals, yieldEfficiency, avgDailyOrders, avgBillValue, totalGoodGross,
       maxVal: Math.max(...totals.trendValues, 1), 
       maxOutletVal: Math.max(...Object.values(totals.outletTrends).flatMap(t => t), 1),
       maxHourVal, isSingleMonth, isInvalidRange
@@ -278,7 +283,7 @@ const SalesHub: React.FC<{ user: User }> = ({ user }) => {
         <div className="py-32 bg-white rounded-[3rem] border-2 border-dashed border-rose-200 text-center"><AlertTriangle size={48} className="mx-auto text-rose-500 mb-4" /><h3 className="text-xl font-black text-slate-900">Invalid Range</h3></div>
       ) : (
         <>
-          <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+          <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6">
             <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm flex flex-col justify-between min-h-[180px]">
                <div><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">POS REVENUE (TOTAL)</p><h4 className="text-3xl font-black text-slate-900 tracking-tighter">₹{analytics.posTotalGross.toLocaleString()}</h4></div>
                <div className="mt-4 flex items-center gap-1.5 text-slate-300 font-black uppercase text-[10px]"><Calculator size={12} /> COMBINED POS BASE</div>
@@ -297,6 +302,21 @@ const SalesHub: React.FC<{ user: User }> = ({ user }) => {
                <div className="mt-4 pt-4 border-t border-slate-50 space-y-2">
                  <div className="flex justify-between items-center text-[9px] font-black uppercase tracking-tight"><span className="text-slate-400 flex items-center gap-1"><ArrowDownRight size={10} className="text-orange-400" /> PLATFORM TAX</span><span className="text-slate-600">₹{analytics.onlineGoodTax.toLocaleString()}</span></div>
                  <div className="flex justify-between items-center text-[9px] font-black uppercase tracking-tight"><span className="text-slate-400 flex items-center gap-1"><ArrowDownRight size={10} className="text-orange-400" /> COMMISSIONS</span><span className="text-slate-600">₹{analytics.onlineGoodComm.toLocaleString()}</span></div>
+               </div>
+            </div>
+            <div className="bg-slate-900 p-8 rounded-[2.5rem] text-white shadow-xl flex flex-col justify-between min-h-[180px] relative overflow-hidden">
+               <div className="absolute -right-4 -top-4 opacity-10 rotate-12"><Zap size={120} /></div>
+               <div>
+                 <p className="text-[10px] font-black text-indigo-400 uppercase tracking-widest mb-1">SETTLEMENT & VOLUME</p>
+                 <div className="space-y-2.5 mt-2">
+                    <div className="flex justify-between items-end"><span className="text-[9px] font-black text-slate-500 uppercase">POS NET</span><span className="text-lg font-black tracking-tight">₹{analytics.posGoodNet.toLocaleString()}</span></div>
+                    <div className="flex justify-between items-end"><span className="text-[9px] font-black text-slate-500 uppercase">SETTLED VOL</span><span className="text-lg font-black tracking-tight">{analytics.settledOrderCount.toLocaleString()}</span></div>
+                    <div className="flex justify-between items-end"><span className="text-[9px] font-black text-slate-500 uppercase">POS TAX</span><span className="text-lg font-black tracking-tight">₹{analytics.posGoodTax.toLocaleString()}</span></div>
+                 </div>
+               </div>
+               <div className="mt-4 pt-4 border-t border-white/5 grid grid-cols-2 gap-4">
+                  <div><p className="text-[8px] font-black text-slate-500 uppercase">AVG DAILY</p><p className="text-xs font-black text-indigo-400">{analytics.avgDailyOrders.toFixed(1)} <span className="text-[8px] text-slate-600">ORD</span></p></div>
+                  <div><p className="text-[8px] font-black text-slate-500 uppercase">AVG BILL</p><p className="text-xs font-black text-emerald-400">₹{Math.round(analytics.avgBillValue).toLocaleString()}</p></div>
                </div>
             </div>
           </section>
@@ -407,23 +427,28 @@ const SalesHub: React.FC<{ user: User }> = ({ user }) => {
                          <p className="text-slate-500 text-xs font-medium max-w-xs mx-auto mt-2 uppercase tracking-widest">Visit the **Data Catalog** and click **"Sync"** to aggregate hourly data for this period.</p>
                       </div>
                    ) : (
-                      <div className="relative h-[300px] w-full pl-12 pr-4 group/chart">
+                      <div className="relative h-[380px] w-full pl-12 pr-4 group/chart">
                         <svg viewBox="0 0 1000 300" className="w-full h-full overflow-visible" preserveAspectRatio="none">
-                           {[0, 0.5, 1].map(p => (<g key={p}><line x1="0" y1={350 - p * 300} x2="1000" y2={350 - p * 300} stroke="#f1f5f9" strokeWidth="1" /><text x="-10" y={350 - p * 300 + 4} textAnchor="end" className="fill-slate-300 text-[10px] font-black">{Math.round((analytics.maxHourVal * p) / 1000)}k</text></g>))}
+                           {[0, 0.5, 1].map(p => (<g key={p}><line x1="0" y1={280 - p * 250} x2="1000" y2={280 - p * 250} stroke="#f1f5f9" strokeWidth="1" strokeDasharray={p === 0 ? "0" : "4 4"} /><text x="-12" y={280 - p * 250 + 4} textAnchor="end" className="fill-slate-400 text-[10px] font-black">{p === 0 ? '0' : `${Math.round((analytics.maxHourVal * p) / 1000)}k`}</text></g>))}
                            {analytics.hourlyIntensity.map((val, i) => {
                               const x = (i / 23) * 1000;
-                              const barWidth = (1000 / 24) * 0.7;
-                              const h = (val / analytics.maxHourVal) * 300;
+                              const barWidth = (1000 / 24) * 0.75;
+                              const h = (val / (analytics.maxHourVal || 1)) * 250;
 
                               return (
                                 <g key={i} className="cursor-help" onMouseEnter={(e) => { const rect = e.currentTarget.getBoundingClientRect(); setHoveredPoint({ x: rect.left + rect.width/2, y: rect.top, value: val, label: `${i.toString().padStart(2, '0')}:00h` }); }} onMouseLeave={() => setHoveredPoint(null)}>
-                                  <rect x={x - barWidth / 2} y={350 - h} width={barWidth} height={h} fill="#6366f1" rx="4" className="hover:fill-indigo-400 transition-colors" />
+                                  <rect x={x - barWidth / 2} y={280 - h} width={barWidth} height={h} fill={i >= 12 && i < 16 ? "#6366f1" : "#818cf8"} rx="4" className="hover:fill-indigo-400 transition-colors" />
                                 </g>
                               );
                            })}
                         </svg>
-                        <div className="flex justify-between mt-8 text-[9px] font-black text-slate-400 uppercase tracking-widest">
-                           {Array.from({ length: 24 }, (_, i) => i).filter(i => i % 2 === 0).map(h => <span key={h}>{h}h</span>)}
+                        <div className="flex justify-between mt-12 text-[10px] font-black text-slate-500 uppercase tracking-widest border-t border-slate-50 pt-4 px-1">
+                           {[0, 3, 6, 9, 12, 15, 18, 21, 23].map(h => (
+                              <div key={h} className="flex flex-col items-center gap-1">
+                                <div className="w-px h-1.5 bg-slate-200" />
+                                <span>{h.toString().padStart(2, '0')}h</span>
+                              </div>
+                           ))}
                         </div>
                       </div>
                    )}
