@@ -61,7 +61,9 @@ import {
   TrendingDown as TrendingDownIcon,
   Minus,
   ShoppingCart,
-  Scale
+  Scale,
+  Check,
+  Filter
 } from 'lucide-react';
 
 type InsightTab = 'matrix' | 'ranking' | 'profit' | 'velocity' | 'trends' | 'combos' | 'ledger';
@@ -79,6 +81,7 @@ interface AggregatedItem {
   history: number[];
   trendStatus: 'rising' | 'declining' | 'flat';
   trendPercent: number;
+  segment?: string;
   quadrant?: 'star' | 'promote' | 'reprice' | 'dog';
 }
 
@@ -101,6 +104,10 @@ const ItemSalesHub: React.FC<{ user: User }> = ({ user }) => {
   const [storeFilter, setStoreFilter] = useState('all');
   const [selectedMonth, setSelectedMonth] = useState(MONTH_NAMES[new Date().getMonth()]);
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear().toString());
+  const [selectedSegments, setSelectedSegments] = useState<string[]>([]);
+  const [showSegmentDropdown, setShowSegmentDropdown] = useState(false);
+  const [rankingMode, setRankingMode] = useState<'top' | 'bottom'>('top');
+  const [rankingLimit, setRankingLimit] = useState(10);
   const [activeTab, setActiveTab] = useState<InsightTab>('matrix');
   
   const [hoveredBubble, setHoveredBubble] = useState<{ x: number, y: number, item: AggregatedItem } | null>(null);
@@ -173,6 +180,7 @@ const ItemSalesHub: React.FC<{ user: User }> = ({ user }) => {
       const status: any = avgRecent > avgPrev * 1.1 ? 'rising' : (avgRecent < avgPrev * 0.9 ? 'declining' : 'flat');
       
       const costRecord = itemCosts.find(c => (c.itemName || '').trim().toUpperCase() === name);
+      const mapping = skuMappings[name];
       
       let totalServingsCost = 0;
       Object.entries(data.outletQty).forEach(([oId, qty]) => {
@@ -194,17 +202,31 @@ const ItemSalesHub: React.FC<{ user: User }> = ({ user }) => {
         cost: costRecord?.costPerUnit || 0, servingsCost: avgServingsCost, margin, 
         marginPercent: price > 0 ? (margin/price)*100 : 0, 
         velocity: data.quantity/totalDays, history, trendStatus: status, 
-        trendPercent: avgPrev > 0 ? ((avgRecent - avgPrev) / avgPrev) * 100 : 0 
+        trendPercent: avgPrev > 0 ? ((avgRecent - avgPrev) / avgPrev) * 100 : 0,
+        segment: mapping?.segment
       };
     }).filter(i => i.quantity > 0);
 
-    const medianQty = [...aggregated].sort((a, b) => a.quantity - b.quantity)[Math.floor(aggregated.length / 2)]?.quantity || 0;
-    const medianMargin = [...aggregated].sort((a, b) => a.margin - b.margin)[Math.floor(aggregated.length / 2)]?.margin || 0;
+    const availableSegments = Array.from(new Set((Object.values(skuMappings) as { segment?: string }[]).map(m => m.segment).filter(Boolean))) as string[];
+    const finalItems = aggregated.filter(i => selectedSegments.length === 0 || (i.segment && selectedSegments.includes(i.segment)));
+
+    const medianQty = [...finalItems].sort((a, b) => a.quantity - b.quantity)[Math.floor(finalItems.length / 2)]?.quantity || 0;
+    const medianMargin = [...finalItems].sort((a, b) => a.margin - b.margin)[Math.floor(finalItems.length / 2)]?.margin || 0;
 
     // Aggregated Market Basket (Merge pre-calculated combos from snapshots)
     const comboMap: Record<string, { items: string[], count: number, totalRevenue: number }> = {};
     filteredSnaps.forEach(snap => {
        (snap.combos || []).forEach(c => {
+          // Check if all items in combo match the segment filter if active
+          if (selectedSegments.length > 0) {
+            const allMatch = c.items.every(item => {
+              const masterName = (normalizationMap[item.trim().toUpperCase()] || item).trim().toUpperCase();
+              const seg = skuMappings[masterName]?.segment;
+              return seg && selectedSegments.includes(seg);
+            });
+            if (!allMatch) return;
+          }
+
           const key = [...c.items].sort().join(' +++ ');
           if (!comboMap[key]) {
              comboMap[key] = { ...c };
@@ -220,17 +242,21 @@ const ItemSalesHub: React.FC<{ user: User }> = ({ user }) => {
       .slice(0, 10);
 
     return { 
-      items: aggregated.map((i): AggregatedItem => ({ 
+      items: finalItems.map((i): AggregatedItem => ({ 
         ...i, 
         quadrant: (i.quantity >= medianQty ? (i.margin >= medianMargin ? 'star' : 'reprice') : (i.margin >= medianMargin ? 'promote' : 'dog')) as 'star' | 'promote' | 'reprice' | 'dog' 
       })),
-      top10: [...aggregated].sort((a, b) => b.quantity - a.quantity).slice(0, 10),
+      rankedByVolume: [...finalItems].sort((a, b) => b.quantity - a.quantity).slice(0, rankingLimit),
+      rankedByRevenue: [...finalItems].sort((a, b) => b.revenue - a.revenue).slice(0, rankingLimit),
+      leastByVolume: [...finalItems].sort((a, b) => a.quantity - b.quantity).slice(0, rankingLimit),
+      leastByRevenue: [...finalItems].sort((a, b) => a.revenue - b.revenue).slice(0, rankingLimit),
       combos: finalCombos,
-      medianQty, medianMargin, maxQty: Math.max(...aggregated.map(i => i.quantity), 1), maxPrice: Math.max(...aggregated.map(i => i.avgPrice), 1), maxMargin: Math.max(...aggregated.map(i => i.margin), 1), maxVelocity: Math.max(...aggregated.map(i => i.velocity), 1),
-      totalTheoreticalCost: aggregated.reduce((sum, i) => sum + ((i.cost + (i.servingsCost || 0)) * i.quantity), 0),
-      totalRev: aggregated.reduce((sum, i) => sum + i.revenue, 0)
+      availableSegments,
+      medianQty, medianMargin, maxQty: Math.max(...finalItems.map(i => i.quantity), 1), maxPrice: Math.max(...finalItems.map(i => i.avgPrice), 1), maxMargin: Math.max(...finalItems.map(i => i.margin), 1), maxVelocity: Math.max(...finalItems.map(i => i.velocity), 1),
+      totalTheoreticalCost: finalItems.reduce((sum, i) => sum + ((i.cost + (i.servingsCost || 0)) * i.quantity), 0),
+      totalRev: finalItems.reduce((sum, i) => sum + i.revenue, 0)
     };
-  }, [snapshots, storeFilter, selectedMonth, itemCosts, normalizationMap, skuMappings, rentals]);
+  }, [snapshots, storeFilter, selectedMonth, itemCosts, normalizationMap, skuMappings, rentals, selectedSegments, rankingLimit]);
 
   const Sparkline: React.FC<{ data: number[], color: string }> = ({ data, color }) => {
     if (!data || data.length < 2) return null;
@@ -247,6 +273,74 @@ const ItemSalesHub: React.FC<{ user: User }> = ({ user }) => {
           <div className="bg-white px-4 py-2.5 rounded-xl border border-slate-100 shadow-sm flex items-center gap-2"><MapPin size={14} className="text-emerald-500" /><select value={storeFilter} onChange={e => setStoreFilter(e.target.value)} className="bg-transparent font-bold text-xs outline-none uppercase tracking-tight"><option value="all">All Units</option>{activeOutletOptions.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}</select></div>
           <select value={selectedYear} onChange={e => setSelectedYear(e.target.value)} className="bg-white px-4 py-2.5 rounded-xl border border-slate-100 font-bold text-xs outline-none shadow-sm uppercase">{YEAR_OPTIONS.map(y => <option key={y} value={y}>{y}</option>)}</select>
           <select value={selectedMonth} onChange={e => setSelectedMonth(e.target.value)} className="bg-white px-4 py-2.5 rounded-xl border border-slate-100 font-bold text-xs outline-none shadow-sm uppercase"><option value="All Months">All Months</option>{MONTH_NAMES.map(m => <option key={m} value={m}>{m}</option>)}</select>
+          
+          {intelligence?.availableSegments && intelligence.availableSegments.length > 0 && (
+            <div className="relative">
+              <button 
+                onClick={() => setShowSegmentDropdown(!showSegmentDropdown)}
+                className="bg-white px-4 py-2.5 rounded-xl border border-slate-100 shadow-sm flex items-center gap-2 hover:border-indigo-200 transition-all"
+              >
+                <Layers size={14} className="text-indigo-500" />
+                <span className="font-bold text-xs uppercase tracking-tight">
+                  {selectedSegments.length === 0 ? 'All Segments' : `${selectedSegments.length} Selected`}
+                </span>
+                <ChevronDown size={14} className={`text-slate-400 transition-transform ${showSegmentDropdown ? 'rotate-180' : ''}`} />
+              </button>
+
+              {showSegmentDropdown && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setShowSegmentDropdown(false)} />
+                  <div className="absolute right-0 mt-2 w-64 bg-white rounded-2xl border border-slate-100 shadow-2xl z-50 p-4 animate-in fade-in slide-in-from-top-2 duration-200">
+                    <div className="flex items-center justify-between mb-4 pb-2 border-b border-slate-50">
+                      <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Filter Segments</span>
+                      <button 
+                        onClick={() => setSelectedSegments([])}
+                        className="text-[9px] font-black text-indigo-600 uppercase hover:underline"
+                      >
+                        Reset
+                      </button>
+                    </div>
+                    <div className="space-y-1 max-h-64 overflow-y-auto pr-2 custom-scrollbar">
+                      {intelligence.availableSegments.map(s => {
+                        const isSelected = selectedSegments.includes(s);
+                        return (
+                          <button
+                            key={s}
+                            onClick={() => {
+                              if (isSelected) {
+                                setSelectedSegments(selectedSegments.filter(item => item !== s));
+                              } else {
+                                setSelectedSegments([...selectedSegments, s]);
+                              }
+                            }}
+                            className={`w-full flex items-center justify-between p-2.5 rounded-xl text-left transition-all ${isSelected ? 'bg-indigo-50 text-indigo-700' : 'hover:bg-slate-50 text-slate-600'}`}
+                          >
+                            <span className="text-[10px] font-bold uppercase tracking-tight">{s}</span>
+                            {isSelected && <Check size={14} className="text-indigo-600" />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="mt-4 pt-3 border-t border-slate-50 flex gap-2">
+                       <button 
+                         onClick={() => setSelectedSegments(intelligence.availableSegments || [])}
+                         className="flex-1 py-2 bg-slate-50 text-slate-600 rounded-lg text-[9px] font-black uppercase hover:bg-slate-100 transition-all"
+                       >
+                         Select All
+                       </button>
+                       <button 
+                         onClick={() => setShowSegmentDropdown(false)}
+                         className="flex-1 py-2 bg-indigo-600 text-white rounded-lg text-[9px] font-black uppercase hover:bg-indigo-700 shadow-lg shadow-indigo-100 transition-all"
+                       >
+                         Apply
+                       </button>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+          
           <button onClick={fetchData} className="p-3 bg-white rounded-xl border border-slate-100 text-slate-400 hover:text-emerald-600 shadow-sm transition-colors"><RefreshCw size={16} className={loading ? 'animate-spin' : ''}/></button>
         </div>
       </header>
@@ -268,28 +362,89 @@ const ItemSalesHub: React.FC<{ user: User }> = ({ user }) => {
             )}
             
             {activeTab === 'ranking' && (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 animate-in slide-in-from-right-4 duration-500">
-                <div className="bg-white p-10 rounded-[3rem] border border-slate-100 shadow-sm">
-                   <h3 className="text-xl font-black text-slate-900 tracking-tight mb-8">Top 10 Volume Drivers</h3>
-                   <div className="space-y-4">
-                     {intelligence.top10.map((item, i) => (
-                       <div key={item.name} className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl">
-                          <div className="flex items-center gap-4">
-                             <span className="w-6 h-6 rounded-full bg-indigo-600 text-white flex items-center justify-center text-[10px] font-black">{i+1}</span>
-                             <span className="text-xs font-black text-slate-800 uppercase truncate max-w-[180px]">{item.name}</span>
-                          </div>
-                          <span className="text-sm font-black text-slate-900">{item.quantity} units</span>
-                       </div>
-                     ))}
-                   </div>
+              <div className="space-y-8 animate-in slide-in-from-right-4 duration-500">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <div className="flex bg-slate-200/50 p-1 rounded-2xl w-fit border border-slate-100 shadow-inner">
+                    <button 
+                      onClick={() => setRankingMode('top')} 
+                      className={`px-6 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${rankingMode === 'top' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                    >
+                      Top Performers
+                    </button>
+                    <button 
+                      onClick={() => setRankingMode('bottom')} 
+                      className={`px-6 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${rankingMode === 'bottom' ? 'bg-white text-rose-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                    >
+                      Least Performers
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-3 bg-white px-4 py-2 rounded-2xl border border-slate-100 shadow-sm">
+                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Show:</span>
+                    <div className="flex gap-1">
+                      {[10, 20, 30].map(limit => (
+                        <button
+                          key={limit}
+                          onClick={() => setRankingLimit(limit)}
+                          className={`w-8 h-8 rounded-lg text-[10px] font-black transition-all ${rankingLimit === limit ? 'bg-slate-900 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-50'}`}
+                        >
+                          {limit}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                  <div className="bg-white p-10 rounded-[3rem] border border-slate-100 shadow-sm">
+                     <h3 className="text-xl font-black text-slate-900 tracking-tight mb-8 flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          {rankingMode === 'top' ? <Trophy size={20} className="text-indigo-600" /> : <TrendingDown size={20} className="text-rose-600" />}
+                          {rankingMode === 'top' ? `Top ${rankingLimit} Volume Drivers` : `Least ${rankingLimit} Volume Drivers`}
+                        </div>
+                        <span className="text-[10px] font-black text-slate-300 uppercase tracking-widest">By Units</span>
+                     </h3>
+                     <div className="space-y-4">
+                       {(rankingMode === 'top' ? intelligence.rankedByVolume : intelligence.leastByVolume).map((item, i) => (
+                         <div key={item.name} className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl">
+                            <div className="flex items-center gap-4">
+                               <span className={`w-6 h-6 rounded-full ${rankingMode === 'top' ? 'bg-indigo-600' : 'bg-rose-600'} text-white flex items-center justify-center text-[10px] font-black`}>{i+1}</span>
+                               <span className="text-xs font-black text-slate-800 uppercase truncate max-w-[180px]">{item.name}</span>
+                            </div>
+                            <span className="text-sm font-black text-slate-900">{item.quantity.toLocaleString()} units</span>
+                         </div>
+                       ))}
+                     </div>
+                  </div>
+                  <div className="bg-white p-10 rounded-[3rem] border border-slate-100 shadow-sm">
+                     <h3 className="text-xl font-black text-slate-900 tracking-tight mb-8 flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          {rankingMode === 'top' ? <TrendingUpIcon size={20} className="text-emerald-600" /> : <AlertCircle size={20} className="text-orange-600" />}
+                          {rankingMode === 'top' ? `Top ${rankingLimit} Revenue Drivers` : `Least ${rankingLimit} Revenue Drivers`}
+                        </div>
+                        <span className="text-[10px] font-black text-slate-300 uppercase tracking-widest">By Value</span>
+                     </h3>
+                     <div className="space-y-4">
+                       {(rankingMode === 'top' ? intelligence.rankedByRevenue : intelligence.leastByRevenue).map((item, i) => (
+                         <div key={item.name} className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl">
+                            <div className="flex items-center gap-4">
+                               <span className={`w-6 h-6 rounded-full ${rankingMode === 'top' ? 'bg-emerald-600' : 'bg-orange-600'} text-white flex items-center justify-center text-[10px] font-black`}>{i+1}</span>
+                               <span className="text-xs font-black text-slate-800 uppercase truncate max-w-[180px]">{item.name}</span>
+                            </div>
+                            <span className="text-sm font-black text-slate-900">₹{item.revenue.toLocaleString()}</span>
+                         </div>
+                       ))}
+                     </div>
+                  </div>
+                </div>
+                
                 <div className="bg-white p-10 rounded-[3rem] border border-slate-100 shadow-sm">
                    <h3 className="text-xl font-black text-slate-900 tracking-tight mb-8">Recent Demand Velocity</h3>
-                   <div className="space-y-4">
-                     {intelligence.top10.map((item) => (
+                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                     {(rankingMode === 'top' ? intelligence.rankedByVolume : intelligence.leastByVolume).map((item) => (
                        <div key={item.name} className="flex items-center justify-between p-4 border-b border-slate-50">
                           <span className="text-xs font-black text-slate-500 uppercase truncate max-w-[150px]">{item.name}</span>
-                          <Sparkline data={item.history} color="#10b981" />
+                          <Sparkline data={item.history} color={rankingMode === 'top' ? "#10b981" : "#f43f5e"} />
                        </div>
                      ))}
                    </div>

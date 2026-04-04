@@ -44,7 +44,7 @@ import WeatherWidget from './WeatherWidget';
 import ProjectionEngine from './ProjectionEngine';
 
 type ChartType = 'bar' | 'line' | 'dotted';
-type SalesTab = 'velocity' | 'trajectory' | 'day-part' | 'projections';
+type SalesTab = 'velocity' | 'trajectory' | 'traffic-trend' | 'projections';
 
 const OUTLET_COLORS: Record<string, string> = {
   '40543': '#6366f1', 
@@ -132,6 +132,7 @@ const SalesHub: React.FC<{ user: User }> = ({ user }) => {
       labels: [] as string[],
       outletTrends: {} as Record<string, number[]>,
       hourlyIntensity: new Array(24).fill(0),
+      weekdayRevenue: { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0 } as Record<number, number>,
       dayParts: {
         morning: { id: 'morning', label: 'Morning Opener', hours: '09:00 - 12:00', revenue: 0, icon: Sunrise, color: 'text-amber-500', bg: 'bg-amber-50' },
         afternoon: { id: 'afternoon', label: 'Peak Afternoon', hours: '12:00 - 16:00', revenue: 0, icon: Sun, color: 'text-indigo-500', bg: 'bg-indigo-50' },
@@ -171,6 +172,18 @@ const SalesHub: React.FC<{ user: User }> = ({ user }) => {
           else if (i >= 12 && i < 16) totals.dayParts.afternoon.revenue += (Number(v) || 0);
           else if (i >= 16 && i < 20) totals.dayParts.evening.revenue += (Number(v) || 0);
           else totals.dayParts.night.revenue += (Number(v) || 0);
+        }
+      });
+
+      const dTrend = Array.isArray(s.dailyTrend) ? s.dailyTrend : [];
+      const mIdx = MONTH_NAMES.indexOf(s.month);
+      const yNum = parseInt(s.year);
+      dTrend.forEach((val, idx) => {
+        if (idx < 31) {
+          const date = new Date(yNum, mIdx, idx + 1);
+          if (date.getMonth() === mIdx) {
+            totals.weekdayRevenue[date.getDay()] += Number(val || 0);
+          }
         }
       });
     });
@@ -324,7 +337,7 @@ const SalesHub: React.FC<{ user: User }> = ({ user }) => {
           <div className="flex bg-slate-200/50 p-1.5 rounded-[1.5rem] w-fit border border-slate-100 shadow-inner">
              <button onClick={() => setActiveTab('velocity')} className={`px-8 py-3 rounded-2xl flex items-center gap-3 text-xs font-black uppercase tracking-widest transition-all ${activeTab === 'velocity' ? 'bg-white text-indigo-600 shadow-lg translate-y-[-1px]' : 'text-slate-500 hover:text-slate-800'}`}><Activity size={16} /> Velocity</button>
              <button onClick={() => setActiveTab('trajectory')} className={`px-8 py-3 rounded-2xl flex items-center gap-3 text-xs font-black uppercase tracking-widest transition-all ${activeTab === 'trajectory' ? 'bg-white text-indigo-600 shadow-lg translate-y-[-1px]' : 'text-slate-500 hover:text-slate-800'}`}><LineChart size={16} /> Trajectory</button>
-             <button onClick={() => setActiveTab('day-part')} className={`px-8 py-3 rounded-2xl flex items-center gap-3 text-xs font-black uppercase tracking-widest transition-all ${activeTab === 'day-part' ? 'bg-white text-indigo-600 shadow-lg translate-y-[-1px]' : 'text-slate-500 hover:text-slate-800'}`}><Clock size={16} /> Day-Part</button>
+             <button onClick={() => setActiveTab('traffic-trend')} className={`px-8 py-3 rounded-2xl flex items-center gap-3 text-xs font-black uppercase tracking-widest transition-all ${activeTab === 'traffic-trend' ? 'bg-white text-indigo-600 shadow-lg translate-y-[-1px]' : 'text-slate-500 hover:text-slate-800'}`}><Clock size={16} /> Traffic Trend</button>
              <button onClick={() => setActiveTab('projections')} className={`px-8 py-3 rounded-2xl flex items-center gap-3 text-xs font-black uppercase tracking-widest transition-all ${activeTab === 'projections' ? 'bg-white text-indigo-600 shadow-lg translate-y-[-1px]' : 'text-slate-500 hover:text-slate-800'}`}><Zap size={16} /> Projections</button>
           </div>
 
@@ -407,86 +420,125 @@ const SalesHub: React.FC<{ user: User }> = ({ user }) => {
               </section>
             )}
 
-            {activeTab === 'day-part' && (
+            {activeTab === 'traffic-trend' && (
               <div className="space-y-12 animate-in slide-in-from-right-4 duration-500">
-                <section className="bg-white rounded-[3rem] p-10 border border-slate-100 shadow-sm overflow-hidden">
-                   <div className="flex flex-col md:flex-row md:items-center justify-between mb-12 gap-8">
-                      <div className="flex items-center gap-4">
-                        <div className="p-3 bg-indigo-50 text-indigo-600 rounded-2xl shadow-inner"><Clock size={24}/></div>
-                        <div>
-                          <h3 className="text-2xl font-black text-slate-900 tracking-tight uppercase">Aggregated Sales Intensity</h3>
-                          <p className="text-slate-400 text-sm font-medium">Identifying peak transactional windows via snapshots</p>
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                  <section className="bg-white rounded-[3rem] p-10 border border-slate-100 shadow-sm overflow-hidden">
+                    <div className="flex flex-col md:flex-row md:items-center justify-between mb-12 gap-8">
+                        <div className="flex items-center gap-4">
+                          <div className="p-3 bg-indigo-50 text-indigo-600 rounded-2xl shadow-inner"><Clock size={24}/></div>
+                          <div>
+                            <h3 className="text-2xl font-black text-slate-900 tracking-tight uppercase">Aggregated Sales Intensity</h3>
+                            <p className="text-slate-400 text-sm font-medium">Peak transactional windows</p>
+                          </div>
                         </div>
-                      </div>
-                   </div>
+                    </div>
 
-                   {analytics.hourlyIntensity.every(v => v === 0) ? (
-                      <div className="py-20 text-center bg-slate-50 rounded-[2.5rem] border border-dashed border-slate-200">
-                         <div className="w-16 h-16 bg-white rounded-full flex items-center justify-center mx-auto mb-6 shadow-sm"><RefreshCw size={24} className="text-indigo-400" /></div>
-                         <h4 className="text-lg font-black text-slate-800 uppercase tracking-tight">Re-Sync Required</h4>
-                         <p className="text-slate-500 text-xs font-medium max-w-xs mx-auto mt-2 uppercase tracking-widest">Visit the **Data Catalog** and click **"Sync"** to aggregate hourly data for this period.</p>
-                      </div>
-                   ) : (
-                      <div className="relative h-[380px] w-full pl-12 pr-4 group/chart">
-                        <svg viewBox="0 0 1000 300" className="w-full h-full overflow-visible" preserveAspectRatio="none">
-                           {[0, 0.5, 1].map(p => (<g key={p}><line x1="0" y1={280 - p * 250} x2="1000" y2={280 - p * 250} stroke="#f1f5f9" strokeWidth="1" strokeDasharray={p === 0 ? "0" : "4 4"} /><text x="-12" y={280 - p * 250 + 4} textAnchor="end" className="fill-slate-400 text-[10px] font-black">{p === 0 ? '0' : `${Math.round((analytics.maxHourVal * p) / 1000)}k`}</text></g>))}
-                           {analytics.hourlyIntensity.map((val, i) => {
-                              const x = (i / 23) * 1000;
-                              const barWidth = (1000 / 24) * 0.75;
-                              const h = (val / (analytics.maxHourVal || 1)) * 250;
+                    {analytics.hourlyIntensity.every(v => v === 0) ? (
+                        <div className="py-20 text-center bg-slate-50 rounded-[2.5rem] border border-dashed border-slate-200">
+                          <div className="w-16 h-16 bg-white rounded-full flex items-center justify-center mx-auto mb-6 shadow-sm"><RefreshCw size={24} className="text-indigo-400" /></div>
+                          <h4 className="text-lg font-black text-slate-800 uppercase tracking-tight">Re-Sync Required</h4>
+                        </div>
+                    ) : (
+                        <div className="relative h-[300px] w-full pl-12 pr-4 group/chart">
+                          <svg viewBox="0 0 1000 300" className="w-full h-full overflow-visible" preserveAspectRatio="none">
+                            {[0, 0.5, 1].map(p => (<g key={p}><line x1="0" y1={280 - p * 250} x2="1000" y2={280 - p * 250} stroke="#f1f5f9" strokeWidth="1" strokeDasharray={p === 0 ? "0" : "4 4"} /><text x="-12" y={280 - p * 250 + 4} textAnchor="end" className="fill-slate-400 text-[10px] font-black">{p === 0 ? '0' : `${Math.round((analytics.maxHourVal * p) / 1000)}k`}</text></g>))}
+                            {analytics.hourlyIntensity.map((val, i) => {
+                                const x = (i / 23) * 1000;
+                                const barWidth = (1000 / 24) * 0.75;
+                                const h = (val / (analytics.maxHourVal || 1)) * 250;
+                                return (
+                                  <g key={i} className="cursor-help" onMouseEnter={(e) => { const rect = e.currentTarget.getBoundingClientRect(); setHoveredPoint({ x: rect.left + rect.width/2, y: rect.top, value: val, label: `${i.toString().padStart(2, '0')}:00h` }); }} onMouseLeave={() => setHoveredPoint(null)}>
+                                    <rect x={x - barWidth / 2} y={280 - h} width={barWidth} height={h} fill={i >= 12 && i < 16 ? "#6366f1" : "#818cf8"} rx="4" className="hover:fill-indigo-400 transition-colors" />
+                                  </g>
+                                );
+                            })}
+                          </svg>
+                          <div className="flex justify-between mt-8 text-[9px] font-black text-slate-500 uppercase tracking-widest border-t border-slate-50 pt-4 px-1">
+                            {[0, 6, 12, 18, 23].map(h => <span key={h}>{h.toString().padStart(2, '0')}h</span>)}
+                          </div>
+                        </div>
+                    )}
+                  </section>
 
+                  <section className="bg-white rounded-[3rem] p-10 border border-slate-100 shadow-sm overflow-hidden">
+                    <div className="flex flex-col md:flex-row md:items-center justify-between mb-12 gap-8">
+                        <div className="flex items-center gap-4">
+                          <div className="p-3 bg-emerald-50 text-emerald-600 rounded-2xl shadow-inner"><Calendar size={24}/></div>
+                          <div>
+                            <h3 className="text-2xl font-black text-slate-900 tracking-tight uppercase">Weekday Revenue Distribution</h3>
+                            <p className="text-slate-400 text-sm font-medium">Performance by day of week</p>
+                          </div>
+                        </div>
+                    </div>
+
+                    {Object.values(analytics.weekdayRevenue).every(v => v === 0) ? (
+                        <div className="py-20 text-center bg-slate-50 rounded-[2.5rem] border border-dashed border-slate-200">
+                          <div className="w-16 h-16 bg-white rounded-full flex items-center justify-center mx-auto mb-6 shadow-sm"><Activity size={24} className="text-emerald-400" /></div>
+                          <h4 className="text-lg font-black text-slate-800 uppercase tracking-tight">No Weekday Data</h4>
+                        </div>
+                    ) : (
+                        <div className="relative h-[300px] w-full pl-12 pr-4 group/chart">
+                          <svg viewBox="0 0 1000 300" className="w-full h-full overflow-visible" preserveAspectRatio="none">
+                            {(() => {
+                              const weekdayValues = Object.values(analytics.weekdayRevenue) as number[];
+                              const maxWeekday = Math.max(...weekdayValues, 1);
+                              const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
                               return (
-                                <g key={i} className="cursor-help" onMouseEnter={(e) => { const rect = e.currentTarget.getBoundingClientRect(); setHoveredPoint({ x: rect.left + rect.width/2, y: rect.top, value: val, label: `${i.toString().padStart(2, '0')}:00h` }); }} onMouseLeave={() => setHoveredPoint(null)}>
-                                  <rect x={x - barWidth / 2} y={280 - h} width={barWidth} height={h} fill={i >= 12 && i < 16 ? "#6366f1" : "#818cf8"} rx="4" className="hover:fill-indigo-400 transition-colors" />
-                                </g>
+                                <>
+                                  {[0, 0.5, 1].map(p => (<g key={p}><line x1="0" y1={280 - p * 250} x2="1000" y2={280 - p * 250} stroke="#f1f5f9" strokeWidth="1" strokeDasharray={p === 0 ? "0" : "4 4"} /><text x="-12" y={280 - p * 250 + 4} textAnchor="end" className="fill-slate-400 text-[10px] font-black">{p === 0 ? '0' : `${Math.round((maxWeekday * p) / 1000)}k`}</text></g>))}
+                                  {days.map((day, i) => {
+                                    const val = analytics.weekdayRevenue[i] || 0;
+                                    const x = (i / 6) * 1000;
+                                    const barWidth = (1000 / 7) * 0.75;
+                                    const h = (val / maxWeekday) * 250;
+                                    return (
+                                      <g key={day} className="cursor-help" onMouseEnter={(e) => { const rect = e.currentTarget.getBoundingClientRect(); setHoveredPoint({ x: rect.left + rect.width/2, y: rect.top, value: val, label: day }); }} onMouseLeave={() => setHoveredPoint(null)}>
+                                        <rect x={x - barWidth / 2} y={280 - h} width={barWidth} height={h} fill={i === 0 || i === 6 ? "#10b981" : "#34d399"} rx="4" className="hover:fill-emerald-400 transition-colors" />
+                                      </g>
+                                    );
+                                  })}
+                                </>
                               );
-                           })}
-                        </svg>
-                        <div className="flex justify-between mt-12 text-[10px] font-black text-slate-500 uppercase tracking-widest border-t border-slate-50 pt-4 px-1">
-                           {[0, 3, 6, 9, 12, 15, 18, 21, 23].map(h => (
-                              <div key={h} className="flex flex-col items-center gap-1">
-                                <div className="w-px h-1.5 bg-slate-200" />
-                                <span>{h.toString().padStart(2, '0')}h</span>
-                              </div>
-                           ))}
+                            })()}
+                          </svg>
+                          <div className="flex justify-between mt-8 text-[9px] font-black text-slate-500 uppercase tracking-widest border-t border-slate-50 pt-4 px-1">
+                            {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => <span key={d}>{d}</span>)}
+                          </div>
                         </div>
+                    )}
+                  </section>
+                </div>
+
+                <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
+                    {Object.values(analytics.dayParts).map((part: any) => (
+                      <div key={part.id} className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm hover:shadow-xl transition-all group">
+                          <div className="flex justify-between items-start mb-6">
+                            <div className={`p-3 rounded-2xl shadow-inner ${part.bg} ${part.color}`}><part.icon size={20} /></div>
+                            <span className="text-[10px] font-black text-slate-400 uppercase bg-slate-50 px-2 py-1 rounded-lg border border-slate-100">{part.hours}</span>
+                          </div>
+                          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">{part.label}</p>
+                          <h4 className="text-3xl font-black text-slate-900 tracking-tighter">₹{Math.round(part.revenue).toLocaleString()}</h4>
                       </div>
-                   )}
+                    ))}
                 </section>
 
-                {analytics.hourlyIntensity.some(v => v > 0) && (
-                   <>
-                    <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
-                       {Object.values(analytics.dayParts).map((part: any) => (
-                          <div key={part.id} className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm hover:shadow-xl transition-all group">
-                             <div className="flex justify-between items-start mb-6">
-                                <div className={`p-3 rounded-2xl shadow-inner ${part.bg} ${part.color}`}><part.icon size={20} /></div>
-                                <span className="text-[10px] font-black text-slate-400 uppercase bg-slate-50 px-2 py-1 rounded-lg border border-slate-100">{part.hours}</span>
-                             </div>
-                             <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">{part.label}</p>
-                             <h4 className="text-3xl font-black text-slate-900 tracking-tighter">₹{Math.round(part.revenue).toLocaleString()}</h4>
-                          </div>
-                       ))}
-                    </section>
-
-                    <div className="p-10 bg-slate-900 rounded-[3rem] text-white shadow-2xl relative overflow-hidden flex flex-col md:flex-row items-center gap-10">
-                       <div className="absolute top-0 right-0 p-8 opacity-5"><Activity size={180}/></div>
-                       <div className="flex items-center gap-6 shrink-0">
-                          <div className="w-20 h-20 bg-indigo-600 rounded-[1.5rem] flex items-center justify-center shadow-xl shadow-indigo-900/50"><Target size={32}/></div>
-                          <div>
-                            <p className="text-[11px] font-black text-indigo-400 uppercase tracking-[0.2em] mb-1">Golden Hour Anchor</p>
-                            <h4 className="text-4xl font-black tracking-tighter">
-                              {analytics.hourlyIntensity.indexOf(Math.max(...analytics.hourlyIntensity))}:00h
-                            </h4>
-                          </div>
-                       </div>
-                       <div className="h-px w-full md:w-px md:h-16 bg-white/10" />
-                       <p className="text-slate-400 text-sm font-medium leading-relaxed max-w-2xl">
-                         Analysis of historical snapshots identifies <span className="text-white font-black">{analytics.hourlyIntensity.indexOf(Math.max(...analytics.hourlyIntensity))}:00 hours</span> as the primary revenue velocity center. This performance layer is now served entirely via aggregate snapshots to minimize data load times.
-                       </p>
+                <div className="p-10 bg-slate-900 rounded-[3rem] text-white shadow-2xl relative overflow-hidden flex flex-col md:flex-row items-center gap-10">
+                    <div className="absolute top-0 right-0 p-8 opacity-5"><Activity size={180}/></div>
+                    <div className="flex items-center gap-6 shrink-0">
+                      <div className="w-20 h-20 bg-indigo-600 rounded-[1.5rem] flex items-center justify-center shadow-xl shadow-indigo-900/50"><Target size={32}/></div>
+                      <div>
+                        <p className="text-[11px] font-black text-indigo-400 uppercase tracking-[0.2em] mb-1">Golden Hour Anchor</p>
+                        <h4 className="text-4xl font-black tracking-tighter">
+                          {analytics.hourlyIntensity.indexOf(Math.max(...analytics.hourlyIntensity))}:00h
+                        </h4>
+                      </div>
                     </div>
-                  </>
-                )}
+                    <div className="h-px w-full md:w-px md:h-16 bg-white/10" />
+                    <p className="text-slate-400 text-sm font-medium leading-relaxed max-w-2xl">
+                      Analysis of historical snapshots identifies <span className="text-white font-black">{analytics.hourlyIntensity.indexOf(Math.max(...analytics.hourlyIntensity))}:00 hours</span> as the primary revenue velocity center.
+                    </p>
+                </div>
               </div>
             )}
 
