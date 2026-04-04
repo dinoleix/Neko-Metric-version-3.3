@@ -227,10 +227,15 @@ const WasteManagementV2: React.FC<{ user: User }> = ({ user }) => {
       });
     });
 
-    const totalFoodOffset = filteredAdjustments.reduce((acc, a) => acc + (a.foodServingsAdjustment || 0), 0);
-    const totalDrinkOffset = filteredAdjustments.reduce((acc, a) => acc + (a.drinkServingsAdjustment || 0), 0);
-    actuals['FOOD SERVINGS'] = Math.max(0, actuals['FOOD SERVINGS'] - totalFoodOffset);
-    actuals['DRINKS SERVINGS'] = Math.max(0, actuals['DRINKS SERVINGS'] - totalDrinkOffset);
+    const totalFoodIngOffset = filteredAdjustments.reduce((acc, a) => acc + (a.foodIngredientsAdjustment || 0), 0);
+    const totalDrinkIngOffset = filteredAdjustments.reduce((acc, a) => acc + (a.drinkIngredientsAdjustment || 0), 0);
+    const totalFoodPackOffset = filteredAdjustments.reduce((acc, a) => acc + (a.foodServingsAdjustment || 0), 0);
+    const totalDrinkPackOffset = filteredAdjustments.reduce((acc, a) => acc + (a.drinkServingsAdjustment || 0), 0);
+
+    actuals['FOOD'] = Math.max(0, actuals['FOOD'] - totalFoodIngOffset);
+    actuals['DRINKS'] = Math.max(0, actuals['DRINKS'] - totalDrinkIngOffset);
+    actuals['FOOD SERVINGS'] = Math.max(0, actuals['FOOD SERVINGS'] - totalFoodPackOffset);
+    actuals['DRINKS SERVINGS'] = Math.max(0, actuals['DRINKS SERVINGS'] - totalDrinkPackOffset);
 
     const pillarMetrics = PILLARS.map(p => {
       const actual = Math.max(0, actuals[p.id] || 0);

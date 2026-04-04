@@ -369,6 +369,8 @@ export interface CogsAdjustment {
   adjustmentAmount: number;
   foodServingsAdjustment?: number;
   drinkServingsAdjustment?: number;
+  foodIngredientsAdjustment?: number;
+  drinkIngredientsAdjustment?: number;
   lastUpdated: number;
 }
 

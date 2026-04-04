@@ -100,7 +100,7 @@ const PnLHub: React.FC<{ user: User, readOnly?: boolean }> = ({ user, readOnly =
   
   // Stock Adjustment States (Split into buckets)
   const [isStockModalOpen, setIsStockModalOpen] = useState(false);
-  const [editingStock, setEditingStock] = useState<Record<string, { food: number, drinks: number }>>({});
+  const [editingStock, setEditingStock] = useState<Record<string, { food: number, drinks: number, foodIngredients: number, drinkIngredients: number }>>({});
   const [isSavingStock, setIsSavingStock] = useState(false);
   const [isFreezing, setIsFreezing] = useState(false);
 
@@ -203,12 +203,14 @@ const PnLHub: React.FC<{ user: User, readOnly?: boolean }> = ({ user, readOnly =
       ? availableOutlets.map(o => o.id)
       : selectedOutlets;
     
-    const initialValues: Record<string, { food: number, drinks: number }> = {};
+    const initialValues: Record<string, { food: number, drinks: number, foodIngredients: number, drinkIngredients: number }> = {};
     currentFilterOutlets.forEach(oId => {
       const existing = adjustments.find(a => a.outletId === oId);
       initialValues[oId] = {
         food: existing?.foodServingsAdjustment || 0,
-        drinks: existing?.drinkServingsAdjustment || 0
+        drinks: existing?.drinkServingsAdjustment || 0,
+        foodIngredients: existing?.foodIngredientsAdjustment || 0,
+        drinkIngredients: existing?.drinkIngredientsAdjustment || 0
       };
     });
     setEditingStock(initialValues);
@@ -223,7 +225,7 @@ const PnLHub: React.FC<{ user: User, readOnly?: boolean }> = ({ user, readOnly =
       for (const outletId in editingStock) {
         const adjId = `${user.uid}_${outletId}_${selectedYear}_${selectedMonth}`;
         const adjRef = doc(db, 'cogs_adjustments', adjId);
-        const { food, drinks } = editingStock[outletId];
+        const { food, drinks, foodIngredients, drinkIngredients } = editingStock[outletId];
         batch.set(adjRef, {
           userId: user.uid,
           outletId,
@@ -231,7 +233,9 @@ const PnLHub: React.FC<{ user: User, readOnly?: boolean }> = ({ user, readOnly =
           month: selectedMonth,
           foodServingsAdjustment: food,
           drinkServingsAdjustment: drinks,
-          adjustmentAmount: food + drinks, // Keep total for legacy dashboard support
+          foodIngredientsAdjustment: foodIngredients,
+          drinkIngredientsAdjustment: drinkIngredients,
+          adjustmentAmount: food + drinks + foodIngredients + drinkIngredients, // Keep total for legacy dashboard support
           lastUpdated: Date.now()
         }, { merge: true });
       }
@@ -297,6 +301,11 @@ const PnLHub: React.FC<{ user: User, readOnly?: boolean }> = ({ user, readOnly =
     });
 
     const cogsAdj = adjustments.filter(a => currentFilterOutlets.includes(a.outletId)).reduce((acc, a) => acc + (a.adjustmentAmount || 0), 0);
+    const foodIngredientsAdj = adjustments.filter(a => currentFilterOutlets.includes(a.outletId)).reduce((acc, a) => acc + (a.foodIngredientsAdjustment || 0), 0);
+    const drinkIngredientsAdj = adjustments.filter(a => currentFilterOutlets.includes(a.outletId)).reduce((acc, a) => acc + (a.drinkIngredientsAdjustment || 0), 0);
+    const foodServingsAdj = adjustments.filter(a => currentFilterOutlets.includes(a.outletId)).reduce((acc, a) => acc + (a.foodServingsAdjustment || 0), 0);
+    const drinkServingsAdj = adjustments.filter(a => currentFilterOutlets.includes(a.outletId)).reduce((acc, a) => acc + (a.drinkServingsAdjustment || 0), 0);
+
     const adjustedCOGS = Math.max(0, rawCogs - cogsAdj);
 
     // 3. FIXED BURDEN
@@ -346,6 +355,7 @@ const PnLHub: React.FC<{ user: User, readOnly?: boolean }> = ({ user, readOnly =
     return { 
       grossGoodRevenue, posGoodGross, onlineGoodGross, eventRevenue, posGoodTax, onlineGoodTax, onlineGoodComm, onlineGoodAds,
       posGoodNet, onlineGoodNet, netCashInflow, adjustedCOGS, cogsAdj, rawCogs, contributionMargin,
+      foodIngredientsAdj, drinkIngredientsAdj, foodServingsAdj, drinkServingsAdj,
       mappedOps, csvVariableLabour, fixedPayroll, totalPayroll, totalRent, unmappedExp, operatingBurn,
       netProfit, payrollValidated, isMonthFullyLocked,
       margins: {
@@ -633,6 +643,12 @@ const PnLHub: React.FC<{ user: User, readOnly?: boolean }> = ({ user, readOnly =
                             <div className="space-y-2 px-6">
                                <div className="flex justify-between text-sm font-medium text-slate-500 italic"><span>Raw Material Inflow</span><span>₹{pnlData.rawCogs.toLocaleString()}</span></div>
                                <div className="flex justify-between text-sm font-black text-emerald-600"><span>(-) Unused Stock Adjustment</span><span>-₹{pnlData.cogsAdj.toLocaleString()}</span></div>
+                               <div className="pl-4 space-y-1 opacity-60">
+                                  <div className="flex justify-between text-[10px] font-bold uppercase"><span>Food Ingredients</span><span>-₹{pnlData.foodIngredientsAdj.toLocaleString()}</span></div>
+                                  <div className="flex justify-between text-[10px] font-bold uppercase"><span>Drink Ingredients</span><span>-₹{pnlData.drinkIngredientsAdj.toLocaleString()}</span></div>
+                                  <div className="flex justify-between text-[10px] font-bold uppercase"><span>Food Packaging</span><span>-₹{pnlData.foodServingsAdj.toLocaleString()}</span></div>
+                                  <div className="flex justify-between text-[10px] font-bold uppercase"><span>Drink Packaging</span><span>-₹{pnlData.drinkServingsAdj.toLocaleString()}</span></div>
+                               </div>
                             </div>
                          </div>
 
@@ -834,7 +850,27 @@ const PnLHub: React.FC<{ user: User, readOnly?: boolean }> = ({ user, readOnly =
                           
                           <div className="grid grid-cols-2 gap-4">
                              <div className="space-y-1.5">
-                                <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5 px-1"><Box size={10} className="text-amber-500" /> Food Servings (₹)</label>
+                                <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5 px-1"><Utensils size={10} className="text-emerald-500" /> Food Ingredients (₹)</label>
+                                <input 
+                                  type="number" 
+                                  value={editingStock[oId].foodIngredients} 
+                                  onChange={(e) => setEditingStock({...editingStock, [oId]: { ...editingStock[oId], foodIngredients: parseFloat(e.target.value) || 0 }})} 
+                                  className="w-full bg-white border border-slate-200 px-4 py-3 rounded-xl font-black text-indigo-600 outline-none focus:ring-2 focus:ring-indigo-500 transition-all shadow-sm" 
+                                  placeholder="0.00"
+                                />
+                             </div>
+                             <div className="space-y-1.5">
+                                <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5 px-1"><Coffee size={10} className="text-indigo-500" /> Drink Ingredients (₹)</label>
+                                <input 
+                                  type="number" 
+                                  value={editingStock[oId].drinkIngredients} 
+                                  onChange={(e) => setEditingStock({...editingStock, [oId]: { ...editingStock[oId], drinkIngredients: parseFloat(e.target.value) || 0 }})} 
+                                  className="w-full bg-white border border-slate-200 px-4 py-3 rounded-xl font-black text-indigo-600 outline-none focus:ring-2 focus:ring-indigo-500 transition-all shadow-sm" 
+                                  placeholder="0.00"
+                                />
+                             </div>
+                             <div className="space-y-1.5">
+                                <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5 px-1"><Box size={10} className="text-amber-500" /> Food Packaging (₹)</label>
                                 <input 
                                   type="number" 
                                   value={editingStock[oId].food} 
@@ -844,7 +880,7 @@ const PnLHub: React.FC<{ user: User, readOnly?: boolean }> = ({ user, readOnly =
                                 />
                              </div>
                              <div className="space-y-1.5">
-                                <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5 px-1"><Grape size={10} className="text-rose-500" /> Drink Servings (₹)</label>
+                                <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5 px-1"><Grape size={10} className="text-rose-500" /> Drink Packaging (₹)</label>
                                 <input 
                                   type="number" 
                                   value={editingStock[oId].drinks} 
