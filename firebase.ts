@@ -1,4 +1,3 @@
-
 import { initializeApp } from '@firebase/app';
 // Use @firebase/auth for modular imports to avoid missing export errors in this environment.
 import { getAuth } from '@firebase/auth';
@@ -6,12 +5,12 @@ import { getFirestore } from '@firebase/firestore';
 import { getStorage } from '@firebase/storage';
 
 const firebaseConfig = {
-  apiKey: "AIzaSyB3j7skPl-ykXVLxFQEvCZLrQEYslc0e5w",
-  authDomain: "nekometrics-b38b9.firebaseapp.com",
-  projectId: "nekometrics-b38b9",
-  storageBucket: "nekometrics-b38b9.firebasestorage.app",
-  messagingSenderId: "330123207916",
-  appId: "1:330123207916:web:fb2f2a21e66229fe73f1c9"
+    apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+    authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+    projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+    storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+    messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+    appId: import.meta.env.VITE_FIREBASE_APP_ID,
 };
 
 const app = initializeApp(firebaseConfig);
