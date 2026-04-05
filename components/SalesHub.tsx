@@ -296,7 +296,7 @@ const SalesHub: React.FC<{ user: User }> = ({ user }) => {
         <div className="py-32 bg-white rounded-[3rem] border-2 border-dashed border-rose-200 text-center"><AlertTriangle size={48} className="mx-auto text-rose-500 mb-4" /><h3 className="text-xl font-black text-slate-900">Invalid Range</h3></div>
       ) : (
         <>
-          <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-6">
+          <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
             <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm flex flex-col justify-between min-h-[180px]">
                <div><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">POS REVENUE (TOTAL)</p><h4 className="text-3xl font-black text-slate-900 tracking-tighter">₹{analytics.posTotalGross.toLocaleString()}</h4></div>
                <div className="mt-4 flex items-center gap-1.5 text-slate-300 font-black uppercase text-[10px]"><Calculator size={12} /> COMBINED POS BASE</div>
@@ -324,10 +324,13 @@ const SalesHub: React.FC<{ user: User }> = ({ user }) => {
                  <div className="space-y-2.5 mt-2">
                     <div className="flex justify-between items-end"><span className="text-[9px] font-black text-slate-500 uppercase">POS NET</span><span className="text-lg font-black tracking-tight">₹{analytics.posGoodNet.toLocaleString()}</span></div>
                     <div className="flex justify-between items-end"><span className="text-[9px] font-black text-slate-500 uppercase">SETTLED VOL</span><span className="text-lg font-black tracking-tight">{analytics.settledOrderCount.toLocaleString()}</span></div>
-                    <div className="flex justify-between items-end"><span className="text-[9px] font-black text-slate-500 uppercase">POS TAX</span><span className="text-lg font-black tracking-tight">₹{analytics.posGoodTax.toLocaleString()}</span></div>
                  </div>
                </div>
                <div className="mt-4 flex items-center gap-1.5 text-slate-500 font-black uppercase text-[10px]"><Zap size={12} className="text-indigo-400" /> TRANSACTIONAL DEPTH</div>
+            </div>
+            <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm flex flex-col justify-between min-h-[180px]">
+               <div><p className="text-[10px] font-black text-rose-500 uppercase tracking-widest mb-1">POS TAX (GOOD)</p><h4 className="text-3xl font-black text-slate-900 tracking-tighter">₹{analytics.posGoodTax.toLocaleString()}</h4></div>
+               <div className="mt-4 flex items-center gap-1.5 text-slate-300 font-black uppercase text-[10px]"><Percent size={12} className="text-rose-400" /> GOVERNMENT LEVY</div>
             </div>
             <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm flex flex-col justify-between min-h-[180px]">
                <div>
