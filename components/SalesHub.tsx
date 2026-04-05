@@ -296,7 +296,7 @@ const SalesHub: React.FC<{ user: User }> = ({ user }) => {
         <div className="py-32 bg-white rounded-[3rem] border-2 border-dashed border-rose-200 text-center"><AlertTriangle size={48} className="mx-auto text-rose-500 mb-4" /><h3 className="text-xl font-black text-slate-900">Invalid Range</h3></div>
       ) : (
         <>
-          <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6">
+          <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-6">
             <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm flex flex-col justify-between min-h-[180px]">
                <div><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">POS REVENUE (TOTAL)</p><h4 className="text-3xl font-black text-slate-900 tracking-tighter">₹{analytics.posTotalGross.toLocaleString()}</h4></div>
                <div className="mt-4 flex items-center gap-1.5 text-slate-300 font-black uppercase text-[10px]"><Calculator size={12} /> COMBINED POS BASE</div>
@@ -327,10 +327,23 @@ const SalesHub: React.FC<{ user: User }> = ({ user }) => {
                     <div className="flex justify-between items-end"><span className="text-[9px] font-black text-slate-500 uppercase">POS TAX</span><span className="text-lg font-black tracking-tight">₹{analytics.posGoodTax.toLocaleString()}</span></div>
                  </div>
                </div>
-               <div className="mt-4 pt-4 border-t border-white/5 grid grid-cols-2 gap-4">
-                  <div><p className="text-[8px] font-black text-slate-500 uppercase">AVG DAILY</p><p className="text-xs font-black text-indigo-400">{analytics.avgDailyOrders.toFixed(1)} <span className="text-[8px] text-slate-600">ORD</span></p></div>
-                  <div><p className="text-[8px] font-black text-slate-500 uppercase">AVG BILL</p><p className="text-xs font-black text-emerald-400">₹{Math.round(analytics.avgBillValue).toLocaleString()}</p></div>
+               <div className="mt-4 flex items-center gap-1.5 text-slate-500 font-black uppercase text-[10px]"><Zap size={12} className="text-indigo-400" /> TRANSACTIONAL DEPTH</div>
+            </div>
+            <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm flex flex-col justify-between min-h-[180px]">
+               <div>
+                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">UNIT PERFORMANCE</p>
+                 <div className="space-y-4 mt-4">
+                    <div>
+                      <p className="text-[9px] font-black text-slate-400 uppercase mb-1">AVG DAILY ORDERS</p>
+                      <h4 className="text-2xl font-black text-indigo-600 tracking-tighter">{analytics.avgDailyOrders.toFixed(1)} <span className="text-xs text-slate-400">ORD</span></h4>
+                    </div>
+                    <div>
+                      <p className="text-[9px] font-black text-slate-400 uppercase mb-1">AVG BILL VALUE</p>
+                      <h4 className="text-2xl font-black text-emerald-600 tracking-tighter">₹{Math.round(analytics.avgBillValue).toLocaleString()}</h4>
+                    </div>
+                 </div>
                </div>
+               <div className="mt-4 flex items-center gap-1.5 text-slate-300 font-black uppercase text-[10px]"><Activity size={12} className="text-indigo-400" /> UNIT METRICS</div>
             </div>
           </section>
 
