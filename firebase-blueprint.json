@@ -1,0 +1,34 @@
+{
+  "entities": {
+    "OnlineOrderDetail": {
+      "title": "Online Order Detail",
+      "description": "Detailed order information from online platforms like Zomato.",
+      "type": "object",
+      "properties": {
+        "platform": { "type": "string" },
+        "orderId": { "type": "string" },
+        "orderDate": { "type": "string" },
+        "orderStatus": { "type": "string" },
+        "itemTotal": { "type": "number" },
+        "packagingCharge": { "type": "number" },
+        "totalTax": { "type": "number" },
+        "discount": { "type": "number" },
+        "commission": { "type": "number" },
+        "netPayout": { "type": "number" },
+        "settlementStatus": { "type": "string" },
+        "settlementDate": { "type": "string" },
+        "customerId": { "type": "string" },
+        "userId": { "type": "string" },
+        "outletId": { "type": "string" },
+        "_fileId": { "type": "string" }
+      },
+      "required": ["platform", "orderId", "orderDate", "orderStatus", "itemTotal", "netPayout", "userId"]
+    }
+  },
+  "firestore": {
+    "/online_order_details/{orderDetailId}": {
+      "schema": "OnlineOrderDetail",
+      "description": "Collection of detailed online order records."
+    }
+  }
+}

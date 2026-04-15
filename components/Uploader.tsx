@@ -12,10 +12,12 @@ import {
   PLATFORM_ITEM_TARGET_FIELDS,
   EXPENSE_TARGET_FIELDS, 
   PURCHASE_TARGET_FIELDS, 
+  ONLINE_ORDER_TARGET_FIELDS,
   SalesSummaryRecord, 
   ItemSalesRecord, 
   ExpenseRecord, 
   PurchaseRecord, 
+  OnlineOrderDetail,
   StoreRental, 
   MASTER_OUTLETS, 
   getOutletName,
@@ -142,7 +144,7 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
 
   useEffect(() => {
     if (step === 2 && headers.length > 0) {
-      loadSavedMapping();
+      loadSavedMapping(headers);
       if (fileType === 'platform_item') {
         const matchingHeader = headers.find(h => h && h.toLowerCase() === (month || '').toLowerCase());
         if (matchingHeader) {
@@ -152,23 +154,59 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
     }
   }, [step, headers, month, fileType]);
 
-  const loadSavedMapping = async () => {
+  const loadSavedMapping = async (currentHeaders: string[]) => {
     setLoadingMappings(true);
     try {
       const mappingId = `${user.uid}_${fileType}`;
       const mappingDoc = await getDoc(doc(db, 'user_mappings', mappingId));
+      let baseMapping: Record<string, string> = {};
+      
       if (mappingDoc.exists()) {
         const savedMapping = mappingDoc.data().mapping as Record<string, string>;
-        const validMapping: Record<string, string> = {};
         Object.entries(savedMapping).forEach(([targetField, sourceHeader]) => {
-          if (headers.includes(sourceHeader)) validMapping[targetField] = sourceHeader;
+          if (currentHeaders.includes(sourceHeader)) baseMapping[targetField] = sourceHeader;
         });
-        if (Object.keys(validMapping).length > 0) {
-          setMapping(prev => ({ ...prev, ...validMapping }));
-          setMappingsLoaded(true);
-        }
+      }
+
+      // Perform Smart Mapping for unmapped fields
+      const smartMapping = performSmartMapping(currentHeaders, baseMapping);
+      setMapping(smartMapping);
+      if (Object.keys(smartMapping).length > 0) {
+        setMappingsLoaded(true);
       }
     } catch (err) { console.error(err); } finally { setLoadingMappings(false); }
+  };
+
+  const performSmartMapping = (currentHeaders: string[], currentMapping: Record<string, string>) => {
+    const nextMapping = { ...currentMapping };
+    targetFields.forEach(field => {
+      if (nextMapping[field.id]) return;
+
+      const targetLabel = field.label.toLowerCase();
+      const targetId = field.id.toLowerCase();
+
+      // 1. Exact match with label or ID
+      let match = currentHeaders.find(h => {
+        const hh = h.toLowerCase();
+        return hh === targetLabel || hh === targetId;
+      });
+
+      // 2. Partial match (header contains label or vice versa)
+      if (!match) {
+        match = currentHeaders.find(h => {
+          const hh = h.toLowerCase();
+          // Check if header contains the label or label contains the header
+          // We use a minimum length to avoid matching very short strings like "ID" incorrectly
+          return (hh.length > 2 && (hh.includes(targetLabel) || targetLabel.includes(hh))) ||
+                 (hh === targetId);
+        });
+      }
+
+      if (match) {
+        nextMapping[field.id] = match;
+      }
+    });
+    return nextMapping;
   };
 
   const saveMappingPreference = async () => {
@@ -194,6 +232,7 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
     if (fileType === 'platform_item') return PLATFORM_ITEM_TARGET_FIELDS;
     if (fileType === 'expense') return EXPENSE_TARGET_FIELDS;
     if (fileType === 'purchase') return PURCHASE_TARGET_FIELDS;
+    if (fileType === 'online_order') return ONLINE_ORDER_TARGET_FIELDS;
     return [];
   }, [fileType]);
 
@@ -413,7 +452,8 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
         'item': 'item_sales',
         'platform_item': 'item_sales',
         'expense': 'expenses',
-        'purchase': 'purchases'
+        'purchase': 'purchases',
+        'online_order': 'online_order_details'
       };
       const targetColl = collectionNameMap[fileType];
 
@@ -424,7 +464,8 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
         const recordData: any = { userId: user.uid, _fileId: fileId, createdAt: timestamp };
         targetFields.forEach(f => {
           const val = row[mapping[f.id]];
-          recordData[f.id] = f.id.toLowerCase().includes('revenue') || f.id.toLowerCase().includes('total') || f.id.toLowerCase().includes('amount') || f.id.toLowerCase().includes('tax') || f.id.toLowerCase().includes('commission') || f.id.toLowerCase().includes('quantity') 
+          const isNumeric = f.id.toLowerCase().match(/revenue|total|amount|tax|commission|quantity|value|payout|charge|discount|fee|tcs|tds|gst|deduction|addition|adjustment|recovery|redemption|compensation|subtotal/);
+          recordData[f.id] = isNumeric 
             ? cleanNumber(val) 
             : (val || '');
         });
@@ -501,6 +542,75 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
               onlineGoodTax: increment(agg.onlineGoodTax),
               onlineGoodComm: increment(agg.onlineGoodComm),
               onlineGoodAds: increment(agg.onlineGoodAds),
+              settledOrderCount: increment(agg.settledOrderCount),
+              totalOrderCount: increment(agg.totalOrderCount),
+              cancelledOrderCount: increment(agg.cancelledOrderCount),
+              dailyTrend: combinedTrend,
+              lastUpdated: Date.now()
+            }, { merge: true });
+          } else {
+            await setDoc(snapRef, { userId: user.uid, outletId: oId, month, year, eventRevenue: 0, ...agg, lastUpdated: Date.now() });
+          }
+        }
+      } else if (fileType === 'online_order') {
+        const outletAggs: Record<string, any> = {};
+        csvData.forEach(row => {
+          const orderId = (row[mapping['orderId']] || '').toString().trim();
+          const dateStr = (row[mapping['orderDate']] || '').toString().trim();
+          const statusRaw = (row[mapping['orderStatus']] || '').toString().trim();
+          const parsedDate = new Date(dateStr);
+          if (!dateStr || isNaN(parsedDate.getTime()) || /total|summary/i.test(orderId)) return;
+
+          const itemTotal = cleanNumber(row[mapping['itemTotal']]);
+          const packaging = cleanNumber(row[mapping['packagingCharge']]);
+          const tax = cleanNumber(row[mapping['totalTax']]);
+          const discount = cleanNumber(row[mapping['discount']]);
+          const commission = cleanNumber(row[mapping['commission']]);
+          const netPayout = cleanNumber(row[mapping['netPayout']]);
+          
+          const rev = itemTotal + packaging + tax - discount;
+          const status = statusRaw.toUpperCase();
+          const isSettled = ['SETTLED', 'PICKEDUP', 'DELIVERED'].includes(status);
+          const isCancelled = status === 'CANCELLED';
+          
+          const oId = manualOutletId || 'GLOBAL';
+
+          if (!outletAggs[oId]) {
+            outletAggs[oId] = {
+              posTotalGross: 0, posGoodGross: 0, posGoodNet: 0, posGoodTax: 0,
+              onlineGoodGross: 0, onlineGoodNet: 0, onlineGoodTax: 0, onlineGoodComm: 0, onlineGoodAds: 0,
+              settledOrderCount: 0, totalOrderCount: 0, cancelledOrderCount: 0, dailyTrend: new Array(31).fill(0)
+            };
+          }
+          const agg = outletAggs[oId];
+          const dayIdx = parsedDate.getDate() - 1;
+          
+          agg.totalOrderCount++; 
+          if (isCancelled) agg.cancelledOrderCount++;
+          
+          if (isSettled) {
+             agg.onlineGoodGross += rev; 
+             agg.onlineGoodTax += tax; 
+             agg.onlineGoodComm += commission; 
+             agg.onlineGoodNet += netPayout; 
+             agg.settledOrderCount++;
+             if (dayIdx >= 0 && dayIdx < 31) agg.dailyTrend[dayIdx] += rev;
+          }
+        });
+
+        for (const oId in outletAggs) {
+          const snapRef = doc(db, 'sales_snapshots', `${user.uid}_${oId}_${year}_${month}`);
+          const agg = outletAggs[oId];
+          const existingSnap = await getDoc(snapRef);
+
+          if (existingSnap.exists()) {
+            const currentData = existingSnap.data();
+            const combinedTrend = (currentData.dailyTrend || new Array(31).fill(0)).map((v: number, i: number) => v + agg.dailyTrend[i]);
+            await setDoc(snapRef, {
+              onlineGoodGross: increment(agg.onlineGoodGross),
+              onlineGoodNet: increment(agg.onlineGoodNet),
+              onlineGoodTax: increment(agg.onlineGoodTax),
+              onlineGoodComm: increment(agg.onlineGoodComm),
               settledOrderCount: increment(agg.settledOrderCount),
               totalOrderCount: increment(agg.totalOrderCount),
               cancelledOrderCount: increment(agg.cancelledOrderCount),
@@ -668,8 +778,8 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
                     <div>
                       <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-3">Category</label>
                       <div className="grid grid-cols-2 gap-3">
-                        {['sales', 'item', 'expense', 'purchase'].map(t => (
-                          <button key={t} onClick={() => setFileType(t as FileType)} className={`py-4 rounded-2xl font-bold text-[10px] uppercase transition-all ${fileType === t ? 'bg-indigo-600 text-white shadow-xl translate-y-[-2px]' : 'bg-slate-50 text-slate-400 border border-slate-100 hover:bg-slate-100'}`}>{t} Hub</button>
+                        {['sales', 'item', 'expense', 'purchase', 'online_order'].map(t => (
+                          <button key={t} onClick={() => setFileType(t as FileType)} className={`py-4 rounded-2xl font-bold text-[10px] uppercase transition-all ${fileType === t ? 'bg-indigo-600 text-white shadow-xl translate-y-[-2px]' : 'bg-slate-50 text-slate-400 border border-slate-100 hover:bg-slate-100'}`}>{t.replace('_', ' ')} Hub</button>
                         ))}
                       </div>
                     </div>

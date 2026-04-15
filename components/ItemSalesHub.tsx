@@ -18,6 +18,7 @@ import {
   MONTH_NAMES
 } from '../types';
 import { 
+  History,
   RefreshCw, 
   MapPin, 
   TrendingUp, 
@@ -67,6 +68,7 @@ import {
 } from 'lucide-react';
 
 type InsightTab = 'matrix' | 'ranking' | 'profit' | 'velocity' | 'trends' | 'combos' | 'ledger';
+type AnalysisPeriod = 'custom' | '3m' | '6m' | '9m' | '12m' | '24m';
 
 interface AggregatedItem {
   name: string;
@@ -104,6 +106,7 @@ const ItemSalesHub: React.FC<{ user: User }> = ({ user }) => {
   const [storeFilter, setStoreFilter] = useState('all');
   const [selectedMonth, setSelectedMonth] = useState(MONTH_NAMES[new Date().getMonth()]);
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear().toString());
+  const [analysisPeriod, setAnalysisPeriod] = useState<AnalysisPeriod>('custom');
   const [selectedSegments, setSelectedSegments] = useState<string[]>([]);
   const [showSegmentDropdown, setShowSegmentDropdown] = useState(false);
   const [rankingMode, setRankingMode] = useState<'top' | 'bottom'>('top');
@@ -113,10 +116,24 @@ const ItemSalesHub: React.FC<{ user: User }> = ({ user }) => {
   const [hoveredBubble, setHoveredBubble] = useState<{ x: number, y: number, item: AggregatedItem } | null>(null);
 
   const fetchData = async () => {
+    if (!user?.uid) return;
     setLoading(true);
     try {
-      const constraints = [where('userId', '==', user.uid), where('year', '==', selectedYear)];
-      if (selectedMonth !== 'All Months') constraints.push(where('month', '==', selectedMonth));
+      let constraints = [where('userId', '==', user.uid)];
+      
+      if (analysisPeriod === 'custom') {
+        constraints.push(where('year', '==', selectedYear));
+        if (selectedMonth !== 'All Months') constraints.push(where('month', '==', selectedMonth));
+      } else {
+        const count = parseInt(analysisPeriod);
+        const years = new Set<string>();
+        const now = new Date();
+        for (let i = 0; i < count; i++) {
+          const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+          years.add(d.getFullYear().toString());
+        }
+        constraints.push(where('year', 'in', Array.from(years)));
+      }
 
       const [snap, rSnap, cSnap, skuSnap, servingSnap, normSnap] = await Promise.all([
         getDocs(query(collection(db, 'item_snapshots'), ...constraints)),
@@ -126,7 +143,21 @@ const ItemSalesHub: React.FC<{ user: User }> = ({ user }) => {
         getDocs(query(collection(db, 'serving_options'), where('userId', '==', user.uid))),
         getDocs(query(collection(db, 'menu_normalization'), where('userId', '==', user.uid)))
       ]);
-      setSnapshots(snap.docs.map(d => ({ ...d.data(), id: d.id } as ItemMonthlySnapshot)));
+
+      let fetchedSnaps = snap.docs.map(d => ({ ...d.data(), id: d.id } as ItemMonthlySnapshot));
+      
+      if (analysisPeriod !== 'custom') {
+        const count = parseInt(analysisPeriod);
+        const targetMonths: string[] = [];
+        const now = new Date();
+        for (let i = 0; i < count; i++) {
+          const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+          targetMonths.push(`${MONTH_NAMES[d.getMonth()]}-${d.getFullYear()}`);
+        }
+        fetchedSnaps = fetchedSnaps.filter(s => targetMonths.includes(`${s.month}-${s.year}`));
+      }
+
+      setSnapshots(fetchedSnaps);
       setRentals(rSnap.docs.map(d => ({ id: d.id, ...d.data() } as StoreRental)));
       setItemCosts(cSnap.docs.map(d => ({ ...d.data(), id: d.id } as ItemCost)));
       setServingOptions(servingSnap.docs.map(d => ({ id: d.id, ...d.data() } as ServingOption)));
@@ -147,31 +178,73 @@ const ItemSalesHub: React.FC<{ user: User }> = ({ user }) => {
     } catch (err) { console.error(err); } finally { setLoading(false); }
   };
 
-  useEffect(() => { fetchData(); }, [user, selectedYear, selectedMonth]);
+  useEffect(() => { fetchData(); }, [user, selectedYear, selectedMonth, analysisPeriod]);
 
   const activeOutletOptions = useMemo(() => rentals.map(r => ({ id: r.outletId, name: r.storeName })), [rentals]);
 
   const intelligence = useMemo(() => {
     const filteredSnaps = snapshots.filter(s => storeFilter === 'all' || s.outletId === storeFilter);
     if (filteredSnaps.length === 0) return null;
-    const isSingleMonth = selectedMonth !== 'All Months';
-    const totalDays = isSingleMonth ? 30 : (filteredSnaps.length * 30);
+
+    // Sort snapshots by date
+    const sortedSnaps = [...filteredSnaps].sort((a, b) => {
+      const yearA = parseInt(a.year);
+      const yearB = parseInt(b.year);
+      if (yearA !== yearB) return yearA - yearB;
+      return MONTH_NAMES.indexOf(a.month) - MONTH_NAMES.indexOf(b.month);
+    });
+
+    const isSingleMonth = analysisPeriod === 'custom' && selectedMonth !== 'All Months';
+    
+    // Determine history length and labels
+    let historyLength = 0;
+    if (isSingleMonth) {
+      historyLength = 31;
+    } else if (analysisPeriod === 'custom') {
+      historyLength = 12;
+    } else {
+      historyLength = parseInt(analysisPeriod);
+    }
+
     const itemMap: Record<string, { quantity: number; revenue: number; dailyTrend: number[]; outletQty: Record<string, number> }> = {};
 
-    // Merge Items from all selected snapshots
-    filteredSnaps.forEach(snap => {
+    // Map snapshots to history slots
+    const now = new Date();
+    const getSlotIndex = (snap: ItemMonthlySnapshot) => {
+      if (isSingleMonth) return -1; // Handled separately
+      if (analysisPeriod === 'custom') return MONTH_NAMES.indexOf(snap.month);
+      
+      const snapDate = new Date(parseInt(snap.year), MONTH_NAMES.indexOf(snap.month), 1);
+      if (isNaN(snapDate.getTime())) return -1;
+      
+      const diffMonths = (now.getFullYear() - snapDate.getFullYear()) * 12 + (now.getMonth() - snapDate.getMonth());
+      const slot = historyLength - 1 - diffMonths;
+      return (slot >= 0 && slot < historyLength) ? slot : -1;
+    };
+
+    sortedSnaps.forEach(snap => {
+      const slotIdx = getSlotIndex(snap);
+      
       Object.entries(snap.items).forEach(([name, data]: [string, any]) => {
         const masterName = (normalizationMap[name.trim().toUpperCase()] || name).trim().toUpperCase();
-        if (!itemMap[masterName]) itemMap[masterName] = { quantity: 0, revenue: 0, dailyTrend: new Array(isSingleMonth ? 31 : 12).fill(0), outletQty: {} };
+        if (!itemMap[masterName]) itemMap[masterName] = { quantity: 0, revenue: 0, dailyTrend: new Array(historyLength).fill(0), outletQty: {} };
+        
         itemMap[masterName].quantity += data.quantity;
         itemMap[masterName].revenue += data.revenue;
         itemMap[masterName].outletQty[snap.outletId] = (itemMap[masterName].outletQty[snap.outletId] || 0) + data.quantity;
+        
         const dTrend = Array.isArray(data.dailyTrend) ? data.dailyTrend : [];
-        if (isSingleMonth) { dTrend.forEach((v: number, i: number) => { if (itemMap[masterName].dailyTrend[i] !== undefined) itemMap[masterName].dailyTrend[i] += v; }); }
-        else { const mIdx = MONTH_NAMES.indexOf(snap.month); if (mIdx >= 0) itemMap[masterName].dailyTrend[mIdx] += data.quantity; }
+        if (isSingleMonth) {
+          dTrend.forEach((v: number, i: number) => {
+            if (itemMap[masterName].dailyTrend[i] !== undefined) itemMap[masterName].dailyTrend[i] += v;
+          });
+        } else if (slotIdx !== -1) {
+          itemMap[masterName].dailyTrend[slotIdx] += data.quantity;
+        }
       });
     });
 
+    const totalDays = isSingleMonth ? 30 : (historyLength * 30);
     const aggregated: AggregatedItem[] = Object.entries(itemMap).map(([name, data]) => {
       const history = data.dailyTrend;
       const splitIdx = Math.max(1, Math.floor(history.length * 0.8));
@@ -270,9 +343,30 @@ const ItemSalesHub: React.FC<{ user: User }> = ({ user }) => {
       <header className="flex flex-col xl:flex-row xl:items-center justify-between gap-6">
         <div className="flex items-center gap-5"><div className="w-14 h-14 bg-emerald-500 rounded-2xl flex items-center justify-center text-white shadow-xl"><Target size={28} /></div><div><h2 className="text-3xl font-black text-slate-900 tracking-tight">Product Intelligence</h2><p className="text-slate-400 text-sm font-medium uppercase tracking-widest">Master SKU aggregated analytics.</p></div></div>
         <div className="flex flex-wrap items-center gap-3">
+          <div className="bg-white px-4 py-2.5 rounded-xl border border-slate-100 shadow-sm flex items-center gap-2">
+            <History size={14} className="text-indigo-500" />
+            <select 
+              value={analysisPeriod} 
+              onChange={e => setAnalysisPeriod(e.target.value as AnalysisPeriod)} 
+              className="bg-transparent font-bold text-xs outline-none uppercase tracking-tight"
+            >
+              <option value="custom">Custom Range</option>
+              <option value="3m">Last 3 Months</option>
+              <option value="6m">Last 6 Months</option>
+              <option value="9m">Last 9 Months</option>
+              <option value="12m">Last 1 Year</option>
+              <option value="24m">Last 2 Years</option>
+            </select>
+          </div>
+
+          {analysisPeriod === 'custom' && (
+            <>
+              <select value={selectedYear} onChange={e => setSelectedYear(e.target.value)} className="bg-white px-4 py-2.5 rounded-xl border border-slate-100 font-bold text-xs outline-none shadow-sm uppercase">{YEAR_OPTIONS.map(y => <option key={y} value={y}>{y}</option>)}</select>
+              <select value={selectedMonth} onChange={e => setSelectedMonth(e.target.value)} className="bg-white px-4 py-2.5 rounded-xl border border-slate-100 font-bold text-xs outline-none shadow-sm uppercase"><option value="All Months">All Months</option>{MONTH_NAMES.map(m => <option key={m} value={m}>{m}</option>)}</select>
+            </>
+          )}
+          
           <div className="bg-white px-4 py-2.5 rounded-xl border border-slate-100 shadow-sm flex items-center gap-2"><MapPin size={14} className="text-emerald-500" /><select value={storeFilter} onChange={e => setStoreFilter(e.target.value)} className="bg-transparent font-bold text-xs outline-none uppercase tracking-tight"><option value="all">All Units</option>{activeOutletOptions.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}</select></div>
-          <select value={selectedYear} onChange={e => setSelectedYear(e.target.value)} className="bg-white px-4 py-2.5 rounded-xl border border-slate-100 font-bold text-xs outline-none shadow-sm uppercase">{YEAR_OPTIONS.map(y => <option key={y} value={y}>{y}</option>)}</select>
-          <select value={selectedMonth} onChange={e => setSelectedMonth(e.target.value)} className="bg-white px-4 py-2.5 rounded-xl border border-slate-100 font-bold text-xs outline-none shadow-sm uppercase"><option value="All Months">All Months</option>{MONTH_NAMES.map(m => <option key={m} value={m}>{m}</option>)}</select>
           
           {intelligence?.availableSegments && intelligence.availableSegments.length > 0 && (
             <div className="relative">
@@ -356,7 +450,7 @@ const ItemSalesHub: React.FC<{ user: User }> = ({ user }) => {
           <div className="mt-8">
             {activeTab === 'matrix' && (
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 animate-in slide-in-from-bottom-4 duration-500">
-                <section className="lg:col-span-9 bg-white rounded-[3rem] p-10 border border-slate-100 shadow-sm relative overflow-hidden"><div className="flex items-center justify-between mb-10"><div><h3 className="text-2xl font-black text-slate-900 tracking-tight">Normalized Volume Matrix</h3><p className="text-slate-400 text-sm font-medium">Consolidated View: Master SKU Unit Volume vs. Price</p></div></div><div className="relative aspect-[21/9] w-full bg-slate-50 rounded-[2.5rem] p-16 flex flex-col"><svg viewBox="0 0 1000 400" className="w-full h-full overflow-visible">{[0, 0.25, 0.5, 0.75, 1].map((p, i) => (<g key={i}><line x1="0" y1={400 - p * 400} x2="1000" y2={400 - p * 400} stroke="#e2e8f0" strokeWidth="1" strokeDasharray="4 4" /><line x1={p * 1000} y1="0" x2={p * 1000} y2="400" stroke="#e2e8f0" strokeWidth="1" strokeDasharray="4 4" /></g>))}{intelligence.items.map((item, idx) => { const x = (item.quantity / intelligence.maxQty) * 1000; const y = 400 - (item.avgPrice / intelligence.maxPrice) * 400; const radius = Math.max(10, (item.revenue / intelligence.totalRev) * 150); return (<circle key={idx} cx={x} cy={y} r={radius} fill="#4f46e5" fillOpacity="0.3" stroke="#4f46e5" strokeWidth="2" className="transition-all hover:fill-opacity-80 hover:stroke-indigo-900 cursor-pointer" onMouseEnter={(e) => { const rect = e.currentTarget.getBoundingClientRect(); setHoveredBubble({ x: rect.left + rect.width / 2, y: rect.top, item }); }} onMouseLeave={() => setHoveredBubble(null)} />); })}</svg></div></section>
+                <section className="lg:col-span-9 bg-white rounded-[3rem] p-10 border border-slate-100 shadow-sm relative overflow-hidden"><div className="flex items-center justify-between mb-10"><div><h3 className="text-2xl font-black text-slate-900 tracking-tight">Normalized Volume Matrix</h3><p className="text-slate-400 text-sm font-medium">Consolidated View: Master SKU Unit Volume vs. Price</p></div></div><div className="relative aspect-[21/9] w-full bg-slate-50 rounded-[2.5rem] p-16 flex flex-col"><svg viewBox="0 0 1000 400" className="w-full h-full overflow-visible">{[0, 0.25, 0.5, 0.75, 1].map((p, i) => (<g key={i}><line x1="0" y1={400 - p * 400} x2="1000" y2={400 - p * 400} stroke="#e2e8f0" strokeWidth="1" strokeDasharray="4 4" /><line x1={p * 1000} y1="0" x2={p * 1000} y2="400" stroke="#e2e8f0" strokeWidth="1" strokeDasharray="4 4" /></g>))}{intelligence.items.map((item, idx) => { const x = (item.quantity / intelligence.maxQty) * 1000; const y = 400 - (item.avgPrice / intelligence.maxPrice) * 400; const radius = Math.max(10, (item.revenue / (intelligence.totalRev || 1)) * 150); return (<circle key={idx} cx={x} cy={y} r={radius} fill="#4f46e5" fillOpacity="0.3" stroke="#4f46e5" strokeWidth="2" className="transition-all hover:fill-opacity-80 hover:stroke-indigo-900 cursor-pointer" onMouseEnter={(e) => { const rect = e.currentTarget.getBoundingClientRect(); setHoveredBubble({ x: rect.left + rect.width / 2, y: rect.top, item }); }} onMouseLeave={() => setHoveredBubble(null)} />); })}</svg></div></section>
                 <aside className="lg:col-span-3 bg-slate-900 p-8 rounded-[3rem] text-white shadow-xl flex flex-col justify-between"><div className="w-12 h-12 bg-white/10 rounded-2xl flex items-center justify-center mb-6 text-indigo-400"><Info size={24}/></div><h4 className="text-sm font-black uppercase tracking-widest mb-4">Reading Master Metrics</h4><p className="text-slate-400 text-sm leading-relaxed mb-6">Service tiers are factored in: Tier 1 costs use disposable utensils while Tier 2 uses proper service items.</p><div className="p-6 bg-white/5 rounded-3xl border border-white/5"><p className="text-[10px] font-black uppercase text-indigo-400 mb-1">Theoretical Burn</p><p className="text-3xl font-black">₹{intelligence.totalTheoreticalCost.toLocaleString()}</p></div></aside>
               </div>
             )}
@@ -409,7 +503,7 @@ const ItemSalesHub: React.FC<{ user: User }> = ({ user }) => {
                          <div key={item.name} className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl">
                             <div className="flex items-center gap-4">
                                <span className={`w-6 h-6 rounded-full ${rankingMode === 'top' ? 'bg-indigo-600' : 'bg-rose-600'} text-white flex items-center justify-center text-[10px] font-black`}>{i+1}</span>
-                               <span className="text-xs font-black text-slate-800 uppercase truncate max-w-[180px]">{item.name}</span>
+                               <span className="text-xs font-black text-slate-800 uppercase">{item.name}</span>
                             </div>
                             <span className="text-sm font-black text-slate-900">{item.quantity.toLocaleString()} units</span>
                          </div>
@@ -429,7 +523,7 @@ const ItemSalesHub: React.FC<{ user: User }> = ({ user }) => {
                          <div key={item.name} className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl">
                             <div className="flex items-center gap-4">
                                <span className={`w-6 h-6 rounded-full ${rankingMode === 'top' ? 'bg-emerald-600' : 'bg-orange-600'} text-white flex items-center justify-center text-[10px] font-black`}>{i+1}</span>
-                               <span className="text-xs font-black text-slate-800 uppercase truncate max-w-[180px]">{item.name}</span>
+                               <span className="text-xs font-black text-slate-800 uppercase">{item.name}</span>
                             </div>
                             <span className="text-sm font-black text-slate-900">₹{item.revenue.toLocaleString()}</span>
                          </div>
@@ -443,7 +537,7 @@ const ItemSalesHub: React.FC<{ user: User }> = ({ user }) => {
                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
                      {(rankingMode === 'top' ? intelligence.rankedByVolume : intelligence.leastByVolume).map((item) => (
                        <div key={item.name} className="flex items-center justify-between p-4 border-b border-slate-50">
-                          <span className="text-xs font-black text-slate-500 uppercase truncate max-w-[150px]">{item.name}</span>
+                          <span className="text-xs font-black text-slate-500 uppercase">{item.name}</span>
                           <Sparkline data={item.history} color={rankingMode === 'top' ? "#10b981" : "#f43f5e"} />
                        </div>
                      ))}

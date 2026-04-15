@@ -27,6 +27,7 @@ import CrewTerminal from './components/CrewTerminal';
 import UserManagement from './components/UserManagement';
 import BankManagement from './components/BankManagement';
 import HolidayRegistry from './components/HolidayRegistry';
+import OnlineProfitCenter from './components/OnlineProfitCenter';
 import { 
   LayoutDashboard, 
   LogOut, 
@@ -49,6 +50,7 @@ import {
   Sparkles,
   Handshake,
   Crown,
+  Globe,
   PlusSquare,
   Eye,
   Smartphone,
@@ -58,7 +60,7 @@ import {
   Wallet
 } from 'lucide-react';
 
-type AppTab = 'exec-dashboard' | 'dashboard' | 'sales' | 'raw-verify' | 'items' | 'pnl' | 'pnl-insights' | 'waste' | 'waste-v2' | 'integrity' | 'team' | 'rentals' | 'catalog' | 'upload' | 'category-settings' | 'expenses' | 'partnership' | 'crew-terminal' | 'users' | 'bank-management' | 'holidays';
+type AppTab = 'exec-dashboard' | 'dashboard' | 'sales' | 'raw-verify' | 'items' | 'pnl' | 'pnl-insights' | 'waste' | 'waste-v2' | 'integrity' | 'team' | 'rentals' | 'catalog' | 'upload' | 'category-settings' | 'expenses' | 'partnership' | 'crew-terminal' | 'users' | 'bank-management' | 'holidays' | 'online-profit';
 
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
@@ -226,6 +228,7 @@ const App: React.FC = () => {
           <NavItem tab="sales" icon={<TrendingUp size={18} />} label="Sales Hub" />
           <NavItem tab="expenses" icon={<Receipt size={18} />} label="Expense Hub" />
           <NavItem tab="items" icon={<ShoppingBag size={18} />} label="Item Insights" />
+          <NavItem tab="online-profit" icon={<Globe size={18} />} label="Online Profit Center" />
           <NavItem tab="waste-v2" icon={<Zap size={18} />} label="Waste Radar" />
           <NavItem tab="pnl" icon={<PieChart size={18} />} label="P&L Command" />
           <NavItem tab="pnl-insights" icon={<Sparkles size={18} />} label="Margin Intelligence" />
@@ -295,6 +298,7 @@ const App: React.FC = () => {
           {activeTab === 'exec-dashboard' && <ExecDashboard user={user} />}
           {activeTab === 'dashboard' && !isReadOnly && <Dashboard user={user} />}
           {activeTab === 'sales' && <SalesHub user={user} />}
+          {activeTab === 'online-profit' && <OnlineProfitCenter user={user} />}
           {activeTab === 'raw-verify' && !isReadOnly && <RawSalesHub user={user} />}
           {activeTab === 'expenses' && <ExpenseHub user={user} />}
           {activeTab === 'items' && <ItemSalesHub user={user} />}

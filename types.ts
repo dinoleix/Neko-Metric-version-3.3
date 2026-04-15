@@ -1,5 +1,5 @@
 
-export type FileType = 'sales' | 'item' | 'expense' | 'purchase' | 'platform_item';
+export type FileType = 'sales' | 'item' | 'expense' | 'purchase' | 'platform_item' | 'online_order';
 
 export type UserRole = 'admin' | 'viewer' | 'crew';
 
@@ -446,6 +446,26 @@ export interface PurchaseRecord {
   _fileId: string;
 }
 
+export interface OnlineOrderDetail {
+  id?: string;
+  platform: string;
+  orderId: string;
+  orderDate: string;
+  orderStatus: string;
+  itemTotal: number;
+  packagingCharge: number;
+  totalTax: number;
+  discount: number;
+  commission: number;
+  netPayout: number;
+  settlementStatus: string;
+  settlementDate: string;
+  customerId: string;
+  _fileId: string;
+  userId: string;
+  outletId: string;
+}
+
 export interface BankAccount {
   id?: string;
   name: string;
@@ -518,4 +538,20 @@ export const PURCHASE_TARGET_FIELDS = [
   { id: 'amount', label: 'Amount', required: true },
   { id: 'category', label: 'Category', required: true },
   { id: 'outletId', label: 'Outlet ID', required: false },
+];
+
+export const ONLINE_ORDER_TARGET_FIELDS = [
+  { id: 'platform', label: 'platform', required: true },
+  { id: 'orderId', label: 'order_id', required: true },
+  { id: 'orderDate', label: 'order_date', required: true },
+  { id: 'orderStatus', label: 'order_status', required: true },
+  { id: 'itemTotal', label: 'item_total', required: true },
+  { id: 'packagingCharge', label: 'packaging_charge', required: false },
+  { id: 'totalTax', label: 'total_tax', required: false },
+  { id: 'discount', label: 'discount', required: false },
+  { id: 'commission', label: 'commission', required: false },
+  { id: 'netPayout', label: 'net_payout', required: true },
+  { id: 'settlementStatus', label: 'settlement_status', required: false },
+  { id: 'settlementDate', label: 'settlement_date', required: false },
+  { id: 'customerId', label: 'customer_id', required: false },
 ];

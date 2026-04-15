@@ -51,11 +51,12 @@ import {
   RotateCcw
 } from 'lucide-react';
 
-type VerifyMode = 'sales' | 'online-items' | 'expenses' | 'purchases';
+type VerifyMode = 'sales' | 'online-orders' | 'online-items' | 'expenses' | 'purchases';
 
 const RawSalesHub: React.FC<{ user: User }> = ({ user }) => {
   const [activeView, setActiveView] = useState<VerifyMode>('sales');
   const [records, setRecords] = useState<SalesSummaryRecord[]>([]);
+  const [onlineOrders, setOnlineOrders] = useState<any[]>([]);
   const [itemRecords, setItemRecords] = useState<ItemSalesRecord[]>([]);
   const [expenseRecords, setExpenseRecords] = useState<ExpenseRecord[]>([]);
   const [purchaseRecords, setPurchaseRecords] = useState<PurchaseRecord[]>([]);
@@ -107,6 +108,9 @@ const RawSalesHub: React.FC<{ user: User }> = ({ user }) => {
       if (activeView === 'sales') {
         const sSnap = await getDocs(query(collection(db, 'sales_summary'), ...constraints));
         setRecords(sSnap.docs.map(d => ({ ...d.data(), id: d.id } as SalesSummaryRecord)));
+      } else if (activeView === 'online-orders') {
+        const oSnap = await getDocs(query(collection(db, 'online_order_details'), ...constraints));
+        setOnlineOrders(oSnap.docs.map(d => ({ ...d.data(), id: d.id })));
       } else if (activeView === 'online-items') {
         const iSnap = await getDocs(query(collection(db, 'item_sales'), where('userId', '==', user.uid), where('isPlatform', '==', true), limit(1000)));
         setItemRecords(iSnap.docs.map(d => ({ ...d.data(), id: d.id } as ItemSalesRecord)));
@@ -191,6 +195,19 @@ const RawSalesHub: React.FC<{ user: User }> = ({ user }) => {
 
   const currentVisibleItems = useMemo(() => {
     if (activeView === 'sales') return salesAnalytics.rawData;
+    if (activeView === 'online-orders') {
+      const selectedMonthIdx = MONTH_NAMES.indexOf(selectedMonth);
+      const selectedYearNum = parseInt(selectedYear);
+      return onlineOrders.filter(r => {
+        const dateParts = (r.orderDate || '').split('-');
+        if (dateParts.length < 3) return false;
+        const rYear = parseInt(dateParts[0]);
+        const rMonth = parseInt(dateParts[1]) - 1;
+        const matchesDate = rYear === selectedYearNum && (selectedMonth === 'All Months' || rMonth === selectedMonthIdx);
+        const matchesStore = storeFilter === 'all' || r.outletId === storeFilter;
+        return matchesDate && matchesStore;
+      }).sort((a, b) => b.orderDate.localeCompare(a.orderDate));
+    }
     if (activeView === 'expenses' || activeView === 'purchases') return expenseAnalytics.rawData;
     if (activeView === 'online-items') return itemAnalytics.rawData;
     return [];
@@ -231,7 +248,7 @@ const RawSalesHub: React.FC<{ user: User }> = ({ user }) => {
 
     setIsBulkDeleting(true);
     try {
-      const collectionName = activeView === 'sales' ? 'sales_summary' : (activeView === 'expenses' ? 'expenses' : (activeView === 'purchases' ? 'purchases' : 'item_sales'));
+      const collectionName = activeView === 'sales' ? 'sales_summary' : (activeView === 'online-orders' ? 'online_order_details' : (activeView === 'expenses' ? 'expenses' : (activeView === 'purchases' ? 'purchases' : 'item_sales')));
       const itemsToDelete = currentVisibleItems.filter(item => targets.includes(item.id!));
       
       const snapshotImpacts: Record<string, any> = {};
@@ -244,40 +261,62 @@ const RawSalesHub: React.FC<{ user: User }> = ({ user }) => {
         currentBatch.delete(doc(db, collectionName, record.id!));
         opCount++;
 
-        const dateParts = record.date.split('-');
+        const dateParts = (record.date || record.orderDate || '').split('-');
         const rYear = dateParts[0];
         const rMonth = MONTH_NAMES[parseInt(dateParts[1]) - 1];
         const oId = record.outletId || 'Unassigned';
 
-        if (activeView === 'sales') {
+        if (activeView === 'sales' || activeView === 'online-orders') {
           const snapId = `${user.uid}_${oId}_${rYear}_${rMonth}`;
           const key = `sales_snapshots_${snapId}`;
           if (!snapshotImpacts[key]) snapshotImpacts[key] = { ref: doc(db, 'sales_snapshots', snapId), deltas: {} };
           const dObj = snapshotImpacts[key].deltas;
-          const isOnline = record.onlinePlatform && record.onlinePlatform.toLowerCase() !== 'none';
           
-          if (!isOnline) { 
-            dObj.totalOrderCount = (dObj.totalOrderCount || 0) - 1; 
-            if (record.orderStatus === 'CANCELLED') dObj.cancelledOrderCount = (dObj.cancelledOrderCount || 0) - 1; 
-          }
-          
-          if (['SETTLED', 'PICKEDUP', 'DELIVERED'].includes((record.orderStatus || '').toUpperCase())) {
+          if (activeView === 'sales') {
+            const isOnline = record.onlinePlatform && record.onlinePlatform.toLowerCase() !== 'none';
             if (!isOnline) { 
-              dObj.posGoodGross = (dObj.posGoodGross || 0) - (record.revenue || 0); 
-              dObj.posGoodTax = (dObj.posGoodTax || 0) - (record.totalTax || 0); 
-              dObj.posGoodNet = (dObj.posGoodNet || 0) - ((record.revenue || 0) - (record.totalTax || 0)); 
-              dObj.settledOrderCount = (dObj.settledOrderCount || 0) - 1; 
-            } else { 
-              dObj.onlineGoodGross = (dObj.onlineGoodGross || 0) - (record.revenue || 0); 
-              dObj.onlineGoodTax = (dObj.onlineGoodTax || 0) - (record.totalTax || 0); 
-              dObj.onlineGoodComm = (dObj.onlineGoodComm || 0) - (record.commission || 0); 
-              dObj.onlineGoodNet = (dObj.onlineGoodNet || 0) - (record.netPayout || 0); 
+              dObj.totalOrderCount = (dObj.totalOrderCount || 0) - 1; 
+              if (record.orderStatus === 'CANCELLED') dObj.cancelledOrderCount = (dObj.cancelledOrderCount || 0) - 1; 
             }
-            const dayIdx = parseInt(dateParts[2]) - 1;
-            if (dayIdx >= 0 && dayIdx < 31) {
-                // IMPORTANT: We use increment on specific index. 
-                // Firestore handles this correctly if it's already an array.
-                dObj[`dailyTrend.${dayIdx}`] = (dObj[`dailyTrend.${dayIdx}`] || 0) - (record.revenue || 0);
+            
+            if (['SETTLED', 'PICKEDUP', 'DELIVERED'].includes((record.orderStatus || '').toUpperCase())) {
+              if (!isOnline) { 
+                dObj.posGoodGross = (dObj.posGoodGross || 0) - (record.revenue || 0); 
+                dObj.posGoodTax = (dObj.posGoodTax || 0) - (record.totalTax || 0); 
+                dObj.posGoodNet = (dObj.posGoodNet || 0) - ((record.revenue || 0) - (record.totalTax || 0)); 
+                dObj.settledOrderCount = (dObj.settledOrderCount || 0) - 1; 
+              } else { 
+                dObj.onlineGoodGross = (dObj.onlineGoodGross || 0) - (record.revenue || 0); 
+                dObj.onlineGoodTax = (dObj.onlineGoodTax || 0) - (record.totalTax || 0); 
+                dObj.onlineGoodComm = (dObj.onlineGoodComm || 0) - (record.commission || 0); 
+                dObj.onlineGoodNet = (dObj.onlineGoodNet || 0) - (record.netPayout || 0); 
+              }
+              const dayIdx = parseInt(dateParts[2]) - 1;
+              if (dayIdx >= 0 && dayIdx < 31) {
+                  dObj[`dailyTrend.${dayIdx}`] = (dObj[`dailyTrend.${dayIdx}`] || 0) - (record.revenue || 0);
+              }
+            }
+          } else {
+            // online-orders
+            const status = (record.orderStatus || '').toUpperCase();
+            const isSettled = ['SETTLED', 'PICKEDUP', 'DELIVERED'].includes(status);
+            const isCancelled = status === 'CANCELLED';
+            
+            dObj.totalOrderCount = (dObj.totalOrderCount || 0) - 1;
+            if (isCancelled) dObj.cancelledOrderCount = (dObj.cancelledOrderCount || 0) - 1;
+            
+            if (isSettled) {
+              const rev = (record.itemTotal || 0) + (record.packagingCharge || 0) + (record.totalTax || 0) - (record.discount || 0);
+              dObj.onlineGoodGross = (dObj.onlineGoodGross || 0) - rev;
+              dObj.onlineGoodTax = (dObj.onlineGoodTax || 0) - (record.totalTax || 0);
+              dObj.onlineGoodComm = (dObj.onlineGoodComm || 0) - (record.commission || 0);
+              dObj.onlineGoodNet = (dObj.onlineGoodNet || 0) - (record.netPayout || 0);
+              dObj.settledOrderCount = (dObj.settledOrderCount || 0) - 1;
+              
+              const dayIdx = parseInt(dateParts[2]) - 1;
+              if (dayIdx >= 0 && dayIdx < 31) {
+                dObj[`dailyTrend.${dayIdx}`] = (dObj[`dailyTrend.${dayIdx}`] || 0) - rev;
+              }
             }
           }
         } else if (activeView === 'expenses' || activeView === 'purchases') {
@@ -324,15 +363,27 @@ const RawSalesHub: React.FC<{ user: User }> = ({ user }) => {
 
   const handleOpenEdit = (record: any) => {
     setEditingRecord(record);
-    setEditForm({
-      revenue: (record.revenue || 0).toString(),
-      tax: (record.totalTax || 0).toString(),
-      commission: (record.commission || 0).toString(),
-      amount: (record.amount || 0).toString(),
-      category: record.category || '',
-      description: record.description || '',
-      productName: record.productName || ''
-    });
+    if (activeView === 'online-orders') {
+      setEditForm({
+        revenue: (record.itemTotal || 0).toString(),
+        tax: (record.totalTax || 0).toString(),
+        commission: (record.commission || 0).toString(),
+        amount: (record.netPayout || 0).toString(),
+        category: record.platform || '',
+        description: record.orderStatus || '',
+        productName: ''
+      });
+    } else {
+      setEditForm({
+        revenue: (record.revenue || 0).toString(),
+        tax: (record.totalTax || 0).toString(),
+        commission: (record.commission || 0).toString(),
+        amount: (record.amount || 0).toString(),
+        category: record.category || '',
+        description: record.description || '',
+        productName: record.productName || ''
+      });
+    }
   };
 
   const handleSaveEdit = async () => {
@@ -340,22 +391,42 @@ const RawSalesHub: React.FC<{ user: User }> = ({ user }) => {
     setIsSavingEdit(true);
     try {
       const batch = writeBatch(db);
-      const dateParts = editingRecord.date.split('-');
+      const dateParts = (editingRecord.date || editingRecord.orderDate || '').split('-');
       const rYear = dateParts[0];
       const rMonth = MONTH_NAMES[parseInt(dateParts[1]) - 1];
       const oId = editingRecord.outletId || 'Unassigned';
 
-      if (activeView === 'sales') {
-        const newRev = parseFloat(editForm.revenue) || 0;
-        const newTax = parseFloat(editForm.tax) || 0;
-        const newComm = parseFloat(editForm.commission) || 0;
-        const newPayout = Math.max(0, newRev - newTax - newComm);
-        const deltaRev = newRev - editingRecord.revenue;
-        const deltaTax = newTax - editingRecord.totalTax;
-        const deltaComm = newComm - editingRecord.commission;
-        const deltaPayout = newPayout - (editingRecord.netPayout || 0);
+      if (activeView === 'sales' || activeView === 'online-orders') {
+        let deltaRev = 0, deltaTax = 0, deltaComm = 0, deltaPayout = 0;
+        
+        if (activeView === 'sales') {
+          const newRev = parseFloat(editForm.revenue) || 0;
+          const newTax = parseFloat(editForm.tax) || 0;
+          const newComm = parseFloat(editForm.commission) || 0;
+          const newPayout = Math.max(0, newRev - newTax - newComm);
+          deltaRev = newRev - editingRecord.revenue;
+          deltaTax = newTax - editingRecord.totalTax;
+          deltaComm = newComm - editingRecord.commission;
+          deltaPayout = newPayout - (editingRecord.netPayout || 0);
 
-        batch.update(doc(db, 'sales_summary', editingRecord.id), { revenue: newRev, totalTax: newTax, commission: newComm, netPayout: newPayout, lastUpdated: Date.now() });
+          batch.update(doc(db, 'sales_summary', editingRecord.id), { revenue: newRev, totalTax: newTax, commission: newComm, netPayout: newPayout, lastUpdated: Date.now() });
+        } else {
+          // online-orders
+          const newItemTotal = parseFloat(editForm.revenue) || 0;
+          const newTax = parseFloat(editForm.tax) || 0;
+          const newComm = parseFloat(editForm.commission) || 0;
+          const newPayout = parseFloat(editForm.amount) || 0;
+          
+          const oldRev = (editingRecord.itemTotal || 0) + (editingRecord.packagingCharge || 0) + (editingRecord.totalTax || 0) - (editingRecord.discount || 0);
+          const newRev = newItemTotal + (editingRecord.packagingCharge || 0) + newTax - (editingRecord.discount || 0);
+          
+          deltaRev = newRev - oldRev;
+          deltaTax = newTax - editingRecord.totalTax;
+          deltaComm = newComm - editingRecord.commission;
+          deltaPayout = newPayout - (editingRecord.netPayout || 0);
+          
+          batch.update(doc(db, 'online_order_details', editingRecord.id), { itemTotal: newItemTotal, totalTax: newTax, commission: newComm, netPayout: newPayout, lastUpdated: Date.now() });
+        }
         
         const snapUpdate: any = { 
             onlineGoodGross: increment(deltaRev), 
@@ -414,6 +485,7 @@ const RawSalesHub: React.FC<{ user: User }> = ({ user }) => {
         <div className="flex flex-wrap items-center gap-3 bg-white p-2 rounded-[2rem] border border-slate-100 shadow-sm">
           <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200">
              <button onClick={() => setActiveView('sales')} className={`px-4 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${activeView === 'sales' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Sales</button>
+             <button onClick={() => setActiveView('online-orders')} className={`px-4 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${activeView === 'online-orders' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Online Hub</button>
              <button onClick={() => setActiveView('expenses')} className={`px-4 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${activeView === 'expenses' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Expenses</button>
              <button onClick={() => setActiveView('purchases')} className={`px-4 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${activeView === 'purchases' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Purchases</button>
              <button onClick={() => setActiveView('online-items')} className={`px-4 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${activeView === 'online-items' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Items</button>
@@ -469,10 +541,10 @@ const RawSalesHub: React.FC<{ user: User }> = ({ user }) => {
                      return (
                        <tr key={r.id || i} className={`hover:bg-slate-50/50 transition-colors ${isSelected ? 'bg-indigo-50/30' : ''} ${unmapped ? 'bg-rose-50/20' : ''}`}>
                          <td className="px-6 py-5"><button onClick={() => toggleItemSelection(r.id!)} className="text-indigo-600">{isSelected ? <CheckSquare size={18}/> : <Square size={18}/>}</button></td>
-                         <td className="px-6 py-5"><p className="text-xs font-black text-slate-900">{r.date}</p><p className="text-[9px] font-bold text-slate-400 uppercase">{getOutletName(r.outletId)}</p></td>
-                         <td className="px-6 py-5"><p className="text-xs font-black text-slate-800 uppercase truncate max-w-[200px]">{activeView === 'online-items' ? (r.itemName || 'Unknown SKU') : (activeView === 'purchases' ? r.productName : (activeView === 'expenses' ? r.description : r.orderId))}</p>{activeView === 'sales' && <p className="text-[9px] font-bold text-slate-400 uppercase">{r.onlinePlatform || 'POS'}</p>}</td>
-                         <td className="px-6 py-5"><div className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[9px] font-black uppercase ${unmapped ? 'bg-rose-600 text-white' : 'bg-slate-100 text-slate-600'}`}>{unmapped && <AlertTriangle size={10} />}{activeView === 'online-items' ? r.itemQuantity : (r.category || 'N/A')}</div></td>
-                         <td className="px-6 py-5 text-xs font-black text-slate-900">₹{(r.revenue || r.amount || r.itemTotal || 0).toLocaleString()}</td>
+                         <td className="px-6 py-5"><p className="text-xs font-black text-slate-900">{r.date || r.orderDate}</p><p className="text-[9px] font-bold text-slate-400 uppercase">{getOutletName(r.outletId)}</p></td>
+                         <td className="px-6 py-5"><p className="text-xs font-black text-slate-800 uppercase truncate max-w-[200px]">{activeView === 'online-items' ? (r.itemName || 'Unknown SKU') : (activeView === 'purchases' ? r.productName : (activeView === 'expenses' ? r.description : r.orderId))}</p>{(activeView === 'sales' || activeView === 'online-orders') && <p className="text-[9px] font-bold text-slate-400 uppercase">{r.onlinePlatform || r.platform || 'POS'}</p>}</td>
+                         <td className="px-6 py-5"><div className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[9px] font-black uppercase ${unmapped ? 'bg-rose-600 text-white' : 'bg-slate-100 text-slate-600'}`}>{unmapped && <AlertTriangle size={10} />}{activeView === 'online-items' ? r.itemQuantity : (activeView === 'online-orders' ? r.orderStatus : (r.category || 'N/A'))}</div></td>
+                         <td className="px-6 py-5 text-xs font-black text-slate-900">₹{(r.revenue || r.amount || r.itemTotal || r.netPayout || 0).toLocaleString()}</td>
                          <td className="px-6 py-5 text-right"><div className="flex items-center justify-end gap-2">
                              {(activeView !== 'online-items' && (isManual || activeView !== 'sales')) && (<button onClick={() => handleOpenEdit(r)} className="p-2 text-indigo-400 hover:bg-indigo-50 rounded-lg"><Edit3 size={14}/></button>)}
                              <button onClick={() => handleBulkDelete([r.id!])} className="p-2 text-rose-300 hover:text-rose-600 hover:bg-rose-50 rounded-lg"><Trash2 size={14}/></button>
