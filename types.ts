@@ -94,6 +94,18 @@ export interface SalesMonthlySnapshot {
   onlineHourlyDistribution?: number[]; // 24 slots for online revenue
   onlineOrderHourlyDistribution?: number[]; // 24 slots for online order counts
   onlineWeekdayDistribution?: number[]; // 7 slots (0=Sun, 6=Sat)
+  platformBreakdown?: {
+    [platform: string]: {
+      gross: number;
+      net: number;
+      tax: number;
+      commission: number;
+      ads: number;
+      gstOnComm: number;
+      tds: number;
+      orders: number;
+    }
+  };
   lastUpdated: number;
 }
 
@@ -141,6 +153,12 @@ export interface ItemMonthlySnapshot {
     staffQuantity?: number; // Aggregated NC- bill quantity
     staffTheoreticalCost?: number; // Aggregated NC- bill theoretical cost
     staffPotentialRevenue?: number; // Aggregated NC- bill potential revenue
+    platformBreakdown?: {
+      [platform: string]: {
+        quantity: number;
+        revenue: number;
+      }
+    };
   }>;
   combos?: {
     items: string[];

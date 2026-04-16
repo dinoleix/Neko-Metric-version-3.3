@@ -536,6 +536,7 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
               posTotalGross: 0, posGoodGross: 0, posGoodNet: 0, posGoodTax: 0,
               onlineGoodGross: 0, onlineGoodNet: 0, onlineGoodTax: 0, onlineGoodComm: 0, onlineGoodAds: 0,
               settledOrderCount: 0, onlineOrderCount: 0, totalOrderCount: 0, cancelledOrderCount: 0, 
+              platformBreakdown: {} as Record<string, any>,
               dailyTrend: new Array(31).fill(0),
               hourlyDistribution: new Array(24).fill(0),
               onlineHourlyDistribution: new Array(24).fill(0),
@@ -551,14 +552,30 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
           const hour = parseIndianTime(rawTime);
 
           if (!isOnline) { agg.totalOrderCount++; if (isCancelled) agg.cancelledOrderCount++; agg.posTotalGross += rev; }
-          else { agg.onlineOrderCount++; }
+          else { 
+            agg.onlineOrderCount++; 
+            const plat = (row[mapping['onlinePlatform']] || 'UNKNOWN').toUpperCase();
+            if (!agg.platformBreakdown[plat]) agg.platformBreakdown[plat] = { gross: 0, net: 0, tax: 0, commission: 0, ads: 0, gstOnComm: 0, tds: 0, orders: 0 };
+            agg.platformBreakdown[plat].orders++;
+          }
           if (isSettled) {
              if (!isOnline) { 
                agg.posGoodGross += rev; agg.posGoodTax += tax; agg.posGoodNet += (rev - tax); agg.settledOrderCount++; 
                agg.hourlyDistribution[hour] += rev;
              }
              else { 
-               agg.onlineGoodGross += rev; agg.onlineGoodTax += tax; agg.onlineGoodComm += comm; agg.onlineGoodAds += ads; agg.onlineGoodNet += Math.max(0, rev-tax-comm-ads); 
+               const plat = (row[mapping['onlinePlatform']] || 'UNKNOWN').toUpperCase();
+               const netVal = Math.max(0, rev-tax-comm-ads);
+               agg.onlineGoodGross += rev; agg.onlineGoodTax += tax; agg.onlineGoodComm += comm; agg.onlineGoodAds += ads; agg.onlineGoodNet += netVal; 
+               
+               if (agg.platformBreakdown[plat]) {
+                 agg.platformBreakdown[plat].gross += rev;
+                 agg.platformBreakdown[plat].tax += tax;
+                 agg.platformBreakdown[plat].commission += comm;
+                 agg.platformBreakdown[plat].ads += ads;
+                 agg.platformBreakdown[plat].net += netVal;
+               }
+
                agg.hourlyDistribution[hour] += rev;
                agg.onlineHourlyDistribution[hour] += rev;
                agg.onlineOrderHourlyDistribution[hour]++;
@@ -582,6 +599,19 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
             const combinedOnlineOrderHourly = (currentData.onlineOrderHourlyDistribution || new Array(24).fill(0)).map((v: number, i: number) => v + agg.onlineOrderHourlyDistribution[i]);
             const combinedOnlineWeekday = (currentData.onlineWeekdayDistribution || new Array(7).fill(0)).map((v: number, i: number) => v + agg.onlineWeekdayDistribution[i]);
             
+            const existingBreakdown = currentData.platformBreakdown || {};
+            for (const p in agg.platformBreakdown) {
+              if (!existingBreakdown[p]) existingBreakdown[p] = agg.platformBreakdown[p];
+              else {
+                existingBreakdown[p].gross += agg.platformBreakdown[p].gross;
+                existingBreakdown[p].net += agg.platformBreakdown[p].net;
+                existingBreakdown[p].tax += agg.platformBreakdown[p].tax;
+                existingBreakdown[p].commission += agg.platformBreakdown[p].commission;
+                existingBreakdown[p].ads += agg.platformBreakdown[p].ads;
+                existingBreakdown[p].orders += agg.platformBreakdown[p].orders;
+              }
+            }
+
             await setDoc(snapRef, {
               posTotalGross: increment(agg.posTotalGross),
               posGoodGross: increment(agg.posGoodGross),
@@ -601,6 +631,7 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
               onlineHourlyDistribution: combinedOnlineHourly,
               onlineOrderHourlyDistribution: combinedOnlineOrderHourly,
               onlineWeekdayDistribution: combinedOnlineWeekday,
+              platformBreakdown: existingBreakdown,
               lastUpdated: Date.now()
             }, { merge: true });
           } else {
@@ -638,6 +669,7 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
               onlineGoodGross: 0, onlineGoodNet: 0, onlineGoodTax: 0, onlineGoodComm: 0, onlineGoodAds: 0,
               onlineGoodGstOnComm: 0, onlineGoodTds: 0,
               settledOrderCount: 0, onlineOrderCount: 0, totalOrderCount: 0, cancelledOrderCount: 0, 
+              platformBreakdown: {} as Record<string, any>,
               dailyTrend: new Array(31).fill(0),
               hourlyDistribution: new Array(24).fill(0),
               onlineHourlyDistribution: new Array(24).fill(0),
@@ -652,8 +684,12 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
           const rawTime = row[mapping['orderTime']] || (rawDate.includes(':') ? rawDate : '00:00');
           const hour = parseIndianTime(rawTime);
           
+          const plat = (row[mapping['platform']] || 'UNKNOWN').toUpperCase();
+          if (!agg.platformBreakdown[plat]) agg.platformBreakdown[plat] = { gross: 0, net: 0, tax: 0, commission: 0, ads: 0, gstOnComm: 0, tds: 0, orders: 0 };
+          
           agg.totalOrderCount++; 
           agg.onlineOrderCount++;
+          agg.platformBreakdown[plat].orders++;
           if (isCancelled) agg.cancelledOrderCount++;
           
           if (isSettled) {
@@ -663,6 +699,14 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
              agg.onlineGoodGstOnComm += gstOnComm;
              agg.onlineGoodTds += tds;
              agg.onlineGoodNet += netPayout; 
+             
+             agg.platformBreakdown[plat].gross += rev;
+             agg.platformBreakdown[plat].tax += tax;
+             agg.platformBreakdown[plat].commission += commission;
+             agg.platformBreakdown[plat].gstOnComm += gstOnComm;
+             agg.platformBreakdown[plat].tds += tds;
+             agg.platformBreakdown[plat].net += netPayout;
+
              agg.settledOrderCount++;
              agg.hourlyDistribution[hour] += rev;
              agg.onlineHourlyDistribution[hour] += rev;
@@ -681,6 +725,21 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
           if (existingSnap.exists()) {
             const currentData = existingSnap.data();
             const combinedTrend = (currentData.dailyTrend || new Array(31).fill(0)).map((v: number, i: number) => v + agg.dailyTrend[i]);
+            
+            const existingBreakdown = currentData.platformBreakdown || {};
+            for (const p in agg.platformBreakdown) {
+              if (!existingBreakdown[p]) existingBreakdown[p] = agg.platformBreakdown[p];
+              else {
+                existingBreakdown[p].gross += agg.platformBreakdown[p].gross;
+                existingBreakdown[p].net += agg.platformBreakdown[p].net;
+                existingBreakdown[p].tax += agg.platformBreakdown[p].tax;
+                existingBreakdown[p].commission += agg.platformBreakdown[p].commission;
+                existingBreakdown[p].gstOnComm += agg.platformBreakdown[p].gstOnComm;
+                existingBreakdown[p].tds += agg.platformBreakdown[p].tds;
+                existingBreakdown[p].orders += agg.platformBreakdown[p].orders;
+              }
+            }
+
             await setDoc(snapRef, {
               onlineGoodGross: increment(agg.onlineGoodGross),
               onlineGoodNet: increment(agg.onlineGoodNet),
@@ -693,6 +752,7 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
               totalOrderCount: increment(agg.totalOrderCount),
               cancelledOrderCount: increment(agg.cancelledOrderCount),
               dailyTrend: combinedTrend,
+              platformBreakdown: existingBreakdown,
               lastUpdated: Date.now()
             }, { merge: true });
           } else {
@@ -787,11 +847,26 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
 
           if (!outletAggs[oId]) outletAggs[oId] = { items: {} };
           if (!outletAggs[oId].items[masterName]) {
-            outletAggs[oId].items[masterName] = { quantity: 0, posQuantity: 0, onlineQuantity: 0, revenue: 0, dailyTrend: new Array(31).fill(0) };
+            outletAggs[oId].items[masterName] = { 
+              quantity: 0, 
+              posQuantity: 0, 
+              onlineQuantity: 0, 
+              revenue: 0, 
+              dailyTrend: new Array(31).fill(0),
+              platformBreakdown: {} as Record<string, any>
+            };
           }
           const item = outletAggs[oId].items[masterName];
           item.quantity += qty;
-          if (fileType === 'platform_item') item.onlineQuantity += qty; else item.posQuantity += qty;
+          if (fileType === 'platform_item') {
+            item.onlineQuantity += qty;
+            const plat = (row[mapping['platform']] || 'UNKNOWN').toUpperCase();
+            if (!item.platformBreakdown[plat]) item.platformBreakdown[plat] = { quantity: 0, revenue: 0 };
+            item.platformBreakdown[plat].quantity += qty;
+            item.platformBreakdown[plat].revenue += total;
+          } else {
+            item.posQuantity += qty;
+          }
           item.revenue += total;
           if (dayIdx >= 0 && dayIdx < 31) item.dailyTrend[dayIdx] += qty;
         });
@@ -812,6 +887,17 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
                 nextItems[name].onlineQuantity = (nextItems[name].onlineQuantity || 0) + data.onlineQuantity;
                 nextItems[name].revenue += data.revenue;
                 nextItems[name].dailyTrend = (nextItems[name].dailyTrend || new Array(31).fill(0)).map((v: number, i: number) => v + data.dailyTrend[i]);
+                
+                if (data.platformBreakdown) {
+                  if (!nextItems[name].platformBreakdown) nextItems[name].platformBreakdown = {};
+                  Object.entries(data.platformBreakdown).forEach(([p, pData]: [string, any]) => {
+                    if (!nextItems[name].platformBreakdown[p]) nextItems[name].platformBreakdown[p] = pData;
+                    else {
+                      nextItems[name].platformBreakdown[p].quantity += pData.quantity;
+                      nextItems[name].platformBreakdown[p].revenue += pData.revenue;
+                    }
+                  });
+                }
               }
             });
             await setDoc(snapRef, { items: nextItems, lastUpdated: Date.now() }, { merge: true });

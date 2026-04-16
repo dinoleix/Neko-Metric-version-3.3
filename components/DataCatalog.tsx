@@ -231,6 +231,7 @@ const DataCatalog: React.FC<{ user: User }> = ({ user }) => {
             onlineGoodGstOnComm: 0, onlineGoodTds: 0,
             eventRevenue: 0,
             settledOrderCount: 0, onlineOrderCount: 0, totalOrderCount: 0, cancelledOrderCount: 0, 
+            platformBreakdown: {} as Record<string, any>,
             dailyTrend: new Array(31).fill(0), 
             hourlyDistribution: new Array(24).fill(0),
             onlineHourlyDistribution: new Array(24).fill(0),
@@ -264,12 +265,24 @@ const DataCatalog: React.FC<{ user: User }> = ({ user }) => {
               }
             } else {
               agg.onlineOrderCount++;
+              const plat = (r.onlinePlatform || 'UNKNOWN').toUpperCase();
+              if (!agg.platformBreakdown[plat]) agg.platformBreakdown[plat] = { gross: 0, net: 0, tax: 0, commission: 0, ads: 0, gstOnComm: 0, tds: 0, orders: 0 };
+              agg.platformBreakdown[plat].orders++;
+
               if (isSettled) {
+                const netVal = Math.max(0, rev - tax - comm - ads);
                 agg.onlineGoodGross += rev; 
                 agg.onlineGoodTax += tax; 
                 agg.onlineGoodComm += comm; 
                 agg.onlineGoodAds += ads; 
-                agg.onlineGoodNet += Math.max(0, rev - tax - comm - ads);
+                agg.onlineGoodNet += netVal;
+
+                agg.platformBreakdown[plat].gross += rev;
+                agg.platformBreakdown[plat].net += netVal;
+                agg.platformBreakdown[plat].tax += tax;
+                agg.platformBreakdown[plat].commission += comm;
+                agg.platformBreakdown[plat].ads += ads;
+
                 if (dayIdx >= 0 && dayIdx < 31) agg.dailyTrend[dayIdx] += rev;
                 agg.hourlyDistribution[hour] += rev;
                 if (agg.onlineHourlyDistribution) agg.onlineHourlyDistribution[hour] += rev;
@@ -291,8 +304,12 @@ const DataCatalog: React.FC<{ user: User }> = ({ user }) => {
             const status = (r.orderStatus || '').toUpperCase();
             const isSettled = status === 'SETTLED' || status === 'DELIVERED' || status === 'PICKEDUP';
             
+            const plat = (r.platform || 'UNKNOWN').toUpperCase();
+            if (!agg.platformBreakdown[plat]) agg.platformBreakdown[plat] = { gross: 0, net: 0, tax: 0, commission: 0, ads: 0, gstOnComm: 0, tds: 0, orders: 0 };
+
             agg.totalOrderCount++;
             agg.onlineOrderCount++;
+            agg.platformBreakdown[plat].orders++;
             if (status === 'CANCELLED') agg.cancelledOrderCount++;
             
             if (isSettled) {
@@ -302,6 +319,14 @@ const DataCatalog: React.FC<{ user: User }> = ({ user }) => {
               agg.onlineGoodGstOnComm += gstOnComm;
               agg.onlineGoodTds += tds;
               agg.onlineGoodNet += payout;
+              
+              agg.platformBreakdown[plat].gross += rev;
+              agg.platformBreakdown[plat].net += payout;
+              agg.platformBreakdown[plat].tax += tax;
+              agg.platformBreakdown[plat].commission += comm;
+              agg.platformBreakdown[plat].gstOnComm += gstOnComm;
+              agg.platformBreakdown[plat].tds += tds;
+
               agg.settledOrderCount++;
               
               const dStr = r.orderDate || r.date;
@@ -374,7 +399,17 @@ const DataCatalog: React.FC<{ user: User }> = ({ user }) => {
             const isNc = (r.billNo || '').startsWith('NC-');
             
             if (!agg.items[name]) {
-              agg.items[name] = { quantity: 0, posQuantity: 0, onlineQuantity: 0, revenue: 0, dailyTrend: new Array(31).fill(0), staffQuantity: 0, staffTheoreticalCost: 0, staffPotentialRevenue: 0 };
+              agg.items[name] = { 
+                quantity: 0, 
+                posQuantity: 0, 
+                onlineQuantity: 0, 
+                revenue: 0, 
+                dailyTrend: new Array(31).fill(0), 
+                staffQuantity: 0, 
+                staffTheoreticalCost: 0, 
+                staffPotentialRevenue: 0,
+                platformBreakdown: {} as Record<string, any>
+              };
             }
             
             const item = agg.items[name];
@@ -390,7 +425,13 @@ const DataCatalog: React.FC<{ user: User }> = ({ user }) => {
               item.staffTheoreticalCost = (item.staffTheoreticalCost || 0) + (qty * (ingCost + servCost));
             } else {
               item.quantity += qty;
-              if (r.isPlatform) item.onlineQuantity = (item.onlineQuantity || 0) + qty;
+              if (r.isPlatform) {
+                item.onlineQuantity = (item.onlineQuantity || 0) + qty;
+                const plat = (r.platform || 'UNKNOWN').toUpperCase();
+                if (!item.platformBreakdown[plat]) item.platformBreakdown[plat] = { quantity: 0, revenue: 0 };
+                item.platformBreakdown[plat].quantity += qty;
+                item.platformBreakdown[plat].revenue += total;
+              }
               else item.posQuantity = (item.posQuantity || 0) + qty;
               item.revenue += total;
               if (dayIdx >= 0 && dayIdx < 31) item.dailyTrend[dayIdx] += qty;

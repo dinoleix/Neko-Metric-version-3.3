@@ -71,6 +71,7 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear().toString());
   const [selectedMonth, setSelectedMonth] = useState(MONTH_NAMES[new Date().getMonth()]);
   const [storeFilter, setStoreFilter] = useState('all');
+  const [platformFilter, setPlatformFilter] = useState('all');
 
   const [velocityRange, setVelocityRange] = useState<'1m' | '3m' | '6m' | '9m' | 'custom'>('3m');
   const [customStartMonth, setCustomStartMonth] = useState(MONTH_NAMES[0]);
@@ -129,6 +130,16 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
 
   const activeOutletOptions = useMemo(() => rentals.map(r => ({ id: r.outletId, name: r.storeName })), [rentals]);
 
+  const availablePlatforms = useMemo(() => {
+    const plats = new Set<string>();
+    allSalesSnaps.forEach(s => {
+      if (s.platformBreakdown) {
+        Object.keys(s.platformBreakdown).forEach(p => plats.add(p));
+      }
+    });
+    return Array.from(plats).sort();
+  }, [allSalesSnaps]);
+
   const salesSnaps = useMemo(() => {
     return allSalesSnaps.filter(s => s.year === selectedYear && s.month === selectedMonth);
   }, [allSalesSnaps, selectedYear, selectedMonth]);
@@ -137,10 +148,29 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
     const filteredSales = salesSnaps.filter(s => storeFilter === 'all' || s.outletId === storeFilter);
     const filteredItems = itemSnaps.filter(s => storeFilter === 'all' || s.outletId === storeFilter);
 
-    if (filteredSales.length === 0) return null;
+    const platformFilteredSales = platformFilter === 'all' 
+      ? filteredSales 
+      : filteredSales.map(s => {
+          const pData = s.platformBreakdown?.[platformFilter];
+          if (!pData) return null;
+          return {
+            ...s,
+            onlineGoodGross: pData.gross,
+            onlineGoodNet: pData.net,
+            onlineGoodTax: pData.tax,
+            onlineGoodComm: pData.commission,
+            onlineGoodAds: pData.ads,
+            onlineGoodGstOnComm: pData.gstOnComm,
+            onlineGoodTds: pData.tds,
+            onlineOrderCount: pData.orders,
+            totalOrderCount: pData.orders
+          };
+        }).filter(Boolean) as SalesMonthlySnapshot[];
+
+    if (platformFilteredSales.length === 0) return null;
 
     // 1. Aggregated Sales Metrics
-    const metrics = filteredSales.reduce((acc, s) => ({
+    const metrics = platformFilteredSales.reduce((acc, s) => ({
       gross: acc.gross + (s.onlineGoodGross || 0),
       net: acc.net + (s.onlineGoodNet || 0),
       tax: acc.tax + (s.onlineGoodTax || s.onlineGoodTax_calculated || 0),
@@ -158,6 +188,20 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
     const effectiveCommissionRate = metrics.gross > 0 ? ((metrics.commission + metrics.ads + metrics.gstOnComm + metrics.tds) / metrics.gross) * 100 : 0;
     const roas = metrics.ads > 0 ? metrics.gross / metrics.ads : 0;
 
+    // Platform Mix
+    const platformMix = Object.entries(platformFilteredSales.reduce((acc, s) => {
+      if (s.platformBreakdown) {
+        Object.entries(s.platformBreakdown).forEach(([p, data]: [string, any]) => {
+          if (!acc[p]) acc[p] = { gross: 0, orders: 0 };
+          acc[p].gross += (data.gross || 0);
+          acc[p].orders += (data.orders || 0);
+        });
+      }
+      return acc;
+    }, {} as Record<string, { gross: number, orders: number }>))
+    .map(([name, data]) => ({ name, gross: (data as any).gross, orders: (data as any).orders }))
+    .sort((a, b) => b.gross - a.gross);
+
     // 2. Item Analysis
     const itemMap: Record<string, { onlineQty: number, onlineRev: number, posQty: number, posRev: number, cost: number }> = {};
     
@@ -168,8 +212,17 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
           const costRec = itemCosts.find(c => (c.itemName || '').trim().toUpperCase() === masterName);
           itemMap[masterName] = { onlineQty: 0, onlineRev: 0, posQty: 0, posRev: 0, cost: costRec?.costPerUnit || 0 };
         }
-        itemMap[masterName].onlineQty += (data.onlineQuantity || 0);
-        itemMap[masterName].onlineRev += (data.revenue || 0); // Note: Item snapshots usually store total revenue per item, but we'll treat it as online if it's from an online source or use a heuristic
+        
+        if (platformFilter === 'all') {
+          itemMap[masterName].onlineQty += (data.onlineQuantity || 0);
+          itemMap[masterName].onlineRev += (data.revenue || 0); 
+        } else {
+          const pData = data.platformBreakdown?.[platformFilter];
+          if (pData) {
+            itemMap[masterName].onlineQty += pData.quantity;
+            itemMap[masterName].onlineRev += pData.revenue;
+          }
+        }
         itemMap[masterName].posQty += (data.posQuantity || 0);
       });
     });
@@ -230,11 +283,12 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
       roas,
       topOnlineItems,
       contributionMargin,
+      platformMix,
       hourlyData,
       weekdayData,
       filteredHourlyData
     };
-  }, [salesSnaps, itemSnaps, storeFilter, normalizationMap, itemCosts, startHour, endHour]);
+  }, [salesSnaps, itemSnaps, storeFilter, platformFilter, normalizationMap, itemCosts, startHour, endHour]);
 
   const velocityAnalytics = useMemo(() => {
     if (allSalesSnaps.length === 0) return null;
@@ -268,6 +322,16 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
       const snapSortKey = parseInt(s.year) * 100 + MONTH_NAMES.indexOf(s.month);
       const isInRange = monthsInRange.some(m => m.sortKey === snapSortKey);
       return isOutletMatch && isInRange;
+    }).map(s => {
+      if (platformFilter === 'all') return s;
+      const pData = s.platformBreakdown?.[platformFilter];
+      if (!pData) return { ...s, onlineGoodGross: 0, onlineOrderCount: 0, totalOrderCount: 0 };
+      return {
+        ...s,
+        onlineGoodGross: pData.gross,
+        onlineOrderCount: pData.orders,
+        totalOrderCount: pData.orders
+      };
     });
 
     const trendData = monthsInRange.map(m => {
@@ -285,7 +349,7 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
     return {
       trendData
     };
-  }, [allSalesSnaps, velocityRange, customStartMonth, customStartYear, customEndMonth, customEndYear, storeFilter]);
+  }, [allSalesSnaps, velocityRange, customStartMonth, customStartYear, customEndMonth, customEndYear, storeFilter, platformFilter]);
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500 pb-20">
@@ -311,6 +375,17 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
             >
               <option value="all">All Units</option>
               {activeOutletOptions.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+            </select>
+          </div>
+          <div className="bg-slate-50 px-4 py-2 rounded-xl flex items-center gap-2 border border-slate-100">
+            <Globe size={14} className="text-indigo-500" />
+            <select 
+              value={platformFilter} 
+              onChange={e => setPlatformFilter(e.target.value)} 
+              className="bg-transparent font-bold text-xs outline-none uppercase cursor-pointer"
+            >
+              <option value="all">All Platforms</option>
+              {availablePlatforms.map(p => <option key={p} value={p}>{p}</option>)}
             </select>
           </div>
           <div className="bg-slate-50 px-4 py-2 rounded-xl flex items-center gap-2 border border-slate-100">
@@ -476,6 +551,23 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
             </div>
 
             <div className="mt-10 grid grid-cols-1 md:grid-cols-3 gap-6 pt-10 border-t border-slate-50">
+              {analytics.platformMix.length > 0 && platformFilter === 'all' && (
+                <div className="col-span-full mb-6">
+                  <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">Platform Revenue Mix</h4>
+                  <div className="flex flex-wrap gap-4">
+                    {analytics.platformMix.map((p, i) => (
+                      <div key={i} className="flex-1 min-w-[150px] bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="text-xs font-black text-slate-700 uppercase">{p.name}</span>
+                          <span className="text-[10px] font-bold text-indigo-600">{((p.gross / analytics.metrics.gross) * 100).toFixed(1)}%</span>
+                        </div>
+                        <p className="text-lg font-black text-slate-900">₹{p.gross.toLocaleString()}</p>
+                        <p className="text-[9px] font-medium text-slate-400 uppercase">{p.orders} Orders</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
               <div className="flex items-center gap-4">
                 <div className="p-2 rounded-xl bg-rose-50 text-rose-500"><ArrowDownRight size={20}/></div>
                 <div>
