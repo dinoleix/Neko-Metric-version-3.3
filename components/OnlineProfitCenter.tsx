@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import type { User } from '@firebase/auth';
-import { collection, query, getDocs, where, orderBy, limit } from '@firebase/firestore';
+import { collection, query, getDocs, where, orderBy, limit, doc, updateDoc } from '@firebase/firestore';
 import { db } from '../firebase';
 import { 
   SalesMonthlySnapshot, 
@@ -41,7 +41,9 @@ import {
   Scale,
   Users,
   Copy,
-  Check
+  Check,
+  Edit2,
+  X as CloseIcon
 } from 'lucide-react';
 
 import { 
@@ -73,6 +75,9 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
   const [loadingCustomers, setLoadingCustomers] = useState(false);
   const [customerError, setCustomerError] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [editingCustomer, setEditingCustomer] = useState<string | null>(null);
+  const [newName, setNewName] = useState('');
+  const [isSavingName, setIsSavingName] = useState(false);
   const [startHour, setStartHour] = useState(0);
   const [endHour, setEndHour] = useState(23);
 
@@ -121,6 +126,28 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
     navigator.clipboard.writeText(id);
     setCopiedId(id);
     setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  const handleSaveManualName = async (customerId: string) => {
+    if (!newName.trim()) return;
+    setIsSavingName(true);
+    try {
+      const cRef = doc(db, 'online_customers', `${user.uid}_${customerId}`);
+      await updateDoc(cRef, { 
+        name: newName.trim(),
+        lastUpdated: Date.now()
+      });
+      // Update local state
+      setTopCustomers(prev => prev.map(c => 
+        c.customerId === customerId ? { ...c, name: newName.trim() } : c
+      ));
+      setEditingCustomer(null);
+      setNewName('');
+    } catch (err) {
+      console.error("Failed to save name:", err);
+    } finally {
+      setIsSavingName(false);
+    }
   };
 
   const fetchData = async () => {
@@ -1131,25 +1158,67 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
                         }`}>
                           {i + 1}
                         </div>
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <h4 className="text-sm font-black text-slate-900 tracking-tight">
-                              {customer.name || (customer.customerId.length > 15 ? `${customer.customerId.substring(0, 15)}...` : customer.customerId)}
-                            </h4>
-                            <button 
-                              onClick={() => handleCopy(customer.customerId)}
-                              className="p-1.5 rounded-lg bg-white border border-slate-200 text-slate-400 hover:text-indigo-600 hover:border-indigo-100 transition-all"
-                              title="Copy Full ID"
-                            >
-                              {copiedId === customer.customerId ? <Check size={12} className="text-emerald-500" /> : <Copy size={12} />}
-                            </button>
-                          </div>
-                          {customer.name && (
-                            <p className="text-[10px] font-bold text-slate-400 mt-0.5">
-                              ID: {customer.customerId.length > 15 ? `${customer.customerId.substring(0, 15)}...` : customer.customerId}
-                            </p>
-                          )}
-                          <div className="flex items-center gap-2 mt-1">
+                         <div>
+                           <div className="flex items-center gap-2">
+                             {editingCustomer === customer.customerId ? (
+                               <div className="flex items-center gap-2">
+                                 <input 
+                                   type="text"
+                                   value={newName}
+                                   onChange={e => setNewName(e.target.value)}
+                                   placeholder="Enter Name..."
+                                   autoFocus
+                                   className="px-3 py-1 text-sm font-bold bg-white border border-indigo-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                                   onKeyDown={e => {
+                                     if (e.key === 'Enter') handleSaveManualName(customer.customerId);
+                                     if (e.key === 'Escape') setEditingCustomer(null);
+                                   }}
+                                 />
+                                 <button 
+                                   onClick={() => handleSaveManualName(customer.customerId)}
+                                   disabled={isSavingName}
+                                   className="p-1.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-colors"
+                                 >
+                                   {isSavingName ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
+                                 </button>
+                                 <button 
+                                   onClick={() => setEditingCustomer(null)}
+                                   className="p-1.5 rounded-lg bg-slate-100 text-slate-400 hover:bg-slate-200 transition-colors"
+                                 >
+                                   <CloseIcon size={12} />
+                                 </button>
+                               </div>
+                             ) : (
+                               <>
+                                 <h4 className="text-sm font-black text-slate-900 tracking-tight">
+                                   {customer.name || (customer.customerId.length > 15 ? `${customer.customerId.substring(0, 15)}...` : customer.customerId)}
+                                 </h4>
+                                 <button 
+                                   onClick={() => {
+                                     setEditingCustomer(customer.customerId);
+                                     setNewName(customer.name || '');
+                                   }}
+                                   className="p-1.5 rounded-lg bg-white border border-slate-200 text-slate-400 hover:text-indigo-600 hover:border-indigo-100 opacity-0 group-hover:opacity-100 transition-all"
+                                   title="Add/Edit Name"
+                                 >
+                                   <Edit2 size={12} />
+                                 </button>
+                                 <button 
+                                   onClick={() => handleCopy(customer.customerId)}
+                                   className="p-1.5 rounded-lg bg-white border border-slate-200 text-slate-400 hover:text-indigo-600 hover:border-indigo-100 opacity-0 group-hover:opacity-100 transition-all"
+                                   title="Copy Full ID"
+                                 >
+                                   {copiedId === customer.customerId ? <Check size={12} className="text-emerald-500" /> : <Copy size={12} />}
+                                 </button>
+                               </>
+                             )}
+                           </div>
+                           {customer.name && (
+                             <p className="text-[10px] font-bold text-slate-400 mt-0.5 flex items-center gap-2">
+                               ID: {customer.customerId.length > 15 ? `${customer.customerId.substring(0, 15)}...` : customer.customerId}
+                             </p>
+                           )}
+                           <div className="flex items-center gap-2 mt-1">
                             {customer.platforms.map(p => (
                               <span key={p} className="px-2 py-0.5 rounded-md bg-white border border-slate-200 text-[8px] font-black text-slate-500 uppercase">
                                 {p}
