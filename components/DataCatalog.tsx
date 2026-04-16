@@ -239,7 +239,7 @@ const DataCatalog: React.FC<{ user: User }> = ({ user }) => {
             onlineWeekdayDistribution: new Array(7).fill(0),
             lastUpdated: Date.now()
           };
-          const customerAggs: Record<string, { totalOrders: number, totalSpent: number, platforms: Set<string>, lastOrderDate: string }> = {};
+          const customerAggs: Record<string, { totalOrders: number, totalSpent: number, platforms: Set<string>, lastOrderDate: string, lastOrderId: string }> = {};
 
           outletSales.forEach(r => {
             const rev = Number(r.revenue || 0);
@@ -307,13 +307,14 @@ const DataCatalog: React.FC<{ user: User }> = ({ user }) => {
             const isSettled = status === 'SETTLED' || status === 'DELIVERED' || status === 'PICKEDUP';
             const customerId = (r.customerId || '').toString().trim();
             const dateStr = r.orderDate || r.date;
+            const orderId = (r.orderId || '').toString().trim();
             
             const plat = (r.platform || 'UNKNOWN').toUpperCase();
 
             // Customer Aggregation
             if (customerId && isSettled) {
               if (!customerAggs[customerId]) {
-                customerAggs[customerId] = { totalOrders: 0, totalSpent: 0, platforms: new Set(), lastOrderDate: dateStr };
+                customerAggs[customerId] = { totalOrders: 0, totalSpent: 0, platforms: new Set(), lastOrderDate: dateStr, lastOrderId: orderId };
               }
               const c = customerAggs[customerId];
               c.totalOrders++;
@@ -321,6 +322,7 @@ const DataCatalog: React.FC<{ user: User }> = ({ user }) => {
               c.platforms.add(plat);
               if (new Date(dateStr) > new Date(c.lastOrderDate)) {
                 c.lastOrderDate = dateStr;
+                c.lastOrderId = orderId;
               }
             }
 
@@ -379,6 +381,7 @@ const DataCatalog: React.FC<{ user: User }> = ({ user }) => {
               totalSpent: increment(data.totalSpent),
               platforms: arrayUnion(...Array.from(data.platforms)),
               lastOrderDate: data.lastOrderDate,
+              lastOrderId: data.lastOrderId,
               lastUpdated: Date.now()
             }, { merge: true });
           }

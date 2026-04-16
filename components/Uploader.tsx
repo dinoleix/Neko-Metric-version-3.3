@@ -644,7 +644,7 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
         }
       } else if (fileType === 'online_order') {
         const outletAggs: Record<string, any> = {};
-        const customerAggs: Record<string, { totalOrders: number, totalSpent: number, platforms: Set<string>, lastOrderDate: string }> = {};
+        const customerAggs: Record<string, { totalOrders: number, totalSpent: number, platforms: Set<string>, lastOrderDate: string, lastOrderId: string }> = {};
 
         csvData.forEach(row => {
           const orderId = (row[mapping['orderId']] || '').toString().trim();
@@ -674,7 +674,7 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
           // Customer Aggregation
           if (customerId && isSettled) {
             if (!customerAggs[customerId]) {
-              customerAggs[customerId] = { totalOrders: 0, totalSpent: 0, platforms: new Set(), lastOrderDate: dateStr };
+              customerAggs[customerId] = { totalOrders: 0, totalSpent: 0, platforms: new Set(), lastOrderDate: dateStr, lastOrderId: orderId };
             }
             const c = customerAggs[customerId];
             c.totalOrders++;
@@ -682,6 +682,7 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
             c.platforms.add(plat);
             if (new Date(dateStr) > new Date(c.lastOrderDate)) {
               c.lastOrderDate = dateStr;
+              c.lastOrderId = orderId;
             }
           }
 
@@ -793,6 +794,7 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
             totalSpent: increment(data.totalSpent),
             platforms: arrayUnion(...Array.from(data.platforms)),
             lastOrderDate: data.lastOrderDate,
+            lastOrderId: data.lastOrderId,
             lastUpdated: Date.now()
           }, { merge: true });
           cCount++;

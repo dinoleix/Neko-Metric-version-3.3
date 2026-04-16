@@ -498,6 +498,7 @@ export interface OnlineCustomer {
   totalSpent: number;
   platforms: string[];
   lastOrderDate: string;
+  lastOrderId: string;
   lastUpdated: number;
 }
 

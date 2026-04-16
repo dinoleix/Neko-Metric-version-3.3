@@ -37,9 +37,10 @@
         "totalSpent": { "type": "number" },
         "platforms": { "type": "array", "items": { "type": "string" } },
         "lastOrderDate": { "type": "string" },
+        "lastOrderId": { "type": "string" },
         "lastUpdated": { "type": "number" }
       },
-      "required": ["userId", "customerId", "totalOrders", "totalSpent", "platforms", "lastOrderDate", "lastUpdated"]
+      "required": ["userId", "customerId", "totalOrders", "totalSpent", "platforms", "lastOrderDate", "lastOrderId", "lastUpdated"]
     }
   },
   "firestore": {

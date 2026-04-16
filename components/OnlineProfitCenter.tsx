@@ -39,7 +39,9 @@ import {
   SearchX,
   Loader2,
   Scale,
-  Users
+  Users,
+  Copy,
+  Check
 } from 'lucide-react';
 
 import { 
@@ -70,6 +72,7 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
   const [topCustomers, setTopCustomers] = useState<OnlineCustomer[]>([]);
   const [loadingCustomers, setLoadingCustomers] = useState(false);
   const [customerError, setCustomerError] = useState<string | null>(null);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
   const [startHour, setStartHour] = useState(0);
   const [endHour, setEndHour] = useState(23);
 
@@ -113,6 +116,12 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
       fetchCustomers();
     }
   }, [activeTab, user.uid]);
+
+  const handleCopy = (id: string) => {
+    navigator.clipboard.writeText(id);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
+  };
 
   const fetchData = async () => {
     setLoading(true);
@@ -408,50 +417,52 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
             </p>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-3 bg-white p-2 rounded-[2rem] border border-slate-100 shadow-sm">
-          <div className="bg-slate-50 px-4 py-2 rounded-xl flex items-center gap-2 border border-slate-100">
-            <MapPin size={14} className="text-indigo-500" />
-            <select 
-              value={storeFilter} 
-              onChange={e => setStoreFilter(e.target.value)} 
-              className="bg-transparent font-bold text-xs outline-none uppercase cursor-pointer"
-            >
-              <option value="all">All Units</option>
-              {activeOutletOptions.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
-            </select>
+        {activeTab !== 'super_clients' && (
+          <div className="flex flex-wrap items-center gap-3 bg-white p-2 rounded-[2rem] border border-slate-100 shadow-sm">
+            <div className="bg-slate-50 px-4 py-2 rounded-xl flex items-center gap-2 border border-slate-100">
+              <MapPin size={14} className="text-indigo-500" />
+              <select 
+                value={storeFilter} 
+                onChange={e => setStoreFilter(e.target.value)} 
+                className="bg-transparent font-bold text-xs outline-none uppercase cursor-pointer"
+              >
+                <option value="all">All Units</option>
+                {activeOutletOptions.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+              </select>
+            </div>
+            <div className="bg-slate-50 px-4 py-2 rounded-xl flex items-center gap-2 border border-slate-100">
+              <Globe size={14} className="text-indigo-500" />
+              <select 
+                value={platformFilter} 
+                onChange={e => setPlatformFilter(e.target.value)} 
+                className="bg-transparent font-bold text-xs outline-none uppercase cursor-pointer"
+              >
+                <option value="all">All Platforms</option>
+                {availablePlatforms.map(p => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </div>
+            <div className="bg-slate-50 px-4 py-2 rounded-xl flex items-center gap-2 border border-slate-100">
+              <CalendarDays size={14} className="text-indigo-500" />
+              <select 
+                value={selectedMonth} 
+                onChange={e => setSelectedMonth(e.target.value)} 
+                className="bg-transparent font-bold text-xs outline-none uppercase cursor-pointer"
+              >
+                {MONTH_NAMES.map(m => <option key={m} value={m}>{m}</option>)}
+              </select>
+              <select 
+                value={selectedYear} 
+                onChange={e => setSelectedYear(e.target.value)} 
+                className="bg-transparent font-bold text-xs outline-none cursor-pointer"
+              >
+                {YEAR_OPTIONS.map(y => <option key={y} value={y}>{y}</option>)}
+              </select>
+            </div>
+            <button onClick={fetchData} className="p-2.5 text-slate-400 hover:text-indigo-600 transition-colors">
+              <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
+            </button>
           </div>
-          <div className="bg-slate-50 px-4 py-2 rounded-xl flex items-center gap-2 border border-slate-100">
-            <Globe size={14} className="text-indigo-500" />
-            <select 
-              value={platformFilter} 
-              onChange={e => setPlatformFilter(e.target.value)} 
-              className="bg-transparent font-bold text-xs outline-none uppercase cursor-pointer"
-            >
-              <option value="all">All Platforms</option>
-              {availablePlatforms.map(p => <option key={p} value={p}>{p}</option>)}
-            </select>
-          </div>
-          <div className="bg-slate-50 px-4 py-2 rounded-xl flex items-center gap-2 border border-slate-100">
-            <CalendarDays size={14} className="text-indigo-500" />
-            <select 
-              value={selectedMonth} 
-              onChange={e => setSelectedMonth(e.target.value)} 
-              className="bg-transparent font-bold text-xs outline-none uppercase cursor-pointer"
-            >
-              {MONTH_NAMES.map(m => <option key={m} value={m}>{m}</option>)}
-            </select>
-            <select 
-              value={selectedYear} 
-              onChange={e => setSelectedYear(e.target.value)} 
-              className="bg-transparent font-bold text-xs outline-none cursor-pointer"
-            >
-              {YEAR_OPTIONS.map(y => <option key={y} value={y}>{y}</option>)}
-            </select>
-          </div>
-          <button onClick={fetchData} className="p-2.5 text-slate-400 hover:text-indigo-600 transition-colors">
-            <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
-          </button>
-        </div>
+        )}
       </header>
 
       <div className="flex items-center gap-1 bg-slate-100 p-1.5 rounded-2xl w-fit">
@@ -486,7 +497,7 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
           <Loader2 className="w-12 h-12 text-indigo-500 animate-spin mx-auto mb-4" />
           <p className="text-slate-400 font-black uppercase tracking-widest text-[10px]">Analyzing Digital P&L...</p>
         </div>
-      ) : !analytics ? (
+      ) : (!analytics && activeTab !== 'super_clients') ? (
         <div className="py-32 bg-white rounded-[3rem] border-2 border-dashed border-slate-200 text-center">
           <SearchX size={48} className="mx-auto text-slate-200 mb-4" />
           <h3 className="text-xl font-black text-slate-900">No Online Data Found</h3>
@@ -948,7 +959,7 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
                 </div>
               </div>
             </section>
-          ) : (
+          ) : activeTab === 'velocity' ? (
             <section className="space-y-8 animate-in slide-in-from-bottom-4 duration-500">
               <div className="bg-white p-10 rounded-[3rem] border border-slate-100 shadow-sm">
                 <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-8 mb-12">
@@ -1066,9 +1077,7 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
                 )}
               </div>
             </section>
-          )}
-
-          {activeTab === 'super_clients' && (
+          ) : activeTab === 'super_clients' ? (
             <section className="bg-white p-10 rounded-[3rem] border border-slate-100 shadow-sm">
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-10">
                 <div>
@@ -1123,7 +1132,18 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
                           {i + 1}
                         </div>
                         <div>
-                          <p className="text-sm font-black text-slate-900 tracking-tight">ID: {customer.customerId}</p>
+                          <div className="flex items-center gap-2">
+                            <p className="text-sm font-black text-slate-900 tracking-tight">
+                              ID: {customer.customerId.length > 15 ? `${customer.customerId.substring(0, 15)}...` : customer.customerId}
+                            </p>
+                            <button 
+                              onClick={() => handleCopy(customer.customerId)}
+                              className="p-1.5 rounded-lg bg-white border border-slate-200 text-slate-400 hover:text-indigo-600 hover:border-indigo-100 transition-all"
+                              title="Copy Full ID"
+                            >
+                              {copiedId === customer.customerId ? <Check size={12} className="text-emerald-500" /> : <Copy size={12} />}
+                            </button>
+                          </div>
                           <div className="flex items-center gap-2 mt-1">
                             {customer.platforms.map(p => (
                               <span key={p} className="px-2 py-0.5 rounded-md bg-white border border-slate-200 text-[8px] font-black text-slate-500 uppercase">
@@ -1134,6 +1154,11 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
                               Last: {new Date(customer.lastOrderDate).toLocaleDateString()}
                             </span>
                           </div>
+                          {customer.lastOrderId && (
+                            <p className="text-[9px] font-bold text-slate-400 mt-1 uppercase tracking-wider">
+                              Latest Order: <span className="text-indigo-600">#{customer.lastOrderId}</span>
+                            </p>
+                          )}
                         </div>
                       </div>
                       <div className="text-right">
@@ -1150,7 +1175,7 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
                 </div>
               )}
             </section>
-          )}
+          ) : null}
         </div>
       )}
     </div>
