@@ -54,6 +54,30 @@ import {
 
 type UploadMode = 'csv' | 'online' | 'platform' | 'events';
 
+const parseIndianTime = (timeStr: string): number => {
+  if (!timeStr) return 0;
+  let clean = timeStr.trim().toUpperCase();
+  
+  // If it's a full ISO string or has a space, try to find the part with a colon
+  if (clean.includes(' ') || clean.includes('T')) {
+    const parts = clean.split(/[ T]/);
+    const timePart = parts.find(p => p.includes(':'));
+    if (timePart) {
+      clean = timePart + (clean.includes('PM') ? ' PM' : (clean.includes('AM') ? ' AM' : ''));
+    }
+  }
+  
+  const isPM = clean.includes('PM');
+  const isAM = clean.includes('AM');
+  const digitsOnly = clean.replace(/[^0-9:]/g, '');
+  const segments = digitsOnly.split(':');
+  let hour = parseInt(segments[0], 10);
+  if (isNaN(hour)) return 0;
+  if (isPM && hour < 12) hour += 12;
+  if (isAM && hour === 12) hour = 0;
+  return hour % 24;
+};
+
 const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuccess }) => {
   const [mode, setMode] = useState<UploadMode>('csv');
   const [step, setStep] = useState<1 | 2 | 3>(1);
@@ -511,15 +535,35 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
             outletAggs[oId] = {
               posTotalGross: 0, posGoodGross: 0, posGoodNet: 0, posGoodTax: 0,
               onlineGoodGross: 0, onlineGoodNet: 0, onlineGoodTax: 0, onlineGoodComm: 0, onlineGoodAds: 0,
-              settledOrderCount: 0, totalOrderCount: 0, cancelledOrderCount: 0, dailyTrend: new Array(31).fill(0)
+              settledOrderCount: 0, totalOrderCount: 0, cancelledOrderCount: 0, 
+              dailyTrend: new Array(31).fill(0),
+              hourlyDistribution: new Array(24).fill(0),
+              onlineHourlyDistribution: new Array(24).fill(0),
+              onlineOrderHourlyDistribution: new Array(24).fill(0),
+              onlineWeekdayDistribution: new Array(7).fill(0)
             };
           }
           const agg = outletAggs[oId];
           const dayIdx = parsedDate.getDate() - 1;
+          
+          const rawDate = row[mapping['date']] || '';
+          const rawTime = row[mapping['time']] || (rawDate.includes(':') ? rawDate : '00:00');
+          const hour = parseIndianTime(rawTime);
+
           if (!isOnline) { agg.totalOrderCount++; if (isCancelled) agg.cancelledOrderCount++; agg.posTotalGross += rev; }
           if (isSettled) {
-             if (!isOnline) { agg.posGoodGross += rev; agg.posGoodTax += tax; agg.posGoodNet += (rev - tax); agg.settledOrderCount++; }
-             else { agg.onlineGoodGross += rev; agg.onlineGoodTax += tax; agg.onlineGoodComm += comm; agg.onlineGoodAds += ads; agg.onlineGoodNet += Math.max(0, rev-tax-comm-ads); }
+             if (!isOnline) { 
+               agg.posGoodGross += rev; agg.posGoodTax += tax; agg.posGoodNet += (rev - tax); agg.settledOrderCount++; 
+               agg.hourlyDistribution[hour] += rev;
+             }
+             else { 
+               agg.onlineGoodGross += rev; agg.onlineGoodTax += tax; agg.onlineGoodComm += comm; agg.onlineGoodAds += ads; agg.onlineGoodNet += Math.max(0, rev-tax-comm-ads); 
+               agg.hourlyDistribution[hour] += rev;
+               agg.onlineHourlyDistribution[hour] += rev;
+               agg.onlineOrderHourlyDistribution[hour]++;
+               const wDay = parsedDate.getDay();
+               agg.onlineWeekdayDistribution[wDay] += rev;
+             }
              if (dayIdx >= 0 && dayIdx < 31) agg.dailyTrend[dayIdx] += rev;
           }
         });
@@ -532,6 +576,11 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
           if (existingSnap.exists()) {
             const currentData = existingSnap.data();
             const combinedTrend = (currentData.dailyTrend || new Array(31).fill(0)).map((v: number, i: number) => v + agg.dailyTrend[i]);
+            const combinedHourly = (currentData.hourlyDistribution || new Array(24).fill(0)).map((v: number, i: number) => v + agg.hourlyDistribution[i]);
+            const combinedOnlineHourly = (currentData.onlineHourlyDistribution || new Array(24).fill(0)).map((v: number, i: number) => v + agg.onlineHourlyDistribution[i]);
+            const combinedOnlineOrderHourly = (currentData.onlineOrderHourlyDistribution || new Array(24).fill(0)).map((v: number, i: number) => v + agg.onlineOrderHourlyDistribution[i]);
+            const combinedOnlineWeekday = (currentData.onlineWeekdayDistribution || new Array(7).fill(0)).map((v: number, i: number) => v + agg.onlineWeekdayDistribution[i]);
+            
             await setDoc(snapRef, {
               posTotalGross: increment(agg.posTotalGross),
               posGoodGross: increment(agg.posGoodGross),
@@ -546,6 +595,10 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
               totalOrderCount: increment(agg.totalOrderCount),
               cancelledOrderCount: increment(agg.cancelledOrderCount),
               dailyTrend: combinedTrend,
+              hourlyDistribution: combinedHourly,
+              onlineHourlyDistribution: combinedOnlineHourly,
+              onlineOrderHourlyDistribution: combinedOnlineOrderHourly,
+              onlineWeekdayDistribution: combinedOnlineWeekday,
               lastUpdated: Date.now()
             }, { merge: true });
           } else {
@@ -579,11 +632,20 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
             outletAggs[oId] = {
               posTotalGross: 0, posGoodGross: 0, posGoodNet: 0, posGoodTax: 0,
               onlineGoodGross: 0, onlineGoodNet: 0, onlineGoodTax: 0, onlineGoodComm: 0, onlineGoodAds: 0,
-              settledOrderCount: 0, totalOrderCount: 0, cancelledOrderCount: 0, dailyTrend: new Array(31).fill(0)
+              settledOrderCount: 0, totalOrderCount: 0, cancelledOrderCount: 0, 
+              dailyTrend: new Array(31).fill(0),
+              hourlyDistribution: new Array(24).fill(0),
+              onlineHourlyDistribution: new Array(24).fill(0),
+              onlineOrderHourlyDistribution: new Array(24).fill(0),
+              onlineWeekdayDistribution: new Array(7).fill(0)
             };
           }
           const agg = outletAggs[oId];
           const dayIdx = parsedDate.getDate() - 1;
+          
+          const rawDate = row[mapping['orderDate']] || '';
+          const rawTime = row[mapping['orderTime']] || (rawDate.includes(':') ? rawDate : '00:00');
+          const hour = parseIndianTime(rawTime);
           
           agg.totalOrderCount++; 
           if (isCancelled) agg.cancelledOrderCount++;
@@ -594,6 +656,11 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
              agg.onlineGoodComm += commission; 
              agg.onlineGoodNet += netPayout; 
              agg.settledOrderCount++;
+             agg.hourlyDistribution[hour] += rev;
+             agg.onlineHourlyDistribution[hour] += rev;
+             agg.onlineOrderHourlyDistribution[hour]++;
+             const wDay = parsedDate.getDay();
+             agg.onlineWeekdayDistribution[wDay] += rev;
              if (dayIdx >= 0 && dayIdx < 31) agg.dailyTrend[dayIdx] += rev;
           }
         });

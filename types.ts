@@ -88,6 +88,9 @@ export interface SalesMonthlySnapshot {
   cancelledOrderCount: number;
   dailyTrend: number[]; // 31 slots
   hourlyDistribution: number[]; // 24 slots for aggregate sales intensity
+  onlineHourlyDistribution?: number[]; // 24 slots for online revenue
+  onlineOrderHourlyDistribution?: number[]; // 24 slots for online order counts
+  onlineWeekdayDistribution?: number[]; // 7 slots (0=Sun, 6=Sat)
   lastUpdated: number;
 }
 
@@ -544,6 +547,7 @@ export const ONLINE_ORDER_TARGET_FIELDS = [
   { id: 'platform', label: 'platform', required: true },
   { id: 'orderId', label: 'order_id', required: true },
   { id: 'orderDate', label: 'order_date', required: true },
+  { id: 'orderTime', label: 'order_time', required: false },
   { id: 'orderStatus', label: 'order_status', required: true },
   { id: 'itemTotal', label: 'item_total', required: true },
   { id: 'packagingCharge', label: 'packaging_charge', required: false },

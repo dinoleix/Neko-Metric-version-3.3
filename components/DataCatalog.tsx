@@ -56,13 +56,16 @@ import {
 const parseIndianTime = (timeStr: string): number => {
   if (!timeStr) return 0;
   let clean = timeStr.trim().toUpperCase();
-  if (clean.includes(' ')) {
-    const parts = clean.split(' ');
+  
+  // If it's a full ISO string or has a space, try to find the part with a colon
+  if (clean.includes(' ') || clean.includes('T')) {
+    const parts = clean.split(/[ T]/);
     const timePart = parts.find(p => p.includes(':'));
     if (timePart) {
       clean = timePart + (clean.includes('PM') ? ' PM' : (clean.includes('AM') ? ' AM' : ''));
     }
   }
+  
   const isPM = clean.includes('PM');
   const isAM = clean.includes('AM');
   const digitsOnly = clean.replace(/[^0-9:]/g, '');
@@ -151,12 +154,13 @@ const DataCatalog: React.FC<{ user: User }> = ({ user }) => {
       const itemCosts = costsSnap.docs.map(d => d.data() as ItemCost);
       const skuMappings = skuMapSnap.docs.map(d => d.data() as SkuMapping);
 
-      const [sSnap, eSnap, pSnap, iSnap, evSnap] = await Promise.all([
+      const [sSnap, eSnap, pSnap, iSnap, evSnap, oSnap] = await Promise.all([
         getDocs(query(collection(db, 'sales_summary'), ...constraints)),
         getDocs(query(collection(db, 'expenses'), ...constraints)),
         getDocs(query(collection(db, 'purchases'), ...constraints)),
         getDocs(query(collection(db, 'item_sales'), ...constraints)),
-        getDocs(query(collection(db, 'events'), ...constraints))
+        getDocs(query(collection(db, 'events'), ...constraints)),
+        getDocs(query(collection(db, 'online_order_details'), ...constraints))
       ]);
 
       const filterByPeriod = (r: any) => {
@@ -173,6 +177,15 @@ const DataCatalog: React.FC<{ user: User }> = ({ user }) => {
       const slicePurchases = pSnap.docs.map(d => d.data() as PurchaseRecord).filter(filterByPeriod);
       const sliceItems = iSnap.docs.map(d => d.data() as ItemSalesRecord).filter(filterByPeriod);
       const sliceEvents = evSnap.docs.map(d => d.data() as EventRecord).filter(filterByPeriod);
+      const sliceOnline = oSnap.docs.map(d => d.data() as any).filter(r => {
+        const dStr = r.orderDate || r.date;
+        if (!dStr) return false;
+        const parts = dStr.split('-');
+        if (parts.length < 3) return false;
+        const rYear = parts[0];
+        const rMonthIdx = parseInt(parts[1]) - 1;
+        return rYear === year && MONTHS[rMonthIdx] === month;
+      });
 
       const outletsFound = new Set<string>();
       if (isGlobal) {
@@ -181,6 +194,7 @@ const DataCatalog: React.FC<{ user: User }> = ({ user }) => {
         slicePurchases.forEach(r => outletsFound.add(r.outletId || 'Unassigned'));
         sliceItems.forEach(r => outletsFound.add(r.outletId || 'Unassigned'));
         sliceEvents.forEach(r => outletsFound.add(r.outletId || 'Unassigned'));
+        sliceOnline.forEach(r => outletsFound.add(r.outletId || 'Unassigned'));
       } else {
         outletsFound.add(outletId);
       }
@@ -203,6 +217,7 @@ const DataCatalog: React.FC<{ user: User }> = ({ user }) => {
         const outletPurchases = slicePurchases.filter(p => (p.outletId || 'Unassigned') === oId);
         const outletItems = sliceItems.filter(i => (i.outletId || 'Unassigned') === oId);
         const outletEvents = sliceEvents.filter(e => (e.outletId || 'Unassigned') === oId);
+        const outletOnline = sliceOnline.filter(o => (o.outletId || 'Unassigned') === oId);
 
         const rental = rentals.find(r => r.outletId === oId);
         const tier = rental?.tier || 'TIER_1';
@@ -217,6 +232,9 @@ const DataCatalog: React.FC<{ user: User }> = ({ user }) => {
             settledOrderCount: 0, totalOrderCount: 0, cancelledOrderCount: 0, 
             dailyTrend: new Array(31).fill(0), 
             hourlyDistribution: new Array(24).fill(0),
+            onlineHourlyDistribution: new Array(24).fill(0),
+            onlineOrderHourlyDistribution: new Array(24).fill(0),
+            onlineWeekdayDistribution: new Array(7).fill(0),
             lastUpdated: Date.now()
           };
           outletSales.forEach(r => {
@@ -229,7 +247,10 @@ const DataCatalog: React.FC<{ user: User }> = ({ user }) => {
             const isOnline = r.onlinePlatform && r.onlinePlatform.toLowerCase() !== 'none';
             const dateParts = r.date.split('-');
             const dayIdx = parseInt(dateParts[2]) - 1;
-            const hour = parseIndianTime(r.time || '00:00');
+            
+            // Try to extract time from date if time is missing
+            const rawTime = r.time || (r.date.includes(':') ? r.date : '00:00');
+            const hour = parseIndianTime(rawTime);
             
             if (!isOnline) {
               agg.totalOrderCount++;
@@ -248,8 +269,50 @@ const DataCatalog: React.FC<{ user: User }> = ({ user }) => {
               agg.onlineGoodNet += Math.max(0, rev - tax - comm - ads);
               if (dayIdx >= 0 && dayIdx < 31) agg.dailyTrend[dayIdx] += rev;
               agg.hourlyDistribution[hour] += rev;
+              if (agg.onlineHourlyDistribution) agg.onlineHourlyDistribution[hour] += rev;
+              if (agg.onlineOrderHourlyDistribution) agg.onlineOrderHourlyDistribution[hour]++;
+              
+              const wDay = new Date(parseInt(year), MONTHS.indexOf(month), dayIdx + 1).getDay();
+              if (agg.onlineWeekdayDistribution) agg.onlineWeekdayDistribution[wDay] += rev;
             }
           });
+
+          outletOnline.forEach(r => {
+            const rev = Number(r.itemTotal || 0);
+            const tax = Number(r.totalTax || 0);
+            const comm = Number(r.commission || 0);
+            const payout = Number(r.netPayout || 0);
+            const status = (r.orderStatus || '').toUpperCase();
+            const isSettled = status === 'SETTLED' || status === 'DELIVERED' || status === 'PICKEDUP';
+            
+            agg.totalOrderCount++;
+            if (status === 'CANCELLED') agg.cancelledOrderCount++;
+            
+            if (isSettled) {
+              agg.onlineGoodGross += rev;
+              agg.onlineGoodTax += tax;
+              agg.onlineGoodComm += comm;
+              agg.onlineGoodNet += payout;
+              agg.settledOrderCount++;
+              
+              const dStr = r.orderDate || r.date;
+              const dateParts = dStr.split('-');
+              const dayIdx = parseInt(dateParts[2]) - 1;
+              if (dayIdx >= 0 && dayIdx < 31) agg.dailyTrend[dayIdx] += rev;
+              
+              // Try to extract time from date if time is missing
+              const rawTime = r.orderTime || r.time || (dStr.includes(':') ? dStr : '00:00');
+              const hour = parseIndianTime(rawTime);
+              
+              if (agg.onlineHourlyDistribution) agg.onlineHourlyDistribution[hour] += rev;
+              if (agg.onlineOrderHourlyDistribution) agg.onlineOrderHourlyDistribution[hour]++;
+              agg.hourlyDistribution[hour] += rev;
+
+              const wDay = new Date(parseInt(year), MONTHS.indexOf(month), dayIdx + 1).getDay();
+              if (agg.onlineWeekdayDistribution) agg.onlineWeekdayDistribution[wDay] += rev;
+            }
+          });
+
           outletEvents.forEach(e => { agg.eventRevenue += (e.revenue || 0); });
           batch.set(doc(db, 'sales_snapshots', `${user.uid}_${oId}_${year}_${month}`), agg);
         }

@@ -114,6 +114,7 @@ const Dashboard: React.FC<{ user: User }> = ({ user }) => {
       else if (file.type === 'item' || file.type === 'platform_item') collectionName = 'item_sales';
       else if (file.type === 'expense') collectionName = 'expenses';
       else if (file.type === 'purchase') collectionName = 'purchases';
+      else if (file.type === 'online_order') collectionName = 'online_order_details';
       const q = query(collection(db, collectionName), where('_fileId', '==', file.id), where('userId', '==', user.uid), limit(100));
       const snapshot = await getDocs(q);
       setRawRecords(snapshot.docs.map(doc => doc.data()));
@@ -144,6 +145,7 @@ const Dashboard: React.FC<{ user: User }> = ({ user }) => {
       else if (file.type === 'item' || file.type === 'platform_item') collectionName = 'item_sales';
       else if (file.type === 'expense') collectionName = 'expenses';
       else if (file.type === 'purchase') collectionName = 'purchases';
+      else if (file.type === 'online_order') collectionName = 'online_order_details';
       
       const q = query(collection(db, collectionName), where('_fileId', '==', file.id));
       const recordsSnap = await getDocs(q);
@@ -348,6 +350,7 @@ const Dashboard: React.FC<{ user: User }> = ({ user }) => {
       if (purgeType === 'sales') snapCollection = 'sales_snapshots';
       else if (purgeType === 'expense' || purgeType === 'purchase') snapCollection = 'expense_snapshots';
       else if (purgeType === 'item' || purgeType === 'platform_item') snapCollection = 'item_snapshots';
+      else if (purgeType === 'online_order') snapCollection = 'sales_snapshots';
 
       if (snapCollection) {
         const snapQ = query(collection(db, snapCollection), where('userId', '==', user.uid), where('month', '==', purgeMonth), where('year', '==', purgeYear));
@@ -698,7 +701,7 @@ const Dashboard: React.FC<{ user: User }> = ({ user }) => {
             <div className="flex items-center gap-4 mb-8"><div className="p-4 bg-rose-50 text-rose-600 rounded-2xl"><AlertTriangle size={32} /></div><div><h3 className="text-2xl font-black text-slate-900 tracking-tight">Global Purge</h3><p className="text-slate-500 text-sm font-medium leading-tight">Bulk delete records and snapshots for a specific period.</p></div></div>
             <div className="space-y-6 mb-10">
                <div><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Month</label><select value={purgeMonth} onChange={e => setPurgeMonth(e.target.value)} className="w-full px-5 py-4 bg-slate-50 border border-slate-100 rounded-2xl font-bold text-slate-700 outline-none">{MONTH_NAMES.map(m => (<option key={m} value={m}>{m}</option>))}</select></div>
-               <div className="grid grid-cols-2 gap-4"><div><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Year</label><select value={purgeYear} onChange={e => setPurgeYear(e.target.value)} className="w-full px-5 py-4 bg-slate-50 border border-slate-100 rounded-2xl font-bold text-slate-700 outline-none">{YEAR_OPTIONS.map(y => <option key={y} value={y}>{y}</option>)}</select></div><div><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Type</label><select value={purgeType} onChange={e => setPurgeType(e.target.value as FileType)} className="w-full px-5 py-4 bg-slate-50 border border-slate-100 rounded-2xl font-bold text-slate-700 outline-none"><option value="sales">Sales</option><option value="item">Items</option><option value="platform_item">Online Items</option><option value="expense">Expenses</option><option value="purchase">Purchases</option></select></div></div>
+               <div className="grid grid-cols-2 gap-4"><div><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Year</label><select value={purgeYear} onChange={e => setPurgeYear(e.target.value)} className="w-full px-5 py-4 bg-slate-50 border border-slate-100 rounded-2xl font-bold text-slate-700 outline-none">{YEAR_OPTIONS.map(y => <option key={y} value={y}>{y}</option>)}</select></div><div><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Type</label><select value={purgeType} onChange={e => setPurgeType(e.target.value as FileType)} className="w-full px-5 py-4 bg-slate-50 border border-slate-100 rounded-2xl font-bold text-slate-700 outline-none"><option value="sales">Sales</option><option value="online_order">Online Hub</option><option value="item">Items</option><option value="platform_item">Online Items</option><option value="expense">Expenses</option><option value="purchase">Purchases</option></select></div></div>
             </div>
             <div className="flex gap-4"><button onClick={() => setIsPurgeModalOpen(false)} className="flex-1 py-4 bg-slate-50 text-slate-400 rounded-2xl font-black uppercase text-[10px] tracking-widest">Cancel</button><button onClick={handlePurgeMonth} disabled={isPurging} className="flex-1 py-4 bg-rose-600 text-white rounded-2xl font-black uppercase text-[10px] tracking-widest shadow-xl shadow-rose-200 flex items-center justify-center gap-2">{isPurging ? <Loader2 className="w-4 h-4 animate-spin" /> : <Eraser size={14} />} Confirm Wipe</button></div>
           </div>

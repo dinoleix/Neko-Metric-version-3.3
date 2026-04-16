@@ -40,18 +40,43 @@ import {
   Scale
 } from 'lucide-react';
 
+import { 
+  BarChart, 
+  Bar, 
+  XAxis, 
+  YAxis, 
+  CartesianGrid, 
+  Tooltip, 
+  ResponsiveContainer,
+  Cell,
+  AreaChart,
+  Area,
+  LineChart,
+  Line,
+  Legend
+} from 'recharts';
+
 const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
-  const [salesSnaps, setSalesSnaps] = useState<SalesMonthlySnapshot[]>([]);
+  const [allSalesSnaps, setAllSalesSnaps] = useState<SalesMonthlySnapshot[]>([]);
   const [itemSnaps, setItemSnaps] = useState<ItemMonthlySnapshot[]>([]);
   const [rentals, setRentals] = useState<StoreRental[]>([]);
   const [itemCosts, setItemCosts] = useState<ItemCost[]>([]);
   const [skuMappings, setSkuMappings] = useState<Record<string, any>>({});
   const [normalizationMap, setNormalizationMap] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState<'overview' | 'hourly' | 'velocity'>('overview');
+  const [startHour, setStartHour] = useState(0);
+  const [endHour, setEndHour] = useState(23);
 
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear().toString());
   const [selectedMonth, setSelectedMonth] = useState(MONTH_NAMES[new Date().getMonth()]);
   const [storeFilter, setStoreFilter] = useState('all');
+
+  const [velocityRange, setVelocityRange] = useState<'1m' | '3m' | '6m' | '9m' | 'custom'>('3m');
+  const [customStartMonth, setCustomStartMonth] = useState(MONTH_NAMES[0]);
+  const [customStartYear, setCustomStartYear] = useState(YEAR_OPTIONS[YEAR_OPTIONS.length - 1]);
+  const [customEndMonth, setCustomEndMonth] = useState(MONTH_NAMES[new Date().getMonth()]);
+  const [customEndYear, setCustomEndYear] = useState(new Date().getFullYear().toString());
 
   const fetchData = async () => {
     setLoading(true);
@@ -62,16 +87,19 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
         where('month', '==', selectedMonth)
       ];
 
-      const [sSnap, iSnap, rSnap, cSnap, skuSnap, normSnap] = await Promise.all([
+      const [sSnap, iSnap, rSnap, cSnap, skuSnap, normSnap, allSSnap] = await Promise.all([
         getDocs(query(collection(db, 'sales_snapshots'), ...constraints)),
         getDocs(query(collection(db, 'item_snapshots'), ...constraints)),
         getDocs(query(collection(db, 'rentals'), where('userId', '==', user.uid))),
         getDocs(query(collection(db, 'item_costs'), where('userId', '==', user.uid))),
         getDocs(query(collection(db, 'sku_mappings'), where('userId', '==', user.uid))),
-        getDocs(query(collection(db, 'menu_normalization'), where('userId', '==', user.uid)))
+        getDocs(query(collection(db, 'menu_normalization'), where('userId', '==', user.uid))),
+        getDocs(query(collection(db, 'sales_snapshots'), where('userId', '==', user.uid)))
       ]);
 
-      setSalesSnaps(sSnap.docs.map(d => d.data() as SalesMonthlySnapshot));
+      // We still keep month-specific snaps for overview
+      // but use allSSnap for velocity
+      setAllSalesSnaps(allSSnap.docs.map(d => d.data() as SalesMonthlySnapshot));
       setItemSnaps(iSnap.docs.map(d => d.data() as ItemMonthlySnapshot));
       setRentals(rSnap.docs.map(d => ({ id: d.id, ...d.data() } as StoreRental)));
       setItemCosts(cSnap.docs.map(d => d.data() as ItemCost));
@@ -100,6 +128,10 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
   useEffect(() => { fetchData(); }, [user, selectedYear, selectedMonth]);
 
   const activeOutletOptions = useMemo(() => rentals.map(r => ({ id: r.outletId, name: r.storeName })), [rentals]);
+
+  const salesSnaps = useMemo(() => {
+    return allSalesSnaps.filter(s => s.year === selectedYear && s.month === selectedMonth);
+  }, [allSalesSnaps, selectedYear, selectedMonth]);
 
   const analytics = useMemo(() => {
     const filteredSales = salesSnaps.filter(s => storeFilter === 'all' || s.outletId === storeFilter);
@@ -154,15 +186,101 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
     const totalTheoreticalCOGS = topOnlineItems.reduce((acc, i) => acc + i.theoreticalCost, 0);
     const contributionMargin = netPayout - totalTheoreticalCOGS;
 
+    // 3. Hourly & Weekday Distribution
+    const hourlyRevenue = new Array(24).fill(0);
+    const hourlyOrders = new Array(24).fill(0);
+    const weekdayRevenue = new Array(7).fill(0);
+
+    filteredSales.forEach(s => {
+      if (s.onlineHourlyDistribution) {
+        s.onlineHourlyDistribution.forEach((v, h) => hourlyRevenue[h] += v);
+      }
+      if (s.onlineOrderHourlyDistribution) {
+        s.onlineOrderHourlyDistribution.forEach((v, h) => hourlyOrders[h] += v);
+      }
+      if (s.onlineWeekdayDistribution) {
+        s.onlineWeekdayDistribution.forEach((v, w) => weekdayRevenue[w] += v);
+      }
+    });
+
+    const hourlyData = Array.from({ length: 24 }, (_, i) => ({
+      hour: i,
+      label: `${i}:00`,
+      revenue: hourlyRevenue[i],
+      orders: hourlyOrders[i]
+    }));
+
+    const weekdayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const weekdayData = Array.from({ length: 7 }, (_, i) => ({
+      day: weekdayLabels[i],
+      revenue: weekdayRevenue[i]
+    }));
+
+    const filteredHourlyData = hourlyData.filter(d => d.hour >= startHour && d.hour <= endHour);
+
     return {
       metrics,
       netPayout,
       effectiveCommissionRate,
       roas,
       topOnlineItems,
-      contributionMargin
+      contributionMargin,
+      hourlyData,
+      weekdayData,
+      filteredHourlyData
     };
-  }, [salesSnaps, itemSnaps, storeFilter, normalizationMap, itemCosts]);
+  }, [salesSnaps, itemSnaps, storeFilter, normalizationMap, itemCosts, startHour, endHour]);
+
+  const velocityAnalytics = useMemo(() => {
+    if (allSalesSnaps.length === 0) return null;
+
+    const now = new Date();
+    let startDate: Date;
+    let endDate: Date = new Date();
+
+    if (velocityRange === 'custom') {
+      startDate = new Date(parseInt(customStartYear), MONTH_NAMES.indexOf(customStartMonth), 1);
+      endDate = new Date(parseInt(customEndYear), MONTH_NAMES.indexOf(customEndMonth), 28); // End of month approx
+    } else {
+      const monthsBack = parseInt(velocityRange);
+      startDate = new Date(now.getFullYear(), now.getMonth() - monthsBack + 1, 1);
+    }
+
+    // Generate month list in range
+    const monthsInRange: { month: string, year: string, sortKey: number }[] = [];
+    let curr = new Date(startDate);
+    while (curr <= endDate) {
+      monthsInRange.push({
+        month: MONTH_NAMES[curr.getMonth()],
+        year: curr.getFullYear().toString(),
+        sortKey: curr.getFullYear() * 100 + curr.getMonth()
+      });
+      curr.setMonth(curr.getMonth() + 1);
+    }
+
+    const filteredSnaps = allSalesSnaps.filter(s => {
+      const isOutletMatch = storeFilter === 'all' || s.outletId === storeFilter;
+      const snapSortKey = parseInt(s.year) * 100 + MONTH_NAMES.indexOf(s.month);
+      const isInRange = monthsInRange.some(m => m.sortKey === snapSortKey);
+      return isOutletMatch && isInRange;
+    });
+
+    const trendData = monthsInRange.map(m => {
+      const snaps = filteredSnaps.filter(s => s.month === m.month && s.year === m.year);
+      const revenue = snaps.reduce((acc, s) => acc + (s.onlineGoodGross || 0), 0);
+      const orders = snaps.reduce((acc, s) => acc + (s.totalOrderCount || 0), 0);
+      return {
+        label: `${m.month.substring(0, 3)} ${m.year.substring(2)}`,
+        revenue,
+        orders,
+        sortKey: m.sortKey
+      };
+    }).sort((a, b) => a.sortKey - b.sortKey);
+
+    return {
+      trendData
+    };
+  }, [allSalesSnaps, velocityRange, customStartMonth, customStartYear, customEndMonth, customEndYear, storeFilter]);
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500 pb-20">
@@ -213,6 +331,27 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
         </div>
       </header>
 
+      <div className="flex items-center gap-1 bg-slate-100 p-1.5 rounded-2xl w-fit">
+        <button 
+          onClick={() => setActiveTab('overview')}
+          className={`px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'overview' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+        >
+          Overview
+        </button>
+        <button 
+          onClick={() => setActiveTab('hourly')}
+          className={`px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'hourly' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+        >
+          Traffic Trends
+        </button>
+        <button 
+          onClick={() => setActiveTab('velocity')}
+          className={`px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'velocity' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+        >
+          Velocity
+        </button>
+      </div>
+
       {loading ? (
         <div className="py-40 text-center">
           <Loader2 className="w-12 h-12 text-indigo-500 animate-spin mx-auto mb-4" />
@@ -226,8 +365,10 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
         </div>
       ) : (
         <div className="space-y-10">
-          {/* Executive Overview */}
-          <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
+          {activeTab === 'overview' ? (
+            <>
+              {/* Executive Overview */}
+              <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
             <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm flex flex-col justify-between group hover:shadow-xl transition-all">
               <div className="flex justify-between items-start mb-6">
                 <div className="p-3 rounded-2xl bg-indigo-50 text-indigo-600 shadow-inner">
@@ -443,6 +584,328 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
               </div>
             </section>
           </div>
+          </>
+          ) : activeTab === 'hourly' ? (
+            <section className="space-y-8 animate-in slide-in-from-bottom-4 duration-500">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                <div className="bg-white p-10 rounded-[3rem] border border-slate-100 shadow-sm">
+                  <div className="flex items-center justify-between mb-12">
+                    <div>
+                      <h3 className="text-2xl font-black text-slate-900 tracking-tight">Hourly Order Intensity</h3>
+                      <p className="text-slate-400 text-sm font-medium uppercase tracking-widest">When do your digital customers order most?</p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-6">
+                      <div className="flex items-center gap-3 bg-slate-50 p-1.5 rounded-2xl border border-slate-100">
+                        <div className="flex items-center gap-2 px-3">
+                          <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">From</span>
+                          <select 
+                            value={startHour} 
+                            onChange={e => setStartHour(parseInt(e.target.value))}
+                            className="bg-transparent font-bold text-xs outline-none cursor-pointer text-indigo-600"
+                          >
+                            {Array.from({ length: 24 }, (_, i) => (
+                              <option key={i} value={i}>{i}:00</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="w-px h-4 bg-slate-200" />
+                        <div className="flex items-center gap-2 px-3">
+                          <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">To</span>
+                          <select 
+                            value={endHour} 
+                            onChange={e => setEndHour(parseInt(e.target.value))}
+                            className="bg-transparent font-bold text-xs outline-none cursor-pointer text-indigo-600"
+                          >
+                            {Array.from({ length: 24 }, (_, i) => (
+                              <option key={i} value={i}>{i}:00</option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-4">
+                        <div className="flex items-center gap-2">
+                          <div className="w-3 h-3 rounded-full bg-indigo-500" />
+                          <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Revenue</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className="w-3 h-3 rounded-full bg-emerald-500" />
+                          <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Orders</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="h-[400px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={analytics.filteredHourlyData}>
+                        <defs>
+                          <linearGradient id="colorRev" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3}/>
+                            <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                        <XAxis 
+                          dataKey="label" 
+                          axisLine={false} 
+                          tickLine={false} 
+                          tick={{ fill: '#94a3b8', fontSize: 10, fontWeight: 700 }}
+                          interval={2}
+                        />
+                        <YAxis 
+                          yAxisId="left"
+                          axisLine={false} 
+                          tickLine={false} 
+                          tick={{ fill: '#94a3b8', fontSize: 10, fontWeight: 700 }}
+                          tickFormatter={(v) => `₹${v >= 1000 ? (v/1000).toFixed(1) + 'k' : v}`}
+                        />
+                        <YAxis 
+                          yAxisId="right"
+                          orientation="right"
+                          axisLine={false} 
+                          tickLine={false} 
+                          tick={{ fill: '#10b981', fontSize: 10, fontWeight: 700 }}
+                        />
+                        <Tooltip 
+                          contentStyle={{ borderRadius: '1.5rem', border: 'none', boxShadow: '0 20px 25px -5px rgb(0 0 0 / 0.1)', padding: '1.5rem' }}
+                          itemStyle={{ fontSize: '12px', fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.05em' }}
+                          labelStyle={{ fontSize: '10px', fontWeight: 900, color: '#94a3b8', marginBottom: '0.5rem', textTransform: 'uppercase' }}
+                        />
+                        <Area 
+                          yAxisId="left"
+                          type="monotone" 
+                          dataKey="revenue" 
+                          stroke="#6366f1" 
+                          strokeWidth={4}
+                          fillOpacity={1} 
+                          fill="url(#colorRev)" 
+                          name="Revenue (₹)"
+                        />
+                        <Area 
+                          yAxisId="right"
+                          type="monotone" 
+                          dataKey="orders" 
+                          stroke="#10b981" 
+                          strokeWidth={4}
+                          fill="transparent"
+                          name="Orders"
+                        />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                <div className="bg-white p-10 rounded-[3rem] border border-slate-100 shadow-sm">
+                  <div className="flex items-center justify-between mb-12">
+                    <div>
+                      <h3 className="text-2xl font-black text-slate-900 tracking-tight">Weekday Performance</h3>
+                      <p className="text-slate-400 text-sm font-medium uppercase tracking-widest">Revenue distribution by day of week</p>
+                    </div>
+                  </div>
+
+                  <div className="h-[400px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={analytics.weekdayData}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                        <XAxis 
+                          dataKey="day" 
+                          axisLine={false} 
+                          tickLine={false} 
+                          tick={{ fill: '#94a3b8', fontSize: 10, fontWeight: 700 }}
+                        />
+                        <YAxis 
+                          axisLine={false} 
+                          tickLine={false} 
+                          tick={{ fill: '#94a3b8', fontSize: 10, fontWeight: 700 }}
+                          tickFormatter={(v) => `₹${v >= 1000 ? (v/1000).toFixed(1) + 'k' : v}`}
+                        />
+                        <Tooltip 
+                          cursor={{ fill: '#f8fafc' }}
+                          contentStyle={{ borderRadius: '1.5rem', border: 'none', boxShadow: '0 20px 25px -5px rgb(0 0 0 / 0.1)', padding: '1.5rem' }}
+                          itemStyle={{ fontSize: '12px', fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.05em' }}
+                          labelStyle={{ fontSize: '10px', fontWeight: 900, color: '#94a3b8', marginBottom: '0.5rem', textTransform: 'uppercase' }}
+                        />
+                        <Bar 
+                          dataKey="revenue" 
+                          fill="#6366f1" 
+                          radius={[8, 8, 0, 0]} 
+                          name="Revenue (₹)"
+                        >
+                          {analytics.weekdayData.map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={index === 0 || index === 6 ? '#818cf8' : '#6366f1'} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                {/* Peak Hour Card */}
+                <div className="bg-indigo-600 p-8 rounded-[2.5rem] text-white shadow-xl">
+                  <div className="p-3 rounded-2xl bg-white/10 w-fit mb-6">
+                    <TrendingUp size={24} />
+                  </div>
+                  <p className="text-[10px] font-black text-indigo-200 uppercase tracking-widest mb-1">Peak Order Hour</p>
+                  <h4 className="text-3xl font-black mb-2">
+                    {analytics.hourlyData.reduce((prev, current) => (prev.orders > current.orders) ? prev : current).label}
+                  </h4>
+                  <p className="text-xs font-medium text-indigo-100 opacity-80">Highest volume of digital traffic</p>
+                </div>
+
+                {/* Lunch vs Dinner */}
+                <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm">
+                  <div className="p-3 rounded-2xl bg-amber-50 text-amber-600 w-fit mb-6">
+                    <PieChart size={24} />
+                  </div>
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Lunch vs Dinner Mix</p>
+                  <div className="flex items-end gap-4">
+                    <h4 className="text-3xl font-black text-slate-900">
+                      {(analytics.hourlyData.slice(11, 15).reduce((a, b) => a + b.orders, 0) / (analytics.metrics.orders || 1) * 100).toFixed(0)}%
+                    </h4>
+                    <p className="text-[10px] font-bold text-slate-400 uppercase mb-2">Lunch Share</p>
+                  </div>
+                  <div className="mt-4 h-2 bg-slate-100 rounded-full overflow-hidden">
+                    <div 
+                      className="h-full bg-amber-500" 
+                      style={{ width: `${(analytics.hourlyData.slice(11, 15).reduce((a, b) => a + b.orders, 0) / (analytics.metrics.orders || 1) * 100)}%` }} 
+                    />
+                  </div>
+                </div>
+
+                {/* Late Night Opportunity */}
+                <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm">
+                  <div className="p-3 rounded-2xl bg-indigo-50 text-indigo-600 w-fit mb-6">
+                    <Activity size={24} />
+                  </div>
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Late Night (10PM+)</p>
+                  <h4 className="text-3xl font-black text-slate-900">
+                    ₹{analytics.hourlyData.slice(22).reduce((a, b) => a + b.revenue, 0).toLocaleString()}
+                  </h4>
+                  <p className="text-xs font-medium text-slate-400 mt-1">Revenue from night owls</p>
+                </div>
+              </div>
+            </section>
+          ) : (
+            <section className="space-y-8 animate-in slide-in-from-bottom-4 duration-500">
+              <div className="bg-white p-10 rounded-[3rem] border border-slate-100 shadow-sm">
+                <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-8 mb-12">
+                  <div>
+                    <h3 className="text-2xl font-black text-slate-900 tracking-tight">Sales & Order Velocity</h3>
+                    <p className="text-slate-400 text-sm font-medium uppercase tracking-widest">Growth trajectory over time</p>
+                  </div>
+                  
+                  <div className="flex flex-wrap items-center gap-4">
+                    <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl">
+                      {(['1m', '3m', '6m', '9m', 'custom'] as const).map(r => (
+                        <button
+                          key={r}
+                          onClick={() => setVelocityRange(r)}
+                          className={`px-4 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${velocityRange === r ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                        >
+                          {r}
+                        </button>
+                      ))}
+                    </div>
+
+                    {velocityRange === 'custom' && (
+                      <div className="flex items-center gap-2 bg-slate-50 p-2 rounded-xl border border-slate-100">
+                        <div className="flex items-center gap-2">
+                          <select value={customStartMonth} onChange={e => setCustomStartMonth(e.target.value)} className="bg-transparent text-[10px] font-bold outline-none">
+                            {MONTH_NAMES.map(m => <option key={m} value={m}>{m.substring(0,3)}</option>)}
+                          </select>
+                          <select value={customStartYear} onChange={e => setCustomStartYear(e.target.value)} className="bg-transparent text-[10px] font-bold outline-none">
+                            {YEAR_OPTIONS.map(y => <option key={y} value={y}>{y}</option>)}
+                          </select>
+                        </div>
+                        <span className="text-slate-300">→</span>
+                        <div className="flex items-center gap-2">
+                          <select value={customEndMonth} onChange={e => setCustomEndMonth(e.target.value)} className="bg-transparent text-[10px] font-bold outline-none">
+                            {MONTH_NAMES.map(m => <option key={m} value={m}>{m.substring(0,3)}</option>)}
+                          </select>
+                          <select value={customEndYear} onChange={e => setCustomEndYear(e.target.value)} className="bg-transparent text-[10px] font-bold outline-none">
+                            {YEAR_OPTIONS.map(y => <option key={y} value={y}>{y}</option>)}
+                          </select>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {!velocityAnalytics || velocityAnalytics.trendData.length === 0 ? (
+                  <div className="py-20 text-center">
+                    <p className="text-slate-400 font-bold">No historical data found for this range.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-12">
+                    {/* Curve Chart (Area) */}
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest">Revenue Growth Curve</h4>
+                        <div className="flex items-center gap-4">
+                          <div className="flex items-center gap-2">
+                            <div className="w-3 h-3 rounded-full bg-indigo-500" />
+                            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Revenue</span>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="h-[300px] w-full">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <AreaChart data={velocityAnalytics.trendData}>
+                            <defs>
+                              <linearGradient id="colorVelocityRev" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3}/>
+                                <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>
+                              </linearGradient>
+                            </defs>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                            <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 10, fontWeight: 700 }} />
+                            <YAxis axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 10, fontWeight: 700 }} tickFormatter={(v) => `₹${v >= 1000 ? (v/1000).toFixed(1) + 'k' : v}`} />
+                            <Tooltip 
+                              contentStyle={{ borderRadius: '1.5rem', border: 'none', boxShadow: '0 20px 25px -5px rgb(0 0 0 / 0.1)', padding: '1.5rem' }}
+                              itemStyle={{ fontSize: '12px', fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.05em' }}
+                              labelStyle={{ fontSize: '10px', fontWeight: 900, color: '#94a3b8', marginBottom: '0.5rem', textTransform: 'uppercase' }}
+                            />
+                            <Area type="monotone" dataKey="revenue" stroke="#6366f1" strokeWidth={4} fillOpacity={1} fill="url(#colorVelocityRev)" name="Revenue (₹)" />
+                          </AreaChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+
+                    {/* Bar Chart (Orders) */}
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest">Order Volume Distribution</h4>
+                        <div className="flex items-center gap-4">
+                          <div className="flex items-center gap-2">
+                            <div className="w-3 h-3 rounded-full bg-emerald-500" />
+                            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Orders</span>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="h-[300px] w-full">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={velocityAnalytics.trendData}>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                            <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 10, fontWeight: 700 }} />
+                            <YAxis axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 10, fontWeight: 700 }} />
+                            <Tooltip 
+                              cursor={{ fill: '#f8fafc' }}
+                              contentStyle={{ borderRadius: '1.5rem', border: 'none', boxShadow: '0 20px 25px -5px rgb(0 0 0 / 0.1)', padding: '1.5rem' }}
+                              itemStyle={{ fontSize: '12px', fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.05em' }}
+                              labelStyle={{ fontSize: '10px', fontWeight: 900, color: '#94a3b8', marginBottom: '0.5rem', textTransform: 'uppercase' }}
+                            />
+                            <Bar dataKey="orders" fill="#10b981" radius={[6, 6, 0, 0]} name="Orders" />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </section>
+          )}
         </div>
       )}
     </div>
