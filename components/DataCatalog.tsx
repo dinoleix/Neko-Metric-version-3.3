@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import type { User } from '@firebase/auth';
-import { collection, query, getDocs, where, writeBatch, doc, setDoc, getDoc } from '@firebase/firestore';
+import { collection, query, getDocs, where, writeBatch, doc, setDoc, getDoc, increment, arrayUnion } from '@firebase/firestore';
 import { db } from '../firebase';
 import { 
   FileMetadata, 
@@ -239,6 +239,8 @@ const DataCatalog: React.FC<{ user: User }> = ({ user }) => {
             onlineWeekdayDistribution: new Array(7).fill(0),
             lastUpdated: Date.now()
           };
+          const customerAggs: Record<string, { totalOrders: number, totalSpent: number, platforms: Set<string>, lastOrderDate: string }> = {};
+
           outletSales.forEach(r => {
             const rev = Number(r.revenue || 0);
             const tax = Number(r.totalTax || 0);
@@ -303,8 +305,25 @@ const DataCatalog: React.FC<{ user: User }> = ({ user }) => {
             const payout = Number(r.netPayout || 0);
             const status = (r.orderStatus || '').toUpperCase();
             const isSettled = status === 'SETTLED' || status === 'DELIVERED' || status === 'PICKEDUP';
+            const customerId = (r.customerId || '').toString().trim();
+            const dateStr = r.orderDate || r.date;
             
             const plat = (r.platform || 'UNKNOWN').toUpperCase();
+
+            // Customer Aggregation
+            if (customerId && isSettled) {
+              if (!customerAggs[customerId]) {
+                customerAggs[customerId] = { totalOrders: 0, totalSpent: 0, platforms: new Set(), lastOrderDate: dateStr };
+              }
+              const c = customerAggs[customerId];
+              c.totalOrders++;
+              c.totalSpent += rev;
+              c.platforms.add(plat);
+              if (new Date(dateStr) > new Date(c.lastOrderDate)) {
+                c.lastOrderDate = dateStr;
+              }
+            }
+
             if (!agg.platformBreakdown[plat]) agg.platformBreakdown[plat] = { gross: 0, net: 0, tax: 0, commission: 0, ads: 0, gstOnComm: 0, tds: 0, orders: 0 };
 
             agg.totalOrderCount++;
@@ -349,6 +368,20 @@ const DataCatalog: React.FC<{ user: User }> = ({ user }) => {
 
           outletEvents.forEach(e => { agg.eventRevenue += (e.revenue || 0); });
           batch.set(doc(db, 'sales_snapshots', `${user.uid}_${oId}_${year}_${month}`), agg);
+
+          // Save Customers
+          for (const [cId, data] of Object.entries(customerAggs)) {
+            const cRef = doc(db, 'online_customers', `${user.uid}_${cId}`);
+            batch.set(cRef, {
+              userId: user.uid,
+              customerId: cId,
+              totalOrders: increment(data.totalOrders),
+              totalSpent: increment(data.totalSpent),
+              platforms: arrayUnion(...Array.from(data.platforms)),
+              lastOrderDate: data.lastOrderDate,
+              lastUpdated: Date.now()
+            }, { merge: true });
+          }
         }
 
         // 2. Expense/Purchase Snapshot

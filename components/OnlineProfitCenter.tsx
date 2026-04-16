@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import type { User } from '@firebase/auth';
-import { collection, query, getDocs, where } from '@firebase/firestore';
+import { collection, query, getDocs, where, orderBy, limit } from '@firebase/firestore';
 import { db } from '../firebase';
 import { 
   SalesMonthlySnapshot, 
@@ -10,6 +10,7 @@ import {
   ItemCost, 
   SkuMapping,
   MenuNormalization,
+  OnlineCustomer,
   YEAR_OPTIONS,
   MONTH_NAMES
 } from '../types';
@@ -37,7 +38,8 @@ import {
   BarChart3,
   SearchX,
   Loader2,
-  Scale
+  Scale,
+  Users
 } from 'lucide-react';
 
 import { 
@@ -64,7 +66,10 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
   const [skuMappings, setSkuMappings] = useState<Record<string, any>>({});
   const [normalizationMap, setNormalizationMap] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<'overview' | 'hourly' | 'velocity'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'hourly' | 'velocity' | 'super_clients'>('overview');
+  const [topCustomers, setTopCustomers] = useState<OnlineCustomer[]>([]);
+  const [loadingCustomers, setLoadingCustomers] = useState(false);
+  const [customerError, setCustomerError] = useState<string | null>(null);
   const [startHour, setStartHour] = useState(0);
   const [endHour, setEndHour] = useState(23);
 
@@ -78,6 +83,36 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
   const [customStartYear, setCustomStartYear] = useState(YEAR_OPTIONS[YEAR_OPTIONS.length - 1]);
   const [customEndMonth, setCustomEndMonth] = useState(MONTH_NAMES[new Date().getMonth()]);
   const [customEndYear, setCustomEndYear] = useState(new Date().getFullYear().toString());
+
+  const fetchCustomers = async () => {
+    setLoadingCustomers(true);
+    setCustomerError(null);
+    try {
+      const q = query(
+        collection(db, 'online_customers'),
+        where('userId', '==', user.uid),
+        orderBy('totalOrders', 'desc'),
+        limit(50)
+      );
+      const snap = await getDocs(q);
+      setTopCustomers(snap.docs.map(d => ({ id: d.id, ...d.data() } as OnlineCustomer)));
+    } catch (err: any) {
+      console.error("Customer fetch error:", err);
+      if (err.message?.includes('index')) {
+        setCustomerError("This view requires a database index. Please click the link in the console or contact support to enable it.");
+      } else {
+        setCustomerError("Failed to fetch customer data. Please try again.");
+      }
+    } finally {
+      setLoadingCustomers(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'super_clients') {
+      fetchCustomers();
+    }
+  }, [activeTab, user.uid]);
 
   const fetchData = async () => {
     setLoading(true);
@@ -215,7 +250,15 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
         
         if (platformFilter === 'all') {
           itemMap[masterName].onlineQty += (data.onlineQuantity || 0);
-          itemMap[masterName].onlineRev += (data.revenue || 0); 
+          // Sum up all platform revenues to get strictly online revenue
+          if (data.platformBreakdown) {
+            Object.values(data.platformBreakdown).forEach((p: any) => {
+              itemMap[masterName].onlineRev += (p.revenue || 0);
+            });
+          } else if ((data.onlineQuantity || 0) > 0 && (data.posQuantity || 0) === 0) {
+            // Fallback for older data: if it's strictly online, use total revenue
+            itemMap[masterName].onlineRev += (data.revenue || 0);
+          }
         } else {
           const pData = data.platformBreakdown?.[platformFilter];
           if (pData) {
@@ -430,6 +473,12 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
         >
           Velocity
         </button>
+        <button 
+          onClick={() => setActiveTab('super_clients')}
+          className={`px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'super_clients' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+        >
+          Super Clients
+        </button>
       </div>
 
       {loading ? (
@@ -606,25 +655,32 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
                 <BarChart3 size={24} className="text-indigo-600" /> Digital Best Sellers
               </h3>
               <div className="space-y-4">
-                {analytics.topOnlineItems.map((item, i) => (
-                  <div key={i} className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl group hover:bg-indigo-50 transition-all">
-                    <div className="flex items-center gap-4">
-                      <span className="w-6 h-6 rounded-full bg-slate-200 text-slate-600 flex items-center justify-center text-[10px] font-black group-hover:bg-indigo-600 group-hover:text-white transition-colors">
-                        {i + 1}
-                      </span>
-                      <div>
-                        <p className="text-xs font-black text-slate-800 uppercase tracking-tight">{item.name}</p>
-                        <p className="text-[9px] font-bold text-slate-400 uppercase">{item.qty} Orders</p>
+                {analytics.topOnlineItems.length > 0 ? (
+                  analytics.topOnlineItems.map((item, i) => (
+                    <div key={i} className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl group hover:bg-indigo-50 transition-all">
+                      <div className="flex items-center gap-4">
+                        <span className="w-6 h-6 rounded-full bg-slate-200 text-slate-600 flex items-center justify-center text-[10px] font-black group-hover:bg-indigo-600 group-hover:text-white transition-colors">
+                          {i + 1}
+                        </span>
+                        <div>
+                          <p className="text-xs font-black text-slate-800 uppercase tracking-tight">{item.name}</p>
+                          <p className="text-[9px] font-bold text-slate-400 uppercase">{item.qty} Orders</p>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-sm font-black text-slate-900">₹{item.revenue.toLocaleString()}</p>
+                        <p className={`text-[9px] font-black uppercase ${item.netMargin > 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                          Est. Margin: ₹{item.netMargin.toFixed(0)}
+                        </p>
                       </div>
                     </div>
-                    <div className="text-right">
-                      <p className="text-sm font-black text-slate-900">₹{item.revenue.toLocaleString()}</p>
-                      <p className={`text-[9px] font-black uppercase ${item.netMargin > 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                        Est. Margin: ₹{item.netMargin.toFixed(0)}
-                      </p>
-                    </div>
+                  ))
+                ) : (
+                  <div className="py-12 text-center bg-slate-50 rounded-3xl border border-dashed border-slate-200">
+                    <SearchX size={32} className="mx-auto text-slate-300 mb-3" />
+                    <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest">No Best Sellers Found</p>
                   </div>
-                ))}
+                )}
               </div>
             </section>
 
@@ -1009,6 +1065,90 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
                   </div>
                 )}
               </div>
+            </section>
+          )}
+
+          {activeTab === 'super_clients' && (
+            <section className="bg-white p-10 rounded-[3rem] border border-slate-100 shadow-sm">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-10">
+                <div>
+                  <h3 className="text-2xl font-black text-slate-900 tracking-tight flex items-center gap-3">
+                    <Users size={24} className="text-indigo-600" /> Super Clients Leaderboard
+                  </h3>
+                  <p className="text-slate-400 text-xs font-bold uppercase tracking-widest mt-1">Top 50 Most Loyal Digital Customers</p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <div className="px-4 py-2 rounded-xl bg-indigo-50 text-indigo-600 text-[10px] font-black uppercase tracking-widest border border-indigo-100">
+                    {topCustomers.length} Active Profiles
+                  </div>
+                </div>
+              </div>
+
+              {loadingCustomers ? (
+                <div className="py-20 text-center">
+                  <Loader2 className="w-8 h-8 text-indigo-500 animate-spin mx-auto mb-4" />
+                  <p className="text-slate-400 font-black uppercase tracking-widest text-[9px]">Fetching Loyalty Data...</p>
+                </div>
+              ) : customerError ? (
+                <div className="py-20 text-center bg-rose-50 rounded-[2rem] border border-rose-100">
+                  <AlertCircle size={40} className="mx-auto text-rose-400 mb-4" />
+                  <p className="text-rose-900 text-xs font-black uppercase tracking-widest">Database Setup Required</p>
+                  <p className="text-rose-600 text-[10px] mt-2 px-10">{customerError}</p>
+                  <a 
+                    href="https://console.firebase.google.com/v1/r/project/nekometrics-b38b9/firestore/indexes?create_composite=Clpwcm9qZWN0cy9uZWtvbWV0cmljcy1iMzhiOS9kYXRhYmFzZXMvKGRlZmF1bHQpL2NvbGxlY3Rpb25Hcm91cHMvb25saW5lX2N1c3RvbWVycy9pbmRleGVzL18QARoKCgZ1c2VySWQQARoPCgt0b3RhbE9yZGVycxACGgwKCF9fbmFtZV9fEAI"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-block mt-6 px-6 py-2 bg-rose-600 text-white text-[10px] font-black uppercase tracking-widest rounded-xl hover:bg-rose-700 transition-colors"
+                  >
+                    Create Index Now
+                  </a>
+                </div>
+              ) : topCustomers.length === 0 ? (
+                <div className="py-20 text-center bg-slate-50 rounded-[2rem] border border-dashed border-slate-200">
+                  <Users size={40} className="mx-auto text-slate-200 mb-4" />
+                  <p className="text-slate-400 text-xs font-black uppercase tracking-widest">No Customer Data Found</p>
+                  <p className="text-slate-400 text-[10px] mt-2">Upload Online Order Hub CSVs to build your CRM.</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {topCustomers.map((customer, i) => (
+                    <div key={customer.id} className="flex items-center justify-between p-6 bg-slate-50 rounded-[2rem] border border-slate-100 group hover:bg-white hover:shadow-xl hover:border-indigo-100 transition-all">
+                      <div className="flex items-center gap-5">
+                        <div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-lg font-black shadow-inner ${
+                          i === 0 ? 'bg-amber-100 text-amber-600' : 
+                          i === 1 ? 'bg-slate-200 text-slate-600' :
+                          i === 2 ? 'bg-orange-100 text-orange-600' :
+                          'bg-white text-slate-400'
+                        }`}>
+                          {i + 1}
+                        </div>
+                        <div>
+                          <p className="text-sm font-black text-slate-900 tracking-tight">ID: {customer.customerId}</p>
+                          <div className="flex items-center gap-2 mt-1">
+                            {customer.platforms.map(p => (
+                              <span key={p} className="px-2 py-0.5 rounded-md bg-white border border-slate-200 text-[8px] font-black text-slate-500 uppercase">
+                                {p}
+                              </span>
+                            ))}
+                            <span className="text-[9px] font-bold text-slate-400 ml-1">
+                              Last: {new Date(customer.lastOrderDate).toLocaleDateString()}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          <span className="text-2xl font-black text-slate-900">{customer.totalOrders}</span>
+                          <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Orders</span>
+                        </div>
+                        <p className="text-[10px] font-bold text-indigo-600 uppercase tracking-tighter">
+                          ₹{customer.totalSpent.toLocaleString()} Spent
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </section>
           )}
         </div>

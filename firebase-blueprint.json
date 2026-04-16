@@ -25,12 +25,31 @@
         "_fileId": { "type": "string" }
       },
       "required": ["platform", "orderId", "orderDate", "orderStatus", "itemTotal", "netPayout", "userId"]
+    },
+    "OnlineCustomer": {
+      "title": "Online Customer",
+      "description": "Aggregated customer data from online orders.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "customerId": { "type": "string" },
+        "totalOrders": { "type": "number" },
+        "totalSpent": { "type": "number" },
+        "platforms": { "type": "array", "items": { "type": "string" } },
+        "lastOrderDate": { "type": "string" },
+        "lastUpdated": { "type": "number" }
+      },
+      "required": ["userId", "customerId", "totalOrders", "totalSpent", "platforms", "lastOrderDate", "lastUpdated"]
     }
   },
   "firestore": {
     "/online_order_details/{orderDetailId}": {
       "schema": "OnlineOrderDetail",
       "description": "Collection of detailed online order records."
+    },
+    "/online_customers/{customerId}": {
+      "schema": "OnlineCustomer",
+      "description": "Collection of aggregated online customer data."
     }
   }
 }

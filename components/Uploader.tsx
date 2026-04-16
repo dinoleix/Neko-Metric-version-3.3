@@ -1,7 +1,7 @@
 
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { type User } from '@firebase/auth';
-import { collection, addDoc, writeBatch, doc, setDoc, getDoc, increment, getDocs, query, where } from '@firebase/firestore';
+import { collection, addDoc, writeBatch, doc, setDoc, getDoc, increment, getDocs, query, where, arrayUnion } from '@firebase/firestore';
 import { ref, uploadBytes } from '@firebase/storage';
 import { db, storage } from '../firebase';
 import { ai } from '../geminiService';
@@ -502,6 +502,10 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
            recordData.outletId = manualOutletId;
         }
 
+        if (fileType === 'platform_item') {
+          recordData.isPlatform = true;
+        }
+
         batchRecords.set(recordRef, recordData);
         count++;
         if (count >= 400) { await batchRecords.commit(); batchRecords = writeBatch(db); count = 0; }
@@ -640,10 +644,13 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
         }
       } else if (fileType === 'online_order') {
         const outletAggs: Record<string, any> = {};
+        const customerAggs: Record<string, { totalOrders: number, totalSpent: number, platforms: Set<string>, lastOrderDate: string }> = {};
+
         csvData.forEach(row => {
           const orderId = (row[mapping['orderId']] || '').toString().trim();
           const dateStr = (row[mapping['orderDate']] || '').toString().trim();
           const statusRaw = (row[mapping['orderStatus']] || '').toString().trim();
+          const customerId = (row[mapping['customerId']] || '').toString().trim();
           const parsedDate = new Date(dateStr);
           if (!dateStr || isNaN(parsedDate.getTime()) || /total|summary/i.test(orderId)) return;
 
@@ -662,6 +669,21 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
           const isCancelled = status === 'CANCELLED';
           
           const oId = manualOutletId || 'GLOBAL';
+          const plat = (row[mapping['platform']] || 'UNKNOWN').toUpperCase();
+
+          // Customer Aggregation
+          if (customerId && isSettled) {
+            if (!customerAggs[customerId]) {
+              customerAggs[customerId] = { totalOrders: 0, totalSpent: 0, platforms: new Set(), lastOrderDate: dateStr };
+            }
+            const c = customerAggs[customerId];
+            c.totalOrders++;
+            c.totalSpent += rev;
+            c.platforms.add(plat);
+            if (new Date(dateStr) > new Date(c.lastOrderDate)) {
+              c.lastOrderDate = dateStr;
+            }
+          }
 
           if (!outletAggs[oId]) {
             outletAggs[oId] = {
@@ -684,7 +706,6 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
           const rawTime = row[mapping['orderTime']] || (rawDate.includes(':') ? rawDate : '00:00');
           const hour = parseIndianTime(rawTime);
           
-          const plat = (row[mapping['platform']] || 'UNKNOWN').toUpperCase();
           if (!agg.platformBreakdown[plat]) agg.platformBreakdown[plat] = { gross: 0, net: 0, tax: 0, commission: 0, ads: 0, gstOnComm: 0, tds: 0, orders: 0 };
           
           agg.totalOrderCount++; 
@@ -759,6 +780,25 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
             await setDoc(snapRef, { userId: user.uid, outletId: oId, month, year, eventRevenue: 0, ...agg, lastUpdated: Date.now() });
           }
         }
+
+        // Save Customers
+        const customerBatch = writeBatch(db);
+        let cCount = 0;
+        for (const [cId, data] of Object.entries(customerAggs)) {
+          const cRef = doc(db, 'online_customers', `${user.uid}_${cId}`);
+          customerBatch.set(cRef, {
+            userId: user.uid,
+            customerId: cId,
+            totalOrders: increment(data.totalOrders),
+            totalSpent: increment(data.totalSpent),
+            platforms: arrayUnion(...Array.from(data.platforms)),
+            lastOrderDate: data.lastOrderDate,
+            lastUpdated: Date.now()
+          }, { merge: true });
+          cCount++;
+          if (cCount >= 400) { await customerBatch.commit(); cCount = 0; }
+        }
+        if (cCount > 0) await customerBatch.commit();
       } else if (fileType === 'expense' || fileType === 'purchase') {
         const outletAggs: Record<string, any> = {};
         const settingsSnap = await getDoc(doc(db, 'category_settings', user.uid));

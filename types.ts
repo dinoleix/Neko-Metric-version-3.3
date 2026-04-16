@@ -490,6 +490,17 @@ export interface OnlineOrderDetail {
   outletId: string;
 }
 
+export interface OnlineCustomer {
+  id?: string;
+  userId: string;
+  customerId: string;
+  totalOrders: number;
+  totalSpent: number;
+  platforms: string[];
+  lastOrderDate: string;
+  lastUpdated: number;
+}
+
 export interface BankAccount {
   id?: string;
   name: string;
@@ -541,8 +552,11 @@ export const ITEM_TARGET_FIELDS = [
 ];
 
 export const PLATFORM_ITEM_TARGET_FIELDS = [
+  { id: 'date', label: 'Date', required: true },
   { id: 'itemName', label: 'Item Name', required: true },
   { id: 'itemQuantity', label: 'Item Quantity', required: true },
+  { id: 'itemTotal', label: 'Item Total/Revenue', required: false },
+  { id: 'platform', label: 'Platform (Zomato/Swiggy)', required: true },
   { id: 'outletId', label: 'Outlet ID', required: false },
 ];
 
