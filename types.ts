@@ -82,8 +82,11 @@ export interface SalesMonthlySnapshot {
   onlineGoodTax_calculated?: number;
   onlineGoodComm: number;
   onlineGoodAds: number;
+  onlineGoodGstOnComm?: number;
+  onlineGoodTds?: number;
   eventRevenue: number;
   settledOrderCount: number;
+  onlineOrderCount: number;
   totalOrderCount: number;
   cancelledOrderCount: number;
   dailyTrend: number[]; // 31 slots
@@ -554,6 +557,8 @@ export const ONLINE_ORDER_TARGET_FIELDS = [
   { id: 'totalTax', label: 'total_tax', required: false },
   { id: 'discount', label: 'discount', required: false },
   { id: 'commission', label: 'commission', required: false },
+  { id: 'gst_on_commission', label: 'gst_on_commission', required: false },
+  { id: 'tds', label: 'tds', required: false },
   { id: 'netPayout', label: 'net_payout', required: true },
   { id: 'settlementStatus', label: 'settlement_status', required: false },
   { id: 'settlementDate', label: 'settlement_date', required: false },

@@ -228,8 +228,9 @@ const DataCatalog: React.FC<{ user: User }> = ({ user }) => {
             userId: user.uid, outletId: oId, month, year,
             posTotalGross: 0, posGoodGross: 0, posGoodNet: 0, posGoodTax: 0,
             onlineGoodGross: 0, onlineGoodNet: 0, onlineGoodTax: 0, onlineGoodComm: 0, onlineGoodAds: 0,
+            onlineGoodGstOnComm: 0, onlineGoodTds: 0,
             eventRevenue: 0,
-            settledOrderCount: 0, totalOrderCount: 0, cancelledOrderCount: 0, 
+            settledOrderCount: 0, onlineOrderCount: 0, totalOrderCount: 0, cancelledOrderCount: 0, 
             dailyTrend: new Array(31).fill(0), 
             hourlyDistribution: new Array(24).fill(0),
             onlineHourlyDistribution: new Array(24).fill(0),
@@ -261,19 +262,22 @@ const DataCatalog: React.FC<{ user: User }> = ({ user }) => {
                 if (dayIdx >= 0 && dayIdx < 31) agg.dailyTrend[dayIdx] += rev;
                 agg.hourlyDistribution[hour] += rev;
               }
-            } else if (isSettled) {
-              agg.onlineGoodGross += rev; 
-              agg.onlineGoodTax += tax; 
-              agg.onlineGoodComm += comm; 
-              agg.onlineGoodAds += ads; 
-              agg.onlineGoodNet += Math.max(0, rev - tax - comm - ads);
-              if (dayIdx >= 0 && dayIdx < 31) agg.dailyTrend[dayIdx] += rev;
-              agg.hourlyDistribution[hour] += rev;
-              if (agg.onlineHourlyDistribution) agg.onlineHourlyDistribution[hour] += rev;
-              if (agg.onlineOrderHourlyDistribution) agg.onlineOrderHourlyDistribution[hour]++;
-              
-              const wDay = new Date(parseInt(year), MONTHS.indexOf(month), dayIdx + 1).getDay();
-              if (agg.onlineWeekdayDistribution) agg.onlineWeekdayDistribution[wDay] += rev;
+            } else {
+              agg.onlineOrderCount++;
+              if (isSettled) {
+                agg.onlineGoodGross += rev; 
+                agg.onlineGoodTax += tax; 
+                agg.onlineGoodComm += comm; 
+                agg.onlineGoodAds += ads; 
+                agg.onlineGoodNet += Math.max(0, rev - tax - comm - ads);
+                if (dayIdx >= 0 && dayIdx < 31) agg.dailyTrend[dayIdx] += rev;
+                agg.hourlyDistribution[hour] += rev;
+                if (agg.onlineHourlyDistribution) agg.onlineHourlyDistribution[hour] += rev;
+                if (agg.onlineOrderHourlyDistribution) agg.onlineOrderHourlyDistribution[hour]++;
+                
+                const wDay = new Date(parseInt(year), MONTHS.indexOf(month), dayIdx + 1).getDay();
+                if (agg.onlineWeekdayDistribution) agg.onlineWeekdayDistribution[wDay] += rev;
+              }
             }
           });
 
@@ -281,17 +285,22 @@ const DataCatalog: React.FC<{ user: User }> = ({ user }) => {
             const rev = Number(r.itemTotal || 0);
             const tax = Number(r.totalTax || 0);
             const comm = Number(r.commission || 0);
+            const gstOnComm = Number(r.gst_on_commission || 0);
+            const tds = Number(r.tds || 0);
             const payout = Number(r.netPayout || 0);
             const status = (r.orderStatus || '').toUpperCase();
             const isSettled = status === 'SETTLED' || status === 'DELIVERED' || status === 'PICKEDUP';
             
             agg.totalOrderCount++;
+            agg.onlineOrderCount++;
             if (status === 'CANCELLED') agg.cancelledOrderCount++;
             
             if (isSettled) {
               agg.onlineGoodGross += rev;
               agg.onlineGoodTax += tax;
               agg.onlineGoodComm += comm;
+              agg.onlineGoodGstOnComm += gstOnComm;
+              agg.onlineGoodTds += tds;
               agg.onlineGoodNet += payout;
               agg.settledOrderCount++;
               

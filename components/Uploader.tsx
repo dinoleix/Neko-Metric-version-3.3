@@ -535,7 +535,7 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
             outletAggs[oId] = {
               posTotalGross: 0, posGoodGross: 0, posGoodNet: 0, posGoodTax: 0,
               onlineGoodGross: 0, onlineGoodNet: 0, onlineGoodTax: 0, onlineGoodComm: 0, onlineGoodAds: 0,
-              settledOrderCount: 0, totalOrderCount: 0, cancelledOrderCount: 0, 
+              settledOrderCount: 0, onlineOrderCount: 0, totalOrderCount: 0, cancelledOrderCount: 0, 
               dailyTrend: new Array(31).fill(0),
               hourlyDistribution: new Array(24).fill(0),
               onlineHourlyDistribution: new Array(24).fill(0),
@@ -551,6 +551,7 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
           const hour = parseIndianTime(rawTime);
 
           if (!isOnline) { agg.totalOrderCount++; if (isCancelled) agg.cancelledOrderCount++; agg.posTotalGross += rev; }
+          else { agg.onlineOrderCount++; }
           if (isSettled) {
              if (!isOnline) { 
                agg.posGoodGross += rev; agg.posGoodTax += tax; agg.posGoodNet += (rev - tax); agg.settledOrderCount++; 
@@ -592,6 +593,7 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
               onlineGoodComm: increment(agg.onlineGoodComm),
               onlineGoodAds: increment(agg.onlineGoodAds),
               settledOrderCount: increment(agg.settledOrderCount),
+              onlineOrderCount: increment(agg.onlineOrderCount),
               totalOrderCount: increment(agg.totalOrderCount),
               cancelledOrderCount: increment(agg.cancelledOrderCount),
               dailyTrend: combinedTrend,
@@ -619,6 +621,8 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
           const tax = cleanNumber(row[mapping['totalTax']]);
           const discount = cleanNumber(row[mapping['discount']]);
           const commission = cleanNumber(row[mapping['commission']]);
+          const gstOnComm = cleanNumber(row[mapping['gst_on_commission']]);
+          const tds = cleanNumber(row[mapping['tds']]);
           const netPayout = cleanNumber(row[mapping['netPayout']]);
           
           const rev = itemTotal + packaging + tax - discount;
@@ -632,7 +636,8 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
             outletAggs[oId] = {
               posTotalGross: 0, posGoodGross: 0, posGoodNet: 0, posGoodTax: 0,
               onlineGoodGross: 0, onlineGoodNet: 0, onlineGoodTax: 0, onlineGoodComm: 0, onlineGoodAds: 0,
-              settledOrderCount: 0, totalOrderCount: 0, cancelledOrderCount: 0, 
+              onlineGoodGstOnComm: 0, onlineGoodTds: 0,
+              settledOrderCount: 0, onlineOrderCount: 0, totalOrderCount: 0, cancelledOrderCount: 0, 
               dailyTrend: new Array(31).fill(0),
               hourlyDistribution: new Array(24).fill(0),
               onlineHourlyDistribution: new Array(24).fill(0),
@@ -648,12 +653,15 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
           const hour = parseIndianTime(rawTime);
           
           agg.totalOrderCount++; 
+          agg.onlineOrderCount++;
           if (isCancelled) agg.cancelledOrderCount++;
           
           if (isSettled) {
              agg.onlineGoodGross += rev; 
              agg.onlineGoodTax += tax; 
              agg.onlineGoodComm += commission; 
+             agg.onlineGoodGstOnComm += gstOnComm;
+             agg.onlineGoodTds += tds;
              agg.onlineGoodNet += netPayout; 
              agg.settledOrderCount++;
              agg.hourlyDistribution[hour] += rev;
@@ -678,7 +686,10 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
               onlineGoodNet: increment(agg.onlineGoodNet),
               onlineGoodTax: increment(agg.onlineGoodTax),
               onlineGoodComm: increment(agg.onlineGoodComm),
+              onlineGoodGstOnComm: increment(agg.onlineGoodGstOnComm),
+              onlineGoodTds: increment(agg.onlineGoodTds),
               settledOrderCount: increment(agg.settledOrderCount),
+              onlineOrderCount: increment(agg.onlineOrderCount),
               totalOrderCount: increment(agg.totalOrderCount),
               cancelledOrderCount: increment(agg.cancelledOrderCount),
               dailyTrend: combinedTrend,

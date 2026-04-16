@@ -14,6 +14,8 @@
         "totalTax": { "type": "number" },
         "discount": { "type": "number" },
         "commission": { "type": "number" },
+        "gst_on_commission": { "type": "number" },
+        "tds": { "type": "number" },
         "netPayout": { "type": "number" },
         "settlementStatus": { "type": "string" },
         "settlementDate": { "type": "string" },

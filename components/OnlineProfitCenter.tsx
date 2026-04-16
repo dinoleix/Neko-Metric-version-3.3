@@ -146,12 +146,16 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
       tax: acc.tax + (s.onlineGoodTax || s.onlineGoodTax_calculated || 0),
       commission: acc.commission + (s.onlineGoodComm || 0),
       ads: acc.ads + (s.onlineGoodAds || 0),
-      orders: acc.orders + (s.totalOrderCount || 0),
+      gstOnComm: acc.gstOnComm + (s.onlineGoodGstOnComm || 0),
+      tds: acc.tds + (s.onlineGoodTds || 0),
+      orders: acc.orders + (s.onlineOrderCount || s.totalOrderCount || 0),
       posNet: acc.posNet + (s.posGoodNet || 0)
-    }), { gross: 0, net: 0, tax: 0, commission: 0, ads: 0, orders: 0, posNet: 0 });
+    }), { gross: 0, net: 0, tax: 0, commission: 0, ads: 0, gstOnComm: 0, tds: 0, orders: 0, posNet: 0 });
 
-    const netPayout = metrics.net - metrics.commission - metrics.ads;
-    const effectiveCommissionRate = metrics.gross > 0 ? ((metrics.commission + metrics.ads) / metrics.gross) * 100 : 0;
+    // netPayout is the actual realized payout from the snapshots
+    const netPayout = metrics.net;
+    const netSales = metrics.gross - metrics.tax;
+    const effectiveCommissionRate = metrics.gross > 0 ? ((metrics.commission + metrics.ads + metrics.gstOnComm + metrics.tds) / metrics.gross) * 100 : 0;
     const roas = metrics.ads > 0 ? metrics.gross / metrics.ads : 0;
 
     // 2. Item Analysis
@@ -220,6 +224,7 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
 
     return {
       metrics,
+      netSales,
       netPayout,
       effectiveCommissionRate,
       roas,
@@ -268,7 +273,7 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
     const trendData = monthsInRange.map(m => {
       const snaps = filteredSnaps.filter(s => s.month === m.month && s.year === m.year);
       const revenue = snaps.reduce((acc, s) => acc + (s.onlineGoodGross || 0), 0);
-      const orders = snaps.reduce((acc, s) => acc + (s.totalOrderCount || 0), 0);
+      const orders = snaps.reduce((acc, s) => acc + (s.onlineOrderCount || s.totalOrderCount || 0), 0);
       return {
         label: `${m.month.substring(0, 3)} ${m.year.substring(2)}`,
         revenue,
@@ -450,8 +455,9 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
             <div className="space-y-6">
               {[
                 { label: 'Gross Online Sales', value: analytics.metrics.gross, color: 'bg-indigo-600', width: '100%' },
-                { label: 'Net Sales (After Tax)', value: analytics.metrics.net, color: 'bg-indigo-500', width: `${(analytics.metrics.net / analytics.metrics.gross) * 100}%` },
-                { label: 'After Platform Commission', value: analytics.metrics.net - analytics.metrics.commission, color: 'bg-indigo-400', width: `${((analytics.metrics.net - analytics.metrics.commission) / analytics.metrics.gross) * 100}%` },
+                { label: 'Net Sales (After Tax)', value: analytics.netSales, color: 'bg-indigo-500', width: `${(analytics.netSales / analytics.metrics.gross) * 100}%` },
+                { label: 'After Commission', value: analytics.netSales - analytics.metrics.commission, color: 'bg-indigo-400', width: `${((analytics.netSales - analytics.metrics.commission) / analytics.metrics.gross) * 100}%` },
+                { label: 'After GST & TDS', value: analytics.netSales - analytics.metrics.commission - analytics.metrics.gstOnComm - analytics.metrics.tds, color: 'bg-indigo-300', width: `${((analytics.netSales - analytics.metrics.commission - analytics.metrics.gstOnComm - analytics.metrics.tds) / analytics.metrics.gross) * 100}%` },
                 { label: 'Realized Payout (Final)', value: analytics.netPayout, color: 'bg-emerald-500', width: `${(analytics.netPayout / analytics.metrics.gross) * 100}%` }
               ].map((step, i) => (
                 <div key={i} className="space-y-2">
@@ -489,6 +495,13 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
                 <div>
                   <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Tax Component</p>
                   <p className="text-lg font-black text-slate-900">₹{analytics.metrics.tax.toLocaleString()}</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-4">
+                <div className="p-2 rounded-xl bg-slate-50 text-slate-500"><ShieldCheck size={20}/></div>
+                <div>
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">GST on Comm & TDS</p>
+                  <p className="text-lg font-black text-slate-900">₹{(analytics.metrics.gstOnComm + analytics.metrics.tds).toLocaleString()}</p>
                 </div>
               </div>
             </div>
