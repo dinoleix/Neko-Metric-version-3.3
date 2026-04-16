@@ -1,7 +1,7 @@
 
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { type User } from '@firebase/auth';
-import { collection, addDoc, writeBatch, doc, setDoc, getDoc, increment, getDocs, query, where, arrayUnion } from '@firebase/firestore';
+import { collection, addDoc, writeBatch, doc, setDoc, getDoc, increment, getDocs, query, where, arrayUnion, limit } from '@firebase/firestore';
 import { ref, uploadBytes } from '@firebase/storage';
 import { db, storage } from '../firebase';
 import { ai } from '../geminiService';
@@ -13,6 +13,7 @@ import {
   EXPENSE_TARGET_FIELDS, 
   PURCHASE_TARGET_FIELDS, 
   ONLINE_ORDER_TARGET_FIELDS,
+  CUSTOMER_NAME_MAPPING_TARGET_FIELDS,
   SalesSummaryRecord, 
   ItemSalesRecord, 
   ExpenseRecord, 
@@ -257,6 +258,7 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
     if (fileType === 'expense') return EXPENSE_TARGET_FIELDS;
     if (fileType === 'purchase') return PURCHASE_TARGET_FIELDS;
     if (fileType === 'online_order') return ONLINE_ORDER_TARGET_FIELDS;
+    if (fileType === 'customer_mapping') return CUSTOMER_NAME_MAPPING_TARGET_FIELDS;
     return [];
   }, [fileType]);
 
@@ -477,7 +479,8 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
         'platform_item': 'item_sales',
         'expense': 'expenses',
         'purchase': 'purchases',
-        'online_order': 'online_order_details'
+        'online_order': 'online_order_details',
+        'customer_mapping': 'customer_name_mappings'
       };
       const targetColl = collectionNameMap[fileType];
 
@@ -947,6 +950,37 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
             await setDoc(snapRef, { userId: user.uid, outletId: oId, month, year, items: agg.items, lastUpdated: Date.now() });
           }
         }
+      } else if (fileType === 'customer_mapping') {
+        const batch = writeBatch(db);
+        let count = 0;
+        // Batch and process queries to avoid hitting limits too hard
+        for (const row of csvData) {
+          const orderId = (row[mapping['orderId']] || '').toString().trim();
+          const customerName = (row[mapping['customerName']] || '').toString().trim();
+          if (!orderId || !customerName) continue;
+
+          // Find the customerId associated with this orderId
+          const q = query(
+            collection(db, 'online_order_details'), 
+            where('userId', '==', user.uid), 
+            where('orderId', '==', orderId),
+            limit(1)
+          );
+          const snap = await getDocs(q);
+          if (!snap.empty) {
+            const customerId = snap.docs[0].data().customerId;
+            if (customerId) {
+              const cRef = doc(db, 'online_customers', `${user.uid}_${customerId}`);
+              batch.set(cRef, { name: customerName, lastUpdated: Date.now() }, { merge: true });
+              count++;
+            }
+          }
+          if (count >= 400) { 
+            await batch.commit(); 
+            count = 0; 
+          }
+        }
+        if (count > 0) await batch.commit();
       }
       onSuccess();
     } catch (err: any) { 
@@ -984,7 +1018,7 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
                     <div>
                       <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-3">Category</label>
                       <div className="grid grid-cols-2 gap-3">
-                        {['sales', 'item', 'expense', 'purchase', 'online_order'].map(t => (
+                        {['sales', 'item', 'expense', 'purchase', 'online_order', 'customer_mapping'].map(t => (
                           <button key={t} onClick={() => setFileType(t as FileType)} className={`py-4 rounded-2xl font-bold text-[10px] uppercase transition-all ${fileType === t ? 'bg-indigo-600 text-white shadow-xl translate-y-[-2px]' : 'bg-slate-50 text-slate-400 border border-slate-100 hover:bg-slate-100'}`}>{t.replace('_', ' ')} Hub</button>
                         ))}
                       </div>
@@ -999,8 +1033,8 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
                     </div>
                   )}
 
-                  {/* Hide store attribution for mixed item and sales CSVs */}
-                  {(fileType !== 'item' && fileType !== 'sales') && (
+                  {/* Hide store attribution for mixed item and sales CSVs or mapping */}
+                  {(fileType !== 'item' && fileType !== 'sales' && fileType !== 'customer_mapping') && (
                     <div>
                       <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-3">Store Attribution</label>
                       <div className="relative">

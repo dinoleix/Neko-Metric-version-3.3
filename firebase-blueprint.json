@@ -33,6 +33,7 @@
       "properties": {
         "userId": { "type": "string" },
         "customerId": { "type": "string" },
+        "name": { "type": "string" },
         "totalOrders": { "type": "number" },
         "totalSpent": { "type": "number" },
         "platforms": { "type": "array", "items": { "type": "string" } },

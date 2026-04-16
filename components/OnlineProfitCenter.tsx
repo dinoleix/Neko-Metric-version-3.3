@@ -1133,9 +1133,9 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
                         </div>
                         <div>
                           <div className="flex items-center gap-2">
-                            <p className="text-sm font-black text-slate-900 tracking-tight">
-                              ID: {customer.customerId.length > 15 ? `${customer.customerId.substring(0, 15)}...` : customer.customerId}
-                            </p>
+                            <h4 className="text-sm font-black text-slate-900 tracking-tight">
+                              {customer.name || (customer.customerId.length > 15 ? `${customer.customerId.substring(0, 15)}...` : customer.customerId)}
+                            </h4>
                             <button 
                               onClick={() => handleCopy(customer.customerId)}
                               className="p-1.5 rounded-lg bg-white border border-slate-200 text-slate-400 hover:text-indigo-600 hover:border-indigo-100 transition-all"
@@ -1144,6 +1144,11 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
                               {copiedId === customer.customerId ? <Check size={12} className="text-emerald-500" /> : <Copy size={12} />}
                             </button>
                           </div>
+                          {customer.name && (
+                            <p className="text-[10px] font-bold text-slate-400 mt-0.5">
+                              ID: {customer.customerId.length > 15 ? `${customer.customerId.substring(0, 15)}...` : customer.customerId}
+                            </p>
+                          )}
                           <div className="flex items-center gap-2 mt-1">
                             {customer.platforms.map(p => (
                               <span key={p} className="px-2 py-0.5 rounded-md bg-white border border-slate-200 text-[8px] font-black text-slate-500 uppercase">

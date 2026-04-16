@@ -1,5 +1,5 @@
 
-export type FileType = 'sales' | 'item' | 'expense' | 'purchase' | 'platform_item' | 'online_order';
+export type FileType = 'sales' | 'item' | 'expense' | 'purchase' | 'platform_item' | 'online_order' | 'customer_mapping';
 
 export type UserRole = 'admin' | 'viewer' | 'crew';
 
@@ -494,6 +494,7 @@ export interface OnlineCustomer {
   id?: string;
   userId: string;
   customerId: string;
+  name?: string;
   totalOrders: number;
   totalSpent: number;
   platforms: string[];
@@ -596,4 +597,9 @@ export const ONLINE_ORDER_TARGET_FIELDS = [
   { id: 'settlementStatus', label: 'settlement_status', required: false },
   { id: 'settlementDate', label: 'settlement_date', required: false },
   { id: 'customerId', label: 'customer_id', required: false },
+];
+
+export const CUSTOMER_NAME_MAPPING_TARGET_FIELDS = [
+  { id: 'orderId', label: 'Order ID', required: true },
+  { id: 'customerName', label: 'Customer Name', required: true },
 ];
