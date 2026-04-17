@@ -54,9 +54,18 @@ import {
   DollarSign,
   PackageSearch,
   ShoppingCart,
-  Filter,
-  ListFilter
+  ListFilter,
+  ArrowRightCircle
 } from 'lucide-react';
+
+import { 
+  PieChart as RePieChart, 
+  Pie, 
+  Cell, 
+  Tooltip as ReTooltip, 
+  ResponsiveContainer, 
+  Legend 
+} from 'recharts';
 
 type PnlTab = 'overview' | 'menu-engineering' | 'unit-economics';
 
@@ -190,6 +199,13 @@ const PnLAnalytics: React.FC<{ user: User }> = ({ user }) => {
     } finally { setLoading(false); }
   };
 
+  const CATEGORY_COLORS: Record<string, string> = {
+    'FOOD': '#10b981', // emerald-500
+    'DRINKS': '#6366f1', // indigo-500
+    'MISC': '#94a3b8', // slate-400
+    'UNMAPPED': '#f43f5e' // rose-500
+  };
+
   const toggleOutlet = (id: string) => {
     if (id === 'all') setSelectedOutlets(['all']);
     else {
@@ -257,7 +273,7 @@ const PnLAnalytics: React.FC<{ user: User }> = ({ user }) => {
       });
     });
 
-    const itemAnalysis = Object.entries(consolidatedItems).map(([name, data]) => {
+    const itemAnalysisRaw = Object.entries(consolidatedItems).map(([name, data]) => {
       const costRec = itemCosts.find(c => (c.itemName || '').trim().toUpperCase() === name);
       const mapping = skuMappings[name] || { category: 'UNMAPPED' };
       const avgPrice = data.qty > 0 ? data.rev / data.qty : 0;
@@ -274,7 +290,7 @@ const PnLAnalytics: React.FC<{ user: User }> = ({ user }) => {
 
       return { 
         name, 
-        category: mapping.category, 
+        category: (mapping.category || 'UNMAPPED') as SkuCategory, 
         segment: mapping.segment || 'UNSEGMENTED', 
         quantity: data.qty, 
         revenue: data.rev, 
@@ -286,7 +302,29 @@ const PnLAnalytics: React.FC<{ user: User }> = ({ user }) => {
         grade, 
         hasCost: !!costRec 
       };
-    }).filter(i => (i.category === 'FOOD' || i.category === 'DRINKS') && i.quantity > 0);
+    });
+
+    const categoryAgg: Record<string, { revenue: number, profit: number, quantity: number, itemCount: number }> = {};
+    itemAnalysisRaw.forEach(i => {
+      const cat = i.category;
+      if (!categoryAgg[cat]) categoryAgg[cat] = { revenue: 0, profit: 0, quantity: 0, itemCount: 0 };
+      categoryAgg[cat].revenue += i.revenue;
+      categoryAgg[cat].profit += i.profitAmount;
+      categoryAgg[cat].quantity += i.quantity;
+      categoryAgg[cat].itemCount++;
+    });
+
+    const categorySummary = Object.entries(categoryAgg).map(([name, data]) => ({
+      name,
+      value: data.revenue,
+      revenue: data.revenue,
+      profit: data.profit,
+      qty: data.quantity,
+      items: data.itemCount,
+      margin: data.revenue > 0 ? (data.profit / data.revenue) * 100 : 0
+    })).sort((a,b) => b.revenue - a.revenue);
+
+    const itemAnalysis = itemAnalysisRaw.filter(i => (i.category === 'FOOD' || i.category === 'DRINKS') && i.quantity > 0);
 
     const segmentAgg: Record<string, { revenue: number, profit: number, qty: number, items: number }> = {};
     itemAnalysis.forEach(i => {
@@ -307,10 +345,10 @@ const PnLAnalytics: React.FC<{ user: User }> = ({ user }) => {
     const topSegment = [...segmentAnalysis].sort((a, b) => b.profit - a.profit)[0];
     const worstSegment = [...segmentAnalysis].sort((a, b) => a.marginPercent - b.marginPercent)[0];
 
-    return {
+      return {
       snapshot: { goodRev, posTax, platformLeakage, coGS, grossProfit, grossMargin, totalOpEx, netProfit, netMargin },
       itemAnalysis: itemAnalysis.sort((a, b) => b.revenue - a.revenue),
-      segmentAnalysis, topSegment, worstSegment, uniqueSegments
+      segmentAnalysis, categorySummary, topSegment, worstSegment, uniqueSegments
     };
   }, [salesSnaps, expenseSnaps, itemSnaps, itemCosts, skuMappings, normalizationMap, selectedYear, selectedMonth, selectedOutlets, cogsKeywords, labourKeywords, opsKeywords, hasSearched, rentals, adjustments, availableOutlets]);
 
@@ -367,7 +405,7 @@ const PnLAnalytics: React.FC<{ user: User }> = ({ user }) => {
                     {selectedOutlets.includes('all') && <Check size={14} />}
                   </button>
                   <div className="h-px bg-slate-50 my-2" />
-                  {availableOutlets.map(o => (<button key={o.id} onClick={() => toggleOutlet(o.id)} className={`w-full flex items-center justify-between p-3 rounded-xl transition-all text-left ${selectedOutlets.includes(o.id) && !selectedOutlets.includes('all') ? 'bg-indigo-50 text-indigo-700' : 'hover:bg-slate-50'}`}><span className="text-[11px] font-bold uppercase">{o.name}</span>{selectedOutlets.includes(o.id) && !selectedOutlets.includes('all') && <Check size={14} />}</button>))}
+                  {availableOutlets.map(o => (<button key={o.outletId} onClick={() => toggleOutlet(o.outletId)} className={`w-full flex items-center justify-between p-3 rounded-xl transition-all text-left ${selectedOutlets.includes(o.outletId) && !selectedOutlets.includes('all') ? 'bg-indigo-50 text-indigo-700' : 'hover:bg-slate-50'}`}><span className="text-[11px] font-bold uppercase">{o.storeName}</span>{selectedOutlets.includes(o.outletId) && !selectedOutlets.includes('all') && <Check size={14} />}</button>))}
                 </div>
               )}
            </div>
@@ -396,6 +434,119 @@ const PnLAnalytics: React.FC<{ user: User }> = ({ user }) => {
                    <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm"><p className="text-[10px] font-black text-slate-400 uppercase mb-1">Operational Burn</p><h4 className="text-4xl font-black text-slate-900 tracking-tighter">₹{intelligence.snapshot.totalOpEx.toLocaleString()}</h4><p className="text-[9px] font-bold text-slate-400 uppercase mt-4">OpEx + Labour + Fixed</p></div>
                    <div className={`p-8 rounded-[2.5rem] text-white shadow-xl ${intelligence.snapshot.netMargin >= 0 ? 'bg-emerald-600' : 'bg-rose-600'}`}><p className="text-[10px] font-black uppercase mb-1 opacity-70">Efficiency Signal</p><h4 className="text-4xl font-black tracking-tighter">{intelligence.snapshot.netMargin >= 0 ? 'OPTIMAL' : 'CRITICAL'}</h4><p className="text-[9px] font-black uppercase mt-4 opacity-80">{intelligence.snapshot.netMargin >= 0 ? 'Surplus Achieved' : 'Deficit Detected'}</p></div>
                 </section>
+                
+                {/* Category Appetite Section */}
+                <section className="grid grid-cols-1 xl:grid-cols-3 gap-8">
+                  <div className="xl:col-span-2 bg-white rounded-[3rem] border border-slate-100 shadow-sm overflow-hidden flex flex-col md:flex-row">
+                    <div className="p-10 flex-1">
+                      <div className="flex items-center gap-3 mb-8">
+                        <div className="p-2 bg-indigo-50 text-indigo-600 rounded-xl"><PieChart size={20}/></div>
+                        <h4 className="text-xl font-black text-slate-900 uppercase tracking-tight">Category Appetite</h4>
+                      </div>
+                      
+                      <div className="space-y-6">
+                        {intelligence.categorySummary.map((cat) => (
+                          <div key={cat.name} className="group cursor-default">
+                            <div className="flex items-center justify-between mb-2">
+                              <div className="flex items-center gap-3">
+                                <div className="w-3 h-3 rounded-full" style={{ backgroundColor: CATEGORY_COLORS[cat.name] || '#94a3b8' }} />
+                                <span className="text-sm font-black text-slate-800 uppercase tracking-tight">{cat.name}</span>
+                              </div>
+                              <span className="text-[10px] font-black text-slate-500">{((cat.revenue / (intelligence.categorySummary.reduce((acc, c) => acc + c.revenue, 0) || 1)) * 100).toFixed(1)}%</span>
+                            </div>
+                            <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
+                              <div 
+                                className="h-full rounded-full transition-all duration-1000" 
+                                style={{ 
+                                  width: `${(cat.revenue / (intelligence.categorySummary.reduce((acc, c) => acc + c.revenue, 0) || 1)) * 100}%`,
+                                  backgroundColor: CATEGORY_COLORS[cat.name] || '#94a3b8'
+                                }} 
+                              />
+                            </div>
+                            <div className="flex items-center gap-4 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                               <p className="text-[9px] font-bold text-slate-400 uppercase">Rev: ₹{cat.revenue.toLocaleString()}</p>
+                               <div className="w-1 h-1 bg-slate-200 rounded-full" />
+                               <p className="text-[9px] font-bold text-slate-400 uppercase">Margin: {cat.margin.toFixed(1)}%</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    
+                    <div className="w-full md:w-[300px] bg-slate-50/50 p-8 flex flex-col items-center justify-center border-t md:border-t-0 md:border-l border-slate-100">
+                      <div className="w-full h-[220px]">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <RePieChart>
+                            <Pie
+                              data={intelligence.categorySummary}
+                              cx="50%"
+                              cy="50%"
+                              innerRadius={60}
+                              outerRadius={80}
+                              paddingAngle={5}
+                              dataKey="value"
+                            >
+                              {intelligence.categorySummary.map((entry, index) => (
+                                <Cell key={`cell-${index}`} fill={CATEGORY_COLORS[entry.name] || '#94a3b8'} stroke="none" />
+                              ))}
+                            </Pie>
+                            <ReTooltip 
+                              content={({ active, payload }) => {
+                                if (active && payload && payload.length) {
+                                  const data = payload[0].payload;
+                                  return (
+                                    <div className="bg-slate-900 text-white p-3 rounded-xl shadow-2xl border border-slate-800 text-xs">
+                                      <p className="font-black uppercase mb-1">{data.name}</p>
+                                      <p className="text-indigo-300">Revenue: ₹{data.revenue.toLocaleString()}</p>
+                                      <p className="text-emerald-400">Margin: {data.margin.toFixed(1)}%</p>
+                                    </div>
+                                  );
+                                }
+                                return null;
+                              }}
+                            />
+                          </RePieChart>
+                        </ResponsiveContainer>
+                      </div>
+                      <div className="text-center mt-4">
+                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Total Master Sales</p>
+                        <p className="text-2xl font-black text-slate-900">₹{intelligence.categorySummary.reduce((acc, c) => acc + c.revenue, 0).toLocaleString()}</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="bg-indigo-600 rounded-[3rem] p-10 text-white shadow-xl relative overflow-hidden flex flex-col justify-between">
+                    <div className="absolute -top-10 -right-10 w-40 h-40 bg-white/10 rounded-full blur-3xl" />
+                    <div className="relative z-10">
+                      <div className="flex items-center gap-3 mb-6">
+                        <Zap size={20} className="text-indigo-200" />
+                        <h4 className="text-lg font-black uppercase tracking-tight">Category Efficiency</h4>
+                      </div>
+                      
+                      <div className="space-y-6">
+                        {intelligence.categorySummary.slice(0, 2).map((cat) => (
+                          <div key={cat.name}>
+                            <p className="text-[10px] font-black text-indigo-200 uppercase tracking-widest mb-1">{cat.name} Contribution</p>
+                            <div className="flex items-baseline gap-2">
+                              <span className="text-3xl font-black">₹{cat.profit.toLocaleString()}</span>
+                              <span className="text-xs font-bold text-indigo-300">Gross Profit</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="mt-10 pt-6 border-t border-white/10 relative z-10">
+                      <p className="text-[10px] font-black text-indigo-200 uppercase tracking-widest mb-3">Strategic Insight</p>
+                      <p className="text-sm font-medium leading-relaxed italic opacity-90">
+                        {intelligence.categorySummary[0]?.name === 'DRINKS' 
+                          ? "Beverages are leading in revenue throughput. Evaluate food pairing strategies to boost cross-sell."
+                          : "Food remains the volume anchor. Consider optimizing beverage upselling to expand margins."}
+                      </p>
+                    </div>
+                  </div>
+                </section>
+
                 <div className="bg-white p-10 rounded-[3rem] border border-slate-100 shadow-sm flex items-center gap-10"><div className="w-24 h-24 bg-indigo-50 rounded-full flex items-center justify-center shrink-0 border border-indigo-100"><Info size={40} className="text-indigo-500" /></div><div><h4 className="text-xl font-black text-slate-900 uppercase tracking-tight mb-2">Normalized Cost Intelligence</h4><p className="text-slate-500 text-sm leading-relaxed max-w-3xl">All analytics on this page use <b>Master SKU Normalization</b>. Typos and variant names across platforms have been merged into single Master records for absolute margin accuracy. This ensures 2026 data links correctly with 2025 cost structures.</p></div></div>
              </div>
           )}
