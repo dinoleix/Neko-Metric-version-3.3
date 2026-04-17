@@ -321,6 +321,7 @@ const PnLAnalytics: React.FC<{ user: User }> = ({ user }) => {
       profit: data.profit,
       qty: data.quantity,
       items: data.itemCount,
+      avgPrice: data.quantity > 0 ? data.revenue / data.quantity : 0,
       margin: data.revenue > 0 ? (data.profit / data.revenue) * 100 : 0
     })).sort((a,b) => b.revenue - a.revenue);
 
@@ -495,10 +496,13 @@ const PnLAnalytics: React.FC<{ user: User }> = ({ user }) => {
                                 if (active && payload && payload.length) {
                                   const data = payload[0].payload;
                                   return (
-                                    <div className="bg-slate-900 text-white p-3 rounded-xl shadow-2xl border border-slate-800 text-xs">
-                                      <p className="font-black uppercase mb-1">{data.name}</p>
-                                      <p className="text-indigo-300">Revenue: ₹{data.revenue.toLocaleString()}</p>
-                                      <p className="text-emerald-400">Margin: {data.margin.toFixed(1)}%</p>
+                                    <div className="bg-slate-900 text-white p-3 rounded-xl shadow-2xl border border-slate-800 text-xs shadow-indigo-500/10">
+                                      <p className="font-black uppercase mb-1 tracking-widest text-[10px] text-slate-400">{data.name}</p>
+                                      <div className="space-y-0.5">
+                                        <p className="font-bold">Rev: ₹{data.revenue.toLocaleString()}</p>
+                                        <p className="text-emerald-400 font-bold">Margin: {data.margin.toFixed(1)}%</p>
+                                        <p className="text-amber-400 font-bold">Avg Price: ₹{data.avgPrice.toFixed(0)}</p>
+                                      </div>
                                     </div>
                                   );
                                 }
@@ -526,7 +530,10 @@ const PnLAnalytics: React.FC<{ user: User }> = ({ user }) => {
                       <div className="space-y-6">
                         {intelligence.categorySummary.slice(0, 2).map((cat) => (
                           <div key={cat.name}>
-                            <p className="text-[10px] font-black text-indigo-200 uppercase tracking-widest mb-1">{cat.name} Contribution</p>
+                            <div className="flex justify-between items-start mb-1">
+                              <p className="text-[10px] font-black text-indigo-200 uppercase tracking-widest">{cat.name} Summary</p>
+                              <p className="text-[10px] font-black text-amber-300 bg-amber-900/40 px-2 py-0.5 rounded-full uppercase tracking-widest">Avg ₹{cat.avgPrice.toFixed(0)}</p>
+                            </div>
                             <div className="flex items-baseline gap-2">
                               <span className="text-3xl font-black">₹{cat.profit.toLocaleString()}</span>
                               <span className="text-xs font-bold text-indigo-300">Gross Profit</span>
