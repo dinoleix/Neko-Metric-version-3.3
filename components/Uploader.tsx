@@ -507,6 +507,7 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
 
         if (fileType === 'platform_item') {
           recordData.isPlatform = true;
+          recordData.platform = onlinePlatform;
         }
 
         batchRecords.set(recordRef, recordData);

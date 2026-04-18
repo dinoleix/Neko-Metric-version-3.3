@@ -501,6 +501,7 @@ export interface OnlineCustomer {
   lastOrderDate: string;
   lastOrderId: string;
   lastUpdated: number;
+  tags?: string[];
 }
 
 export interface BankAccount {
@@ -558,8 +559,6 @@ export const PLATFORM_ITEM_TARGET_FIELDS = [
   { id: 'itemName', label: 'Item Name', required: true },
   { id: 'itemQuantity', label: 'Item Quantity', required: true },
   { id: 'itemTotal', label: 'Item Total/Revenue', required: false },
-  { id: 'platform', label: 'Platform (Zomato/Swiggy)', required: true },
-  { id: 'outletId', label: 'Outlet ID', required: false },
 ];
 
 export const EXPENSE_TARGET_FIELDS = [

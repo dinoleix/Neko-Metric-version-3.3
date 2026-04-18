@@ -237,30 +237,59 @@ const WasteManagementV2: React.FC<{ user: User }> = ({ user }) => {
     actuals['FOOD SERVINGS'] = Math.max(0, actuals['FOOD SERVINGS'] - totalFoodPackOffset);
     actuals['DRINKS SERVINGS'] = Math.max(0, actuals['DRINKS SERVINGS'] - totalDrinkPackOffset);
 
+    const totalRevenue = Object.values(itemAnalysis).reduce((acc, i) => acc + i.revenue, 0);
+    const totalUniqueProducts = Object.keys(itemAnalysis).length;
+    const unmappedProductCount = Object.values(itemAnalysis).filter(i => !i.hasCost).length;
+    const unmappedSkuPercent = totalUniqueProducts > 0 ? (unmappedProductCount / totalUniqueProducts) * 100 : 0;
+    
+    // Revenue coverage per category
+    const coverageByBucket: Record<string, number> = { 'FOOD': 1, 'DRINKS': 1, 'FOOD SERVINGS': 1, 'DRINKS SERVINGS': 1 };
+    ['FOOD', 'DRINKS'].forEach(cat => {
+      const catItems = Object.values(itemAnalysis).filter(i => i.category === cat);
+      const catRev = catItems.reduce((acc, i) => acc + i.revenue, 0);
+      const mappedCatRev = catItems.filter(i => i.hasCost).reduce((acc, i) => acc + i.revenue, 0);
+      const coverage = catRev > 0 ? mappedCatRev / catRev : 1;
+      coverageByBucket[cat] = coverage;
+      coverageByBucket[`${cat} SERVINGS`] = coverage;
+    });
+
     const pillarMetrics = PILLARS.map(p => {
       const actual = Math.max(0, actuals[p.id] || 0);
       const theoretical = targets[p.id] || 0;
-      const variance = Math.max(0, actual - theoretical);
-      const leakage = actual > 0 ? (variance / actual) * 100 : 0;
-      return { ...p, actual, theoretical, variance, leakage };
+      const coverage = coverageByBucket[p.id] || 1;
+      
+      // Adjusted Actual: We only compare the portion of the actual cost that corresponds to mapped revenue
+      const adjustedActual = actual * coverage;
+      const variance = Math.max(0, adjustedActual - theoretical);
+      const leakage = adjustedActual > 0 ? (variance / adjustedActual) * 100 : 0;
+      
+      return { ...p, actual, theoretical, variance, leakage, coveragePct: coverage * 100 };
     });
 
-    const totalRevenue = Object.values(itemAnalysis).reduce((acc, i) => acc + i.revenue, 0);
     const totalActualCOGS = Object.values(actuals).reduce((a, b) => a + (b || 0), 0);
     const totalTheoreticalCOGS = Object.values(targets).reduce((a, b) => a + (b || 0), 0);
-    const totalWastage = Math.max(0, totalActualCOGS - totalTheoreticalCOGS);
+    
+    const ingMappedActual = (actuals['FOOD'] * coverageByBucket['FOOD']) + (actuals['DRINKS'] * coverageByBucket['DRINKS']);
+    const packMappedActual = (actuals['FOOD SERVINGS'] * coverageByBucket['FOOD SERVINGS']) + (actuals['DRINKS SERVINGS'] * coverageByBucket['DRINKS SERVINGS']);
+    
+    const ingWaste = Math.max(0, ingMappedActual - (targets['FOOD'] + targets['DRINKS']));
+    const packWaste = Math.max(0, packMappedActual - (targets['FOOD SERVINGS'] + targets['DRINKS SERVINGS']));
+    const coverageGap = totalActualCOGS - (ingMappedActual + packMappedActual);
+    const totalWastage = ingWaste + packWaste;
 
     return { 
       pillarMetrics, totalActual: totalActualCOGS, totalTheoretical: totalTheoreticalCOGS, totalRevenue, totalWastage, 
+      unmappedSkuPercent, unmappedProductCount,
       itemDrilldown: Object.entries(itemAnalysis).filter(([_, d]) => d.category !== 'MISC' && d.qty > 0 && (segmentFilter === 'all' || d.segment === segmentFilter)).sort((a,b) => (activeDrilldown === 'ingredients' ? b[1].theoreticalIng - a[1].theoreticalIng : b[1].theoreticalServ - a[1].theoreticalServ)),
       availableSegments: Array.from(new Set(Object.values(itemAnalysis).map(i => i.segment))).filter(Boolean).sort(),
       staffDrilldown,
       waterfall: [
         { label: 'Gross Yield', val: totalRevenue, color: '#1e293b', isPositive: true },
         { label: 'Ing. Costs', val: targets['FOOD'] + targets['DRINKS'], color: '#6366f1', isPositive: false },
-        { label: 'Ing. Waste', val: Math.max(0, (actuals['FOOD'] + actuals['DRINKS']) - (targets['FOOD'] + targets['DRINKS'])), color: '#f43f5e', isPositive: false },
+        { label: 'Ing. Waste', val: ingWaste, color: '#f43f5e', isPositive: false },
         { label: 'Pack. Costs', val: targets['FOOD SERVINGS'] + targets['DRINKS SERVINGS'], color: '#f59e0b', isPositive: false },
-        { label: 'Pack. Waste', val: Math.max(0, (actuals['FOOD SERVINGS'] + actuals['DRINKS SERVINGS']) - (targets['FOOD SERVINGS'] + targets['DRINKS SERVINGS'])), color: '#fb7185', isPositive: false },
+        { label: 'Pack. Waste', val: packWaste, color: '#fb7185', isPositive: false },
+        { label: 'Coverage Gap', val: coverageGap, color: '#94a3b8', isPositive: false },
         { label: 'Realized Margin', val: Math.max(0, totalRevenue - totalActualCOGS), color: '#10b981', isPositive: true, isFinal: true }
       ]
     };
@@ -290,12 +319,35 @@ const WasteManagementV2: React.FC<{ user: User }> = ({ user }) => {
              <button onClick={() => setActiveTab('staff')} className={`px-10 py-3 rounded-2xl flex items-center gap-3 text-xs font-black uppercase tracking-widest transition-all ${activeTab === 'staff' ? 'bg-white text-indigo-600 shadow-lg translate-y-[-1px]' : 'text-slate-500 hover:text-slate-800'}`}><Users size={16}/> Staff Consumption</button>
            </div>
 
+           {intelligence.unmappedProductCount > 0 && (
+             <div className="bg-rose-50 border border-rose-100 p-6 rounded-[2rem] flex items-center gap-5 slide-in-from-top-4 animate-in duration-500">
+               <div className="p-3 bg-rose-500 text-white rounded-2xl shadow-lg shadow-rose-200">
+                 <AlertTriangle size={20} />
+               </div>
+               <div className="flex-1">
+                 <h4 className="text-sm font-black text-rose-900 uppercase tracking-tight">{intelligence.unmappedSkuPercent.toFixed(1)}% of SKUs have no cost assigned</h4>
+                 <p className="text-rose-600 text-xs font-medium">Fix {intelligence.unmappedProductCount} items in <strong>Item Costs</strong> to improve reconciliation accuracy and remove drift noise.</p>
+               </div>
+               <button onClick={() => setActiveTab('drift')} className="px-6 py-2.5 bg-rose-100 text-rose-700 rounded-xl font-black uppercase text-[10px] tracking-widest hover:bg-rose-200 transition-all">Identify Items</button>
+             </div>
+           )}
+
            {activeTab === 'audit' && (
              <div className="space-y-12 animate-in slide-in-from-left-4 duration-500">
                 <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
                   {intelligence.pillarMetrics.map((p) => (
                     <div key={p.id} className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm flex flex-col justify-between group hover:shadow-xl transition-all hover:-translate-y-1">
-                      <div className="flex justify-between items-start mb-6"><div className={`p-3 rounded-2xl bg-slate-50 ${p.color} shadow-inner`}><p.icon size={20} /></div><div className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest ${p.leakage > 8 ? 'bg-rose-50 text-rose-600' : 'bg-emerald-50 text-emerald-600'}`}>{(p.leakage ?? 0).toFixed(1)}% Gap</div></div>
+                      <div className="flex justify-between items-start mb-6">
+                        <div className={`p-3 rounded-2xl bg-slate-50 ${p.color} shadow-inner`}><p.icon size={20} /></div>
+                        <div className="flex flex-col items-end gap-1.5">
+                          <div className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest ${p.leakage > 8 ? 'bg-rose-50 text-rose-600' : 'bg-emerald-50 text-emerald-600'}`}>
+                            {(p.leakage ?? 0).toFixed(1)}% Leakage
+                          </div>
+                          <div className={`px-2 py-0.5 rounded-full text-[8px] font-bold uppercase tracking-tight ${p.coveragePct < 90 ? 'text-amber-500 bg-amber-50' : 'text-slate-400 bg-slate-50'}`}>
+                            {p.coveragePct.toFixed(0)}% Coverage
+                          </div>
+                        </div>
+                      </div>
                       <div><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">{p.label}</p><h4 className="text-3xl font-black text-slate-900 tracking-tighter">₹{(p.actual ?? 0).toLocaleString()}</h4><div className="mt-4 space-y-2"><div className="flex justify-between text-[9px] font-bold uppercase tracking-tight"><span className="text-slate-400">Target Burn</span><span className="text-slate-700">₹{(p.theoretical ?? 0).toLocaleString()}</span></div><div className="h-1.5 bg-slate-100 rounded-full overflow-hidden shadow-inner"><div className={`h-full rounded-full transition-all duration-1000 ${p.leakage > 8 ? 'bg-rose-500' : 'bg-emerald-500'}`} style={{ width: `${Math.max(5, 100 - (p.leakage * 5))}%` }} /></div></div></div>
                     </div>
                   ))}

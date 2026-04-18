@@ -78,6 +78,7 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
   const [editingCustomer, setEditingCustomer] = useState<string | null>(null);
   const [newName, setNewName] = useState('');
   const [isSavingName, setIsSavingName] = useState(false);
+  const [isSavingTag, setIsSavingTag] = useState<string | null>(null);
   const [startHour, setStartHour] = useState(0);
   const [endHour, setEndHour] = useState(23);
 
@@ -147,6 +148,36 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
       console.error("Failed to save name:", err);
     } finally {
       setIsSavingName(false);
+    }
+  };
+  
+  const PREDEFINED_TAGS = ['Embassy', 'Gym', 'Expat'];
+
+  const handleToggleTag = async (customerId: string, tag: string) => {
+    const customer = topCustomers.find(c => c.customerId === customerId);
+    if (!customer) return;
+
+    setIsSavingTag(`${customerId}_${tag}`);
+    try {
+      const currentTags = customer.tags || [];
+      const nextTags = currentTags.includes(tag)
+        ? currentTags.filter(t => t !== tag)
+        : [...currentTags, tag];
+
+      const cRef = doc(db, 'online_customers', `${user.uid}_${customerId}`);
+      await updateDoc(cRef, { 
+        tags: nextTags,
+        lastUpdated: Date.now()
+      });
+
+      // Update local state
+      setTopCustomers(prev => prev.map(c => 
+        c.customerId === customerId ? { ...c, tags: nextTags } : c
+      ));
+    } catch (err) {
+      console.error("Failed to toggle tag:", err);
+    } finally {
+      setIsSavingTag(null);
     }
   };
 
@@ -1218,7 +1249,46 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
                                ID: {customer.customerId.length > 15 ? `${customer.customerId.substring(0, 15)}...` : customer.customerId}
                              </p>
                            )}
-                           <div className="flex items-center gap-2 mt-1">
+
+                           {/* Badges / Tags */}
+                           <div className="flex flex-wrap items-center gap-2 mt-2">
+                             {customer.tags?.map(tag => (
+                               <span 
+                                 key={tag} 
+                                 className={`px-2 py-0.5 rounded-full text-[8px] font-black uppercase tracking-wider flex items-center gap-1.5 ${
+                                   tag === 'Embassy' ? 'bg-indigo-600 text-white' : 
+                                   tag === 'Gym' ? 'bg-emerald-600 text-white' : 
+                                   'bg-slate-900 text-white'
+                                 }`}
+                               >
+                                 {tag === 'Embassy' && <ShieldCheck size={10} />}
+                                 {tag}
+                               </span>
+                             ))}
+                             
+                             <div className="flex items-center gap-1 ml-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                               {PREDEFINED_TAGS.map(tag => {
+                                 const isTagged = (customer.tags || []).includes(tag);
+                                 const isLoading = isSavingTag === `${customer.customerId}_${tag}`;
+                                 return (
+                                   <button
+                                     key={tag}
+                                     onClick={() => handleToggleTag(customer.customerId, tag)}
+                                     disabled={isLoading}
+                                     className={`px-2 py-0.5 rounded-md text-[8px] font-bold border transition-all ${
+                                       isTagged 
+                                         ? 'bg-rose-50 text-rose-600 border-rose-100 font-black' 
+                                         : 'bg-white text-slate-400 border-slate-200 hover:border-indigo-300'
+                                     }`}
+                                   >
+                                     {isLoading ? '...' : (isTagged ? `- ${tag}` : `+ ${tag}`)}
+                                   </button>
+                                 );
+                               })}
+                             </div>
+                           </div>
+
+                           <div className="flex items-center gap-2 mt-2">
                             {customer.platforms.map(p => (
                               <span key={p} className="px-2 py-0.5 rounded-md bg-white border border-slate-200 text-[8px] font-black text-slate-500 uppercase">
                                 {p}
