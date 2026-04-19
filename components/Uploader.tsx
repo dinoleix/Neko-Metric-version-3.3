@@ -93,6 +93,7 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
   const [netSales, setNetSales] = useState('');
   const [taxAmount, setTaxAmount] = useState('');
   const [platformComm, setPlatformComm] = useState('');
+  const [adSpend, setAdSpend] = useState('');
   const [existingManualRecord, setExistingManualRecord] = useState<SalesSummaryRecord | null>(null);
   const [isCheckingExisting, setIsCheckingExisting] = useState(false);
 
@@ -290,8 +291,9 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
     const s = parseFloat(netSales) || 0;
     const t = parseFloat(taxAmount) || 0;
     const c = parseFloat(platformComm) || 0;
-    return Math.max(0, s - t - c);
-  }, [netSales, taxAmount, platformComm]);
+    const a = parseFloat(adSpend) || 0;
+    return Math.max(0, s - t - c - a);
+  }, [netSales, taxAmount, platformComm, adSpend]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -354,6 +356,7 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
       const rev = parseFloat(netSales) || 0;
       const tax = parseFloat(taxAmount) || 0;
       const comm = parseFloat(platformComm) || 0;
+      const ads = parseFloat(adSpend) || 0;
       const payout = expectedPayout;
 
       const docId = `MANUAL_${user.uid}_${manualOutletId}_${onlinePlatform}_${year}_${month}`;
@@ -363,6 +366,7 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
       let deltaRev = rev;
       let deltaTax = tax;
       let deltaComm = comm;
+      let deltaAds = ads;
       let deltaPayout = payout;
 
       if (existingManualSnap.exists()) {
@@ -370,6 +374,7 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
         deltaRev = rev - Number(old.revenue || 0);
         deltaTax = tax - Number(old.totalTax || 0);
         deltaComm = comm - Number(old.commission || 0);
+        deltaAds = ads - Number(old.adCharges || 0);
         deltaPayout = payout - Number(old.netPayout || 0);
       }
 
@@ -382,7 +387,7 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
         time: "00:00", orderId: docId, refNo: "MANUAL_ENTRY", billNo: "SUMMARY",
         outletName: getOutletName(manualOutletId), outletId: manualOutletId,
         orderStatus: "SETTLED", totalTax: tax, paymentMode: "ONLINE", paymentStatus: "PAID",
-        revenue: rev, onlinePlatform: onlinePlatform, commission: comm, adCharges: 0,
+        revenue: rev, onlinePlatform: onlinePlatform, commission: comm, adCharges: ads,
         netPayout: payout, userId: user.uid, _fileId: "manual_online_entry"
       });
 
@@ -399,6 +404,7 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
           onlineGoodGross: increment(deltaRev), 
           onlineGoodTax: increment(deltaTax),
           onlineGoodComm: increment(deltaComm), 
+          onlineGoodAds: increment(deltaAds),
           onlineGoodNet: increment(deltaPayout),
           dailyTrend: nextTrend,
           lastUpdated: Date.now()
@@ -410,7 +416,7 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
           userId: user.uid, outletId: manualOutletId, month, year,
           posTotalGross: 0, posGoodGross: 0, posGoodNet: 0, posGoodTax: 0,
           onlineGoodGross: rev, onlineGoodNet: payout, onlineGoodTax: tax,
-          onlineGoodComm: comm, onlineGoodAds: 0, eventRevenue: 0,
+          onlineGoodComm: comm, onlineGoodAds: ads, eventRevenue: 0,
           settledOrderCount: 0, totalOrderCount: 0, cancelledOrderCount: 0,
           dailyTrend: initialTrend, lastUpdated: Date.now()
         });
@@ -1134,10 +1140,11 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
                        <select value={year} onChange={e => setYear(e.target.value)} className="w-full px-4 py-5 rounded-2xl bg-slate-50 border border-slate-100 font-bold outline-none text-xs">{YEAR_OPTIONS.map(y => <option key={y} value={y}>{y}</option>)}</select>
                     </div>
                  </div>
-                 <div className="p-8 bg-slate-50 rounded-[2.5rem] border border-slate-100 grid grid-cols-1 md:grid-cols-3 gap-6">
+                 <div className="p-8 bg-slate-50 rounded-[2.5rem] border border-slate-100 grid grid-cols-2 gap-6">
                     <div className="space-y-2"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block">Gross Sales</label><input type="number" placeholder="₹0.00" value={netSales} onChange={e => setNetSales(e.target.value)} className="w-full px-6 py-4 rounded-xl bg-white border border-slate-200 font-black text-indigo-600 outline-none" /></div>
                     <div className="space-y-2"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block">Output Tax</label><input type="number" placeholder="₹0.00" value={taxAmount} onChange={e => setTaxAmount(e.target.value)} className="w-full px-6 py-4 rounded-xl bg-white border border-slate-200 font-black text-slate-700 outline-none" /></div>
                     <div className="space-y-2"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block">Comm. & Fees</label><input type="number" placeholder="₹0.00" value={platformComm} onChange={e => setPlatformComm(e.target.value)} className="w-full px-6 py-4 rounded-xl bg-white border border-slate-200 font-black text-rose-500 outline-none" /></div>
+                    <div className="space-y-2"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block">Ad Spend</label><input type="number" placeholder="₹0.00" value={adSpend} onChange={e => setAdSpend(e.target.value)} className="w-full px-6 py-4 rounded-xl bg-white border border-slate-200 font-black text-amber-500 outline-none" /></div>
                  </div>
               </div>
               <div className="lg:col-span-4 flex flex-col justify-between space-y-6">
