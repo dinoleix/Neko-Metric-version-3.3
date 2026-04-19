@@ -506,6 +506,8 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
         }
 
         if (fileType === 'platform_item') {
+          const mIdx = MONTH_NAMES.indexOf(month);
+          recordData.date = `${year}-${String(mIdx + 1).padStart(2, '0')}-01`;
           recordData.isPlatform = true;
           recordData.platform = onlinePlatform;
         }

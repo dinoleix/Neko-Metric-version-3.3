@@ -555,7 +555,6 @@ export const ITEM_TARGET_FIELDS = [
 ];
 
 export const PLATFORM_ITEM_TARGET_FIELDS = [
-  { id: 'date', label: 'Date', required: true },
   { id: 'itemName', label: 'Item Name', required: true },
   { id: 'itemQuantity', label: 'Item Quantity', required: true },
   { id: 'itemTotal', label: 'Item Total/Revenue', required: false },
