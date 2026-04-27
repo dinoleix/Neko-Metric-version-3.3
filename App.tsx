@@ -26,6 +26,7 @@ import ExecDashboard from './components/ExecDashboard';
 import CrewTerminal from './components/CrewTerminal';
 import UserManagement from './components/UserManagement';
 import BankManagement from './components/BankManagement';
+import BankReconciliation from './components/BankReconciliation';
 import HolidayRegistry from './components/HolidayRegistry';
 import OnlineProfitCenter from './components/OnlineProfitCenter';
 import { 
@@ -60,7 +61,7 @@ import {
   Wallet
 } from 'lucide-react';
 
-type AppTab = 'exec-dashboard' | 'dashboard' | 'sales' | 'raw-verify' | 'items' | 'pnl' | 'pnl-insights' | 'waste' | 'waste-v2' | 'integrity' | 'team' | 'rentals' | 'catalog' | 'upload' | 'category-settings' | 'expenses' | 'partnership' | 'crew-terminal' | 'users' | 'bank-management' | 'holidays' | 'online-profit';
+type AppTab = 'exec-dashboard' | 'dashboard' | 'sales' | 'raw-verify' | 'items' | 'pnl' | 'pnl-insights' | 'waste' | 'waste-v2' | 'integrity' | 'team' | 'rentals' | 'catalog' | 'upload' | 'category-settings' | 'expenses' | 'partnership' | 'crew-terminal' | 'users' | 'bank-management' | 'bank-audit' | 'holidays' | 'online-profit';
 
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
@@ -254,6 +255,7 @@ const App: React.FC = () => {
               <NavItem tab="rentals" icon={<Building2 size={18} />} label="Store Rentals" />
               <NavItem tab="holidays" icon={<Calendar size={18} />} label="Holiday Registry" />
               <NavItem tab="bank-management" icon={<Wallet size={18} />} label="Bank Accounts" />
+              <NavItem tab="bank-audit" icon={<ShieldCheck size={18} />} label="Bank Reconcile" />
 
               <div className="pt-4 pb-2 px-4">
                 <p className="text-[10px] font-black uppercase tracking-widest text-slate-600">Inputs</p>
@@ -314,6 +316,7 @@ const App: React.FC = () => {
           {activeTab === 'rentals' && !isReadOnly && <Rentals user={user} />}
           {activeTab === 'holidays' && !isReadOnly && <HolidayRegistry user={user} />}
           {activeTab === 'bank-management' && !isReadOnly && <BankManagement user={user} />}
+          {activeTab === 'bank-audit' && !isReadOnly && <BankReconciliation user={user} />}
           {activeTab === 'upload' && !isReadOnly && <Uploader user={user} onSuccess={() => setActiveTab('exec-dashboard')} />}
           {activeTab === 'crew-terminal' && <CrewTerminal user={user} profile={userProfile} />}
           {activeTab === 'users' && isAdmin && <UserManagement user={user} />}

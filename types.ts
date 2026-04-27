@@ -1,5 +1,5 @@
 
-export type FileType = 'sales' | 'item' | 'expense' | 'purchase' | 'platform_item' | 'online_order' | 'customer_mapping';
+export type FileType = 'sales' | 'item' | 'expense' | 'purchase' | 'platform_item' | 'online_order' | 'customer_mapping' | 'bank_statement';
 
 export type UserRole = 'admin' | 'viewer' | 'crew';
 
@@ -465,9 +465,12 @@ export interface PurchaseRecord {
   productName: string;
   amount: number;
   category: string;
+  vendor?: string;
   outletId?: string;
   userId: string;
   _fileId: string;
+  isBankVerified?: boolean;
+  createdAt?: number;
 }
 
 export interface OnlineOrderDetail {
@@ -600,4 +603,26 @@ export const ONLINE_ORDER_TARGET_FIELDS = [
 export const CUSTOMER_NAME_MAPPING_TARGET_FIELDS = [
   { id: 'orderId', label: 'Order ID', required: true },
   { id: 'customerName', label: 'Customer Name', required: true },
+];
+
+export interface BankTransaction {
+  id?: string;
+  userId: string;
+  date: string;
+  description: string;
+  amount: number;
+  type: 'debit' | 'credit';
+  referenceNo: string;
+  bankAccountId?: string;
+  isReconciled: boolean;
+  matchedPurchaseId?: string;
+  createdAt: number;
+}
+
+export const BANK_STATEMENT_TARGET_FIELDS = [
+  { id: 'date', label: 'Date', required: true },
+  { id: 'description', label: 'Description/Narration', required: true },
+  { id: 'debit_amount', label: 'Withdrawal/Debit Amount', required: false },
+  { id: 'credit_amount', label: 'Deposit/Credit Amount', required: false },
+  { id: 'referenceNo', label: 'Ref/UTR Number', required: false },
 ];

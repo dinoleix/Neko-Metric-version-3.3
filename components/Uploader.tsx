@@ -14,6 +14,7 @@ import {
   PURCHASE_TARGET_FIELDS, 
   ONLINE_ORDER_TARGET_FIELDS,
   CUSTOMER_NAME_MAPPING_TARGET_FIELDS,
+  BANK_STATEMENT_TARGET_FIELDS,
   SalesSummaryRecord, 
   ItemSalesRecord, 
   ExpenseRecord, 
@@ -153,11 +154,13 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
           setNetSales(data.revenue.toString());
           setTaxAmount(data.totalTax.toString());
           setPlatformComm(data.commission.toString());
+          setAdSpend((data.adCharges || 0).toString());
         } else {
           setExistingManualRecord(null);
           setNetSales('');
           setTaxAmount('');
           setPlatformComm('');
+          setAdSpend('');
         }
       } catch (err) {
         console.error(err);
@@ -260,6 +263,7 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
     if (fileType === 'purchase') return PURCHASE_TARGET_FIELDS;
     if (fileType === 'online_order') return ONLINE_ORDER_TARGET_FIELDS;
     if (fileType === 'customer_mapping') return CUSTOMER_NAME_MAPPING_TARGET_FIELDS;
+    if (fileType === 'bank_statement') return BANK_STATEMENT_TARGET_FIELDS;
     return [];
   }, [fileType]);
 
@@ -486,7 +490,8 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
         'expense': 'expenses',
         'purchase': 'purchases',
         'online_order': 'online_order_details',
-        'customer_mapping': 'customer_name_mappings'
+        'customer_mapping': 'customer_name_mappings',
+        'bank_statement': 'bank_transactions'
       };
       const targetColl = collectionNameMap[fileType];
 
@@ -516,6 +521,19 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
           recordData.date = `${year}-${String(mIdx + 1).padStart(2, '0')}-01`;
           recordData.isPlatform = true;
           recordData.platform = onlinePlatform;
+        }
+
+        if (fileType === 'bank_statement') {
+          const debit = recordData.debit_amount || 0;
+          const credit = recordData.credit_amount || 0;
+          if (credit > 0) {
+            recordData.amount = credit;
+            recordData.type = 'credit';
+          } else {
+            recordData.amount = debit;
+            recordData.type = 'debit';
+          }
+          recordData.isReconciled = false;
         }
 
         batchRecords.set(recordRef, recordData);
@@ -1027,7 +1045,7 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
                     <div>
                       <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-3">Category</label>
                       <div className="grid grid-cols-2 gap-3">
-                        {['sales', 'item', 'expense', 'purchase', 'online_order', 'customer_mapping'].map(t => (
+                        {['sales', 'item', 'expense', 'purchase', 'online_order', 'customer_mapping', 'bank_statement'].map(t => (
                           <button key={t} onClick={() => setFileType(t as FileType)} className={`py-4 rounded-2xl font-bold text-[10px] uppercase transition-all ${fileType === t ? 'bg-indigo-600 text-white shadow-xl translate-y-[-2px]' : 'bg-slate-50 text-slate-400 border border-slate-100 hover:bg-slate-100'}`}>{t.replace('_', ' ')} Hub</button>
                         ))}
                       </div>

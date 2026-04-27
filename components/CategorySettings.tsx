@@ -175,9 +175,14 @@ const CategorySettings: React.FC<{ user: User }> = ({ user }) => {
       setNormalizationMap(normMap);
 
       const dbMappings: Record<string, { category: SkuCategory, segment?: string }> = {};
-      skuMapSnaps.docs.forEach(d => {
-        const data = d.data() as SkuMapping;
-        dbMappings[data.itemName.trim().toUpperCase()] = { category: data.category, segment: data.segment };
+      const sortedSkuDocs = skuMapSnaps.docs
+        .map(d => d.data() as SkuMapping)
+        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+      sortedSkuDocs.forEach(data => {
+        const key = data.itemName.trim().toUpperCase();
+        if (!dbMappings[key]) {
+          dbMappings[key] = { category: data.category, segment: data.segment };
+        }
       });
 
       const uniqueMasterSkus = new Set<string>();
