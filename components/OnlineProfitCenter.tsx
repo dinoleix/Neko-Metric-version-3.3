@@ -281,14 +281,18 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
       gstOnComm: acc.gstOnComm + (s.onlineGoodGstOnComm || 0),
       tds: acc.tds + (s.onlineGoodTds || 0),
       orders: acc.orders + (s.onlineOrderCount || s.totalOrderCount || 0),
-      posNet: acc.posNet + (s.posGoodNet || 0)
-    }), { gross: 0, net: 0, tax: 0, commission: 0, ads: 0, gstOnComm: 0, tds: 0, orders: 0, posNet: 0 });
+      posNet: acc.posNet + (s.posGoodNet || 0),
+      posGross: acc.posGross + (s.posGoodGross || 0),
+      eventRevenue: acc.eventRevenue + (s.eventRevenue || 0)
+    }), { gross: 0, net: 0, tax: 0, commission: 0, ads: 0, gstOnComm: 0, tds: 0, orders: 0, posNet: 0, posGross: 0, eventRevenue: 0 });
 
     // netPayout is the actual realized payout from the snapshots
     const netPayout = metrics.net;
     const netSales = metrics.gross - metrics.tax;
     const effectiveCommissionRate = metrics.gross > 0 ? ((metrics.commission + metrics.ads + metrics.gstOnComm + metrics.tds) / metrics.gross) * 100 : 0;
     const roas = metrics.ads > 0 ? metrics.gross / metrics.ads : 0;
+    const totalMixRevenue = metrics.gross + metrics.posGross + metrics.eventRevenue;
+    const onlineMix = totalMixRevenue > 0 ? (metrics.gross / totalMixRevenue) * 100 : 0;
 
     // Platform Mix
     const platformMix = Object.entries(platformFilteredSales.reduce((acc, s) => {
@@ -394,6 +398,7 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
       topOnlineItems,
       contributionMargin,
       platformMix,
+      onlineMix,
       hourlyData,
       weekdayData,
       filteredHourlyData
@@ -566,7 +571,7 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
           {activeTab === 'overview' ? (
             <>
               {/* Executive Overview */}
-              <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
+              <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6">
             <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm flex flex-col justify-between group hover:shadow-xl transition-all">
               <div className="flex justify-between items-start mb-6">
                 <div className="p-3 rounded-2xl bg-indigo-50 text-indigo-600 shadow-inner">
@@ -580,6 +585,22 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Realized Net Payout</p>
                 <h4 className="text-3xl font-black text-slate-900 tracking-tighter">₹{analytics.netPayout.toLocaleString()}</h4>
                 <p className="text-[9px] font-bold text-slate-400 uppercase mt-2">After Commission & Ads</p>
+              </div>
+            </div>
+
+            <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm flex flex-col justify-between group hover:shadow-xl transition-all">
+              <div className="flex justify-between items-start mb-6">
+                <div className="p-3 rounded-2xl bg-blue-50 text-blue-600 shadow-inner">
+                  <PieChart size={20} />
+                </div>
+                <div className="px-3 py-1 rounded-full bg-blue-50 text-blue-600 text-[9px] font-black uppercase tracking-widest">
+                  Channel Mix
+                </div>
+              </div>
+              <div>
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Online Sales Share</p>
+                <h4 className="text-3xl font-black text-slate-900 tracking-tighter">{(analytics.onlineMix || 0).toFixed(1)}%</h4>
+                <p className="text-[9px] font-bold text-slate-400 uppercase mt-2">Share of Total Revenue</p>
               </div>
             </div>
 

@@ -162,10 +162,14 @@ const ExecDashboard: React.FC<{ user: User }> = ({ user }) => {
       })
       .sort((a, b) => b.profit - a.profit);
 
+    const totalOnlineGross = currentSales.reduce((acc, s) => acc + (s.onlineGoodGross || 0), 0);
+    const onlinePercentage = totalGoodGross > 0 ? (totalOnlineGross / totalGoodGross) * 100 : 0;
+
     return { 
       latestMonth, latestYear, totalGoodGross, cashInflow, netProfit, netMargin, revenueGrowth, 
       outletStats, totalPurchases, totalOpEx: totalOpExBills, stockOffset, totalFixedCosts: totalRent + totalFixedPayroll,
-      reportingPeriod: `${latestMonth} ${latestYear}`
+      reportingPeriod: `${latestMonth} ${latestYear}`,
+      onlinePercentage
     };
   }, [salesSnaps, expenseSnaps, adjustments, payrolls, employees, rentals]);
 
@@ -217,7 +221,7 @@ const ExecDashboard: React.FC<{ user: User }> = ({ user }) => {
         </button>
       </header>
 
-      <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+      <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6">
         <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm group hover:shadow-xl transition-all">
           <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Global Revenue</p>
           <h4 className="text-3xl font-black text-slate-900 tracking-tighter">₹{metrics.totalGoodGross.toLocaleString()}</h4>
@@ -242,6 +246,14 @@ const ExecDashboard: React.FC<{ user: User }> = ({ user }) => {
           <h4 className="text-3xl font-black text-indigo-300 tracking-tighter">{metrics.netMargin.toFixed(1)}%</h4>
           <div className="mt-4 flex items-center gap-1.5 font-black uppercase text-[10px] text-indigo-300">
             <Activity size={14} /> Efficiency Score
+          </div>
+        </div>
+
+        <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm">
+          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Online Sales Mix</p>
+          <h4 className="text-3xl font-black text-indigo-600 tracking-tighter">{(metrics.onlinePercentage || 0).toFixed(1)}%</h4>
+          <div className="mt-4 flex items-center gap-1.5 font-black uppercase text-[10px] text-slate-400">
+            <Smartphone size={14} className="text-indigo-400" /> Digital Channels
           </div>
         </div>
 

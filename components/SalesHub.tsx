@@ -297,6 +297,16 @@ const SalesHub: React.FC<{ user: User }> = ({ user }) => {
       ) : (
         <>
           <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+            <div className="bg-slate-50 p-8 rounded-[2.5rem] border border-indigo-100 shadow-sm flex flex-col justify-between min-h-[180px] group hover:bg-white hover:shadow-xl transition-all duration-500">
+               <div>
+                 <p className="text-[10px] font-black text-indigo-500 uppercase tracking-[0.2em] mb-1 italic">Consolidated Yield</p>
+                 <h4 className="text-4xl font-black text-slate-900 tracking-tighter">₹{analytics.totalGoodGross.toLocaleString()}</h4>
+               </div>
+               <div className="mt-4 flex items-center justify-between">
+                 <div className="flex items-center gap-1.5 text-slate-400 font-black uppercase text-[10px]"><TrendingUp size={12} className="text-indigo-500" /> Total Revenue</div>
+                 <div className="px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-600 text-[8px] font-black uppercase">Active Yield</div>
+               </div>
+            </div>
             <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm flex flex-col justify-between min-h-[180px]">
                <div><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">POS REVENUE (TOTAL)</p><h4 className="text-3xl font-black text-slate-900 tracking-tighter">₹{analytics.posTotalGross.toLocaleString()}</h4></div>
                <div className="mt-4 flex items-center gap-1.5 text-slate-300 font-black uppercase text-[10px]"><Calculator size={12} /> COMBINED POS BASE</div>
