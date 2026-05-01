@@ -617,6 +617,8 @@ export interface BankTransaction {
   bankAccountId?: string;
   isReconciled: boolean;
   matchedPurchaseId?: string;
+  matchedPurchaseIds?: string[];
+  reconciledAmount?: number;
   createdAt: number;
 }
 

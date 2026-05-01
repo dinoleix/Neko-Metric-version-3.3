@@ -310,6 +310,11 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
 
     if (isNaN(d.getTime())) return clean; // Fallback to raw if still invalid
 
+    const hasTime = d.getHours() !== 0 || d.getMinutes() !== 0;
+    if (hasTime) {
+      // Return ISO string if it has time components
+      return d.toISOString();
+    }
     return d.toISOString().split('T')[0];
   };
 
