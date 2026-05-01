@@ -300,6 +300,7 @@ const BankReconciliation: React.FC<{ user: User }> = ({ user }) => {
                       <th className="px-8 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">Type</th>
                       <th className="px-8 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">Description / Narration</th>
                       <th className="px-8 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">Amount (Dr/Cr)</th>
+                      <th className="px-8 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">Balance</th>
                       <th className="px-8 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">Reconciliation Status</th>
                       <th className="px-8 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100 text-right">Integrity Action</th>
                     </tr>
@@ -324,13 +325,23 @@ const BankReconciliation: React.FC<{ user: User }> = ({ user }) => {
                           </td>
                           <td className="px-8 py-6">
                             <p className="text-xs font-bold text-slate-700 uppercase leading-snug line-clamp-2 max-w-[300px]">{bt.description}</p>
-                            <span className="text-[9px] font-black text-slate-400 uppercase tracking-tighter">REF: {bt.referenceNo || 'N/A'}</span>
+                            {bt.referenceNo && !bt.referenceNo.startsWith('AUTO-') && (
+                              <span className="text-[9px] font-black text-slate-400 uppercase tracking-tighter">REF: {bt.referenceNo}</span>
+                            )}
                           </td>
                           <td className="px-8 py-6">
                             <div className="flex items-center gap-1.5">
                               <span className="text-xs font-black text-slate-400">₹</span>
                               <span className={`text-lg font-black tracking-tighter ${bt.type === 'credit' ? 'text-emerald-600' : 'text-slate-900'}`}>{bt.amount.toLocaleString('en-IN')}</span>
                             </div>
+                          </td>
+                          <td className="px-8 py-6">
+                            {bt.balance !== undefined && (
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[10px] font-bold text-slate-400">₹</span>
+                                <span className="text-sm font-black text-slate-600 tracking-tighter">{bt.balance.toLocaleString('en-IN')}</span>
+                              </div>
+                            )}
                           </td>
                           <td className="px-8 py-6">
                             {bt.isReconciled ? (

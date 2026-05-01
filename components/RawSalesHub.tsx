@@ -125,7 +125,12 @@ const RawSalesHub: React.FC<{ user: User }> = ({ user }) => {
     } catch (err) { console.error(err); } finally { setLoading(false); }
   };
 
-  useEffect(() => { setHasSearched(false); setSelectedIds(new Set()); }, [activeView]);
+  useEffect(() => { 
+    if (user) {
+      setSelectedIds(new Set());
+      fetchData(); 
+    }
+  }, [activeView, user]);
 
   const isUncategorized = (category: string) => {
     const upper = (category || '').trim().toUpperCase();
@@ -137,15 +142,18 @@ const RawSalesHub: React.FC<{ user: User }> = ({ user }) => {
     const selectedMonthIdx = MONTH_NAMES.indexOf(selectedMonth);
     const selectedYearNum = parseInt(selectedYear);
     
+    const selectedOutlet = rentals.find(rent => rent.outletId === storeFilter);
+    const selectedStoreName = selectedOutlet?.storeName;
+    
     const filtered = records.filter(r => {
-      const dateParts = r.date.split('-');
-      if (dateParts.length < 3) return false;
+      const d = new Date(r.date);
+      if (isNaN(d.getTime())) return false;
       
-      const rYear = parseInt(dateParts[0]);
-      const rMonth = parseInt(dateParts[1]) - 1; 
+      const rYear = d.getFullYear().toString();
+      const rMonth = MONTH_NAMES[d.getMonth()];
       
-      const matchesDate = rYear === selectedYearNum && (selectedMonth === 'All Months' || rMonth === selectedMonthIdx);
-      const matchesStore = storeFilter === 'all' || r.outletId === storeFilter;
+      const matchesDate = rYear === selectedYear && (selectedMonth === 'All Months' || rMonth === selectedMonth);
+      const matchesStore = storeFilter === 'all' || r.outletId === storeFilter || (selectedStoreName && r.outletId === selectedStoreName);
       const matchesManual = !showManualOnly || r._fileId === 'manual_online_entry';
       return matchesDate && matchesStore && matchesManual;
     }).sort((a, b) => b.date.localeCompare(a.date));
@@ -156,16 +164,18 @@ const RawSalesHub: React.FC<{ user: User }> = ({ user }) => {
   const expenseAnalytics = useMemo(() => {
     const selectedMonthIdx = MONTH_NAMES.indexOf(selectedMonth);
     const selectedYearNum = parseInt(selectedYear);
+    const selectedOutlet = rentals.find(rent => rent.outletId === storeFilter);
+    const selectedStoreName = selectedOutlet?.storeName;
     const raw = activeView === 'expenses' ? expenseRecords : purchaseRecords;
     
     const filtered = raw.filter(r => {
-      const dateParts = r.date.split('-');
-      if (dateParts.length < 3) return false;
-      const rYear = parseInt(dateParts[0]);
-      const rMonth = parseInt(dateParts[1]) - 1;
+      const d = new Date(r.date);
+      if (isNaN(d.getTime())) return false;
+      const rYear = d.getFullYear().toString();
+      const rMonth = MONTH_NAMES[d.getMonth()];
 
-      const matchesDate = rYear === selectedYearNum && (selectedMonth === 'All Months' || rMonth === selectedMonthIdx);
-      const matchesStore = storeFilter === 'all' || r.outletId === storeFilter;
+      const matchesDate = rYear === selectedYear && (selectedMonth === 'All Months' || rMonth === selectedMonth);
+      const matchesStore = storeFilter === 'all' || r.outletId === storeFilter || (selectedStoreName && r.outletId === selectedStoreName);
       const unmapped = isUncategorized(r.category);
       const matchesUncat = !showUncategorizedOnly || unmapped;
       return matchesDate && matchesStore && matchesUncat;
@@ -178,14 +188,17 @@ const RawSalesHub: React.FC<{ user: User }> = ({ user }) => {
     const selectedMonthIdx = MONTH_NAMES.indexOf(selectedMonth);
     const selectedYearNum = parseInt(selectedYear);
     
+    const selectedOutlet = rentals.find(rent => rent.outletId === storeFilter);
+    const selectedStoreName = selectedOutlet?.storeName;
+    
     const filtered = itemRecords.filter(r => {
-      const dateParts = r.date.split('-');
-      if (dateParts.length < 3) return false;
-      const rYear = parseInt(dateParts[0]);
-      const rMonth = parseInt(dateParts[1]) - 1;
+      const d = new Date(r.date);
+      if (isNaN(d.getTime())) return false;
+      const rYear = d.getFullYear().toString();
+      const rMonth = MONTH_NAMES[d.getMonth()];
 
-      const matchesDate = rYear === selectedYearNum && (selectedMonth === 'All Months' || rMonth === selectedMonthIdx);
-      const matchesStore = storeFilter === 'all' || r.outletId === storeFilter;
+      const matchesDate = rYear === selectedYear && (selectedMonth === 'All Months' || rMonth === selectedMonth);
+      const matchesStore = storeFilter === 'all' || r.outletId === storeFilter || (selectedStoreName && r.outletId === selectedStoreName);
       const matchesSearch = !itemSearchTerm || (r.itemName || '').toLowerCase().includes(itemSearchTerm.toLowerCase());
       return matchesDate && matchesStore && matchesSearch;
     }).sort((a, b) => b.date.localeCompare(a.date));
@@ -196,15 +209,16 @@ const RawSalesHub: React.FC<{ user: User }> = ({ user }) => {
   const currentVisibleItems = useMemo(() => {
     if (activeView === 'sales') return salesAnalytics.rawData;
     if (activeView === 'online-orders') {
-      const selectedMonthIdx = MONTH_NAMES.indexOf(selectedMonth);
-      const selectedYearNum = parseInt(selectedYear);
+      const selectedOutlet = rentals.find(rent => rent.outletId === storeFilter);
+      const selectedStoreName = selectedOutlet?.storeName;
+
       return onlineOrders.filter(r => {
-        const dateParts = (r.orderDate || '').split('-');
-        if (dateParts.length < 3) return false;
-        const rYear = parseInt(dateParts[0]);
-        const rMonth = parseInt(dateParts[1]) - 1;
-        const matchesDate = rYear === selectedYearNum && (selectedMonth === 'All Months' || rMonth === selectedMonthIdx);
-        const matchesStore = storeFilter === 'all' || r.outletId === storeFilter;
+        const d = new Date(r.orderDate || "");
+        if (isNaN(d.getTime())) return false;
+        const rYear = d.getFullYear().toString();
+        const rMonth = MONTH_NAMES[d.getMonth()];
+        const matchesDate = rYear === selectedYear && (selectedMonth === 'All Months' || rMonth === selectedMonth);
+        const matchesStore = storeFilter === 'all' || r.outletId === storeFilter || (selectedStoreName && r.outletId === selectedStoreName);
         return matchesDate && matchesStore;
       }).sort((a, b) => b.orderDate.localeCompare(a.orderDate));
     }
@@ -261,9 +275,11 @@ const RawSalesHub: React.FC<{ user: User }> = ({ user }) => {
         currentBatch.delete(doc(db, collectionName, record.id!));
         opCount++;
 
-        const dateParts = (record.date || record.orderDate || '').split('-');
-        const rYear = dateParts[0];
-        const rMonth = MONTH_NAMES[parseInt(dateParts[1]) - 1];
+        const d = new Date(record.date || record.orderDate || '');
+        if (isNaN(d.getTime())) continue;
+
+        const rYear = d.getFullYear().toString();
+        const rMonth = MONTH_NAMES[d.getMonth()];
         const oId = record.outletId || 'Unassigned';
 
         if (activeView === 'sales' || activeView === 'online-orders') {
@@ -291,7 +307,7 @@ const RawSalesHub: React.FC<{ user: User }> = ({ user }) => {
                 dObj.onlineGoodComm = (dObj.onlineGoodComm || 0) - (record.commission || 0); 
                 dObj.onlineGoodNet = (dObj.onlineGoodNet || 0) - (record.netPayout || 0); 
               }
-              const dayIdx = parseInt(dateParts[2]) - 1;
+              const dayIdx = d.getDate() - 1;
               if (dayIdx >= 0 && dayIdx < 31) {
                   dObj[`dailyTrend.${dayIdx}`] = (dObj[`dailyTrend.${dayIdx}`] || 0) - (record.revenue || 0);
               }
@@ -313,7 +329,7 @@ const RawSalesHub: React.FC<{ user: User }> = ({ user }) => {
               dObj.onlineGoodNet = (dObj.onlineGoodNet || 0) - (record.netPayout || 0);
               dObj.settledOrderCount = (dObj.settledOrderCount || 0) - 1;
               
-              const dayIdx = parseInt(dateParts[2]) - 1;
+              const dayIdx = d.getDate() - 1;
               if (dayIdx >= 0 && dayIdx < 31) {
                 dObj[`dailyTrend.${dayIdx}`] = (dObj[`dailyTrend.${dayIdx}`] || 0) - rev;
               }
@@ -350,7 +366,7 @@ const RawSalesHub: React.FC<{ user: User }> = ({ user }) => {
         const { ref, deltas } = snapshotImpacts[key];
         const updateData: any = { lastUpdated: Date.now() };
         Object.entries(deltas).forEach(([field, val]) => { updateData[field] = increment(val as number); });
-        currentBatch.update(ref, updateData);
+        currentBatch.set(ref, updateData, { merge: true });
         opCount++;
         if (opCount >= 480) { batchChunks.push(currentBatch); currentBatch = writeBatch(db); opCount = 0; }
       }
@@ -391,9 +407,11 @@ const RawSalesHub: React.FC<{ user: User }> = ({ user }) => {
     setIsSavingEdit(true);
     try {
       const batch = writeBatch(db);
-      const dateParts = (editingRecord.date || editingRecord.orderDate || '').split('-');
-      const rYear = dateParts[0];
-      const rMonth = MONTH_NAMES[parseInt(dateParts[1]) - 1];
+      const d = new Date(editingRecord.date || editingRecord.orderDate || '');
+      if (isNaN(d.getTime())) throw new Error("Invalid record date");
+      
+      const rYear = d.getFullYear().toString();
+      const rMonth = MONTH_NAMES[d.getMonth()];
       const oId = editingRecord.outletId || 'Unassigned';
 
       if (activeView === 'sales' || activeView === 'online-orders') {
@@ -436,12 +454,12 @@ const RawSalesHub: React.FC<{ user: User }> = ({ user }) => {
             lastUpdated: Date.now() 
         };
         
-        const dayIdx = parseInt(dateParts[2]) - 1;
+        const dayIdx = d.getDate() - 1;
         if (dayIdx >= 0 && dayIdx < 31) {
             snapUpdate[`dailyTrend.${dayIdx}`] = increment(deltaRev);
         }
 
-        batch.update(doc(db, 'sales_snapshots', `${user.uid}_${oId}_${rYear}_${rMonth}`), snapUpdate);
+        batch.set(doc(db, 'sales_snapshots', `${user.uid}_${oId}_${rYear}_${rMonth}`), snapUpdate, { merge: true });
       } else if (activeView === 'expenses' || activeView === 'purchases') {
         const newAmt = parseFloat(editForm.amount) || 0;
         const deltaAmt = newAmt - (editingRecord.amount || 0);
@@ -467,7 +485,7 @@ const RawSalesHub: React.FC<{ user: User }> = ({ user }) => {
           if (settings.cogsKeywords.includes(oldCat)) { const b = settings.cogsBucketMapping?.[oldCat] || 'FOOD'; snapUpdate[`cogsBucketAgg.${b}`] = increment(-(editingRecord.amount || 0)); }
           if (settings.cogsKeywords.includes(newCat)) { const b = settings.cogsBucketMapping?.[newCat] || 'FOOD'; snapUpdate[`cogsBucketAgg.${b}`] = increment(newAmt); }
         }
-        batch.update(snapRef, snapUpdate);
+        batch.set(snapRef, snapUpdate, { merge: true });
       }
       await batch.commit();
       setEditingRecord(null);
@@ -492,7 +510,26 @@ const RawSalesHub: React.FC<{ user: User }> = ({ user }) => {
           </div>
           <div className="flex items-center gap-2">
             <div className="bg-slate-50 px-3 py-2 rounded-xl flex items-center gap-2 border border-slate-100"><MapPin size={12} className="text-indigo-500" /><select value={storeFilter} onChange={e => setStoreFilter(e.target.value)} className="bg-transparent font-bold text-[10px] outline-none uppercase tracking-tight"><option value="all">All Outlets</option>{activeOutletOptions.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}</select></div>
-            <div className="bg-slate-50 px-3 py-2 rounded-xl flex items-center gap-2 border border-slate-100"><CalendarDays size={12} className="text-indigo-500" /><select value={selectedMonth} onChange={e => setSelectedMonth(e.target.value)} className="bg-transparent font-bold text-[10px] outline-none uppercase">{MONTH_NAMES.map(m => <option key={m} value={m}>{m.substring(0, 3)}</option>)}</select><select value={selectedYear} onChange={e => setSelectedYear(e.target.value)} className="bg-transparent font-bold text-[10px] outline-none">{YEAR_OPTIONS.map(y => <option key={y} value={y}>{y}</option>)}</select></div>
+            <div className="bg-slate-50 px-3 py-2 rounded-xl flex items-center gap-2 border border-slate-100">
+              <CalendarDays size={12} className="text-indigo-500" />
+              <select 
+                value={selectedMonth} 
+                onChange={e => setSelectedMonth(e.target.value)} 
+                className="bg-transparent font-bold text-[10px] outline-none uppercase"
+              >
+                <option value="All Months">All Months</option>
+                {MONTH_NAMES.map(m => (
+                  <option key={m} value={m}>{m.substring(0, 3)}</option>
+                ))}
+              </select>
+              <select 
+                value={selectedYear} 
+                onChange={e => setSelectedYear(e.target.value)} 
+                className="bg-transparent font-bold text-[10px] outline-none"
+              >
+                {YEAR_OPTIONS.map(y => <option key={y} value={y}>{y}</option>)}
+              </select>
+            </div>
           </div>
           <button onClick={fetchData} disabled={loading} className="flex items-center gap-2 px-6 py-2.5 bg-indigo-600 text-white rounded-xl font-black uppercase text-[10px] tracking-widest hover:bg-indigo-700 transition-all shadow-lg"><SearchCode size={14} /> Fetch</button>
         </div>

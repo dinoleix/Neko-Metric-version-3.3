@@ -613,6 +613,7 @@ export interface BankTransaction {
   amount: number;
   type: 'debit' | 'credit';
   referenceNo: string;
+  balance?: number;
   bankAccountId?: string;
   isReconciled: boolean;
   matchedPurchaseId?: string;
@@ -624,5 +625,6 @@ export const BANK_STATEMENT_TARGET_FIELDS = [
   { id: 'description', label: 'Description/Narration', required: true },
   { id: 'debit_amount', label: 'Withdrawal/Debit Amount', required: false },
   { id: 'credit_amount', label: 'Deposit/Credit Amount', required: false },
+  { id: 'balance', label: 'Balance', required: false },
   { id: 'referenceNo', label: 'Ref/UTR Number', required: false },
 ];

@@ -51,7 +51,8 @@ import {
   X,
   Ticket,
   CalendarDays,
-  DollarSign
+  DollarSign,
+  Building2
 } from 'lucide-react';
 
 type UploadMode = 'csv' | 'online' | 'platform' | 'events';
@@ -114,6 +115,8 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
   const [mappingsLoaded, setMappingsLoaded] = useState(false);
   const [error, setError] = useState('');
   const [rentals, setRentals] = useState<StoreRental[]>([]);
+  const [bankAccounts, setBankAccounts] = useState<any[]>([]);
+  const [selectedBankAccountId, setSelectedBankAccountId] = useState<string>('');
 
   const [cogsKeywords, setCogsKeywords] = useState<string[]>(DEFAULT_COGS);
   const [cogsBucketMapping, setCogsBucketMapping] = useState<Record<string, CogsBucket>>({});
@@ -123,8 +126,12 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
   useEffect(() => {
     const fetchSettings = async () => {
       const q = query(collection(db, 'rentals'), where('userId', '==', user.uid));
-      const snap = await getDocs(q);
-      setRentals(snap.docs.map(d => d.data() as StoreRental));
+      const rentalsSnap = await getDocs(q);
+      setRentals(rentalsSnap.docs.map(d => d.data() as StoreRental));
+
+      const bankQ = query(collection(db, 'bank_accounts'), where('userId', '==', user.uid));
+      const bankSnap = await getDocs(bankQ);
+      setBankAccounts(bankSnap.docs.map(d => ({ id: d.id, ...d.data() })));
 
       const setRef = doc(db, 'category_settings', user.uid);
       const setSnap = await getDoc(setRef);
@@ -279,16 +286,43 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
     return isNegative ? -num : num;
   };
 
+  const normalizeDate = (val: string): string => {
+    if (!val) return "";
+    const clean = val.toString().trim();
+    if (!clean) return "";
+
+    // Try parsing common formats
+    let d = new Date(clean);
+    
+    // If invalid, try manual split for common DD/MM/YYYY or DD-MM-YYYY
+    if (isNaN(d.getTime())) {
+      const parts = clean.split(/[/-]/);
+      if (parts.length === 3) {
+        // Assume DD MM YYYY
+        if (parts[2].length === 4) {
+          d = new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
+        } else if (parts[0].length === 4) {
+          // Assume YYYY MM DD
+          d = new Date(`${parts[0]}-${parts[1]}-${parts[2]}`);
+        }
+      }
+    }
+
+    if (isNaN(d.getTime())) return clean; // Fallback to raw if still invalid
+
+    return d.toISOString().split('T')[0];
+  };
+
   const resolveOutletId = (val: string): string => {
     const clean = val?.toString().trim().toLowerCase();
-    if (!clean) return 'GLOBAL';
+    if (!clean) return manualOutletId || 'GLOBAL';
     // Check if it's already a valid ID
     const byId = MASTER_OUTLETS.find(o => o.id.toLowerCase() === clean);
     if (byId) return byId.id;
     // Check if it matches a name
     const byName = MASTER_OUTLETS.find(o => o.name.toLowerCase() === clean);
     if (byName) return byName.id;
-    return 'GLOBAL';
+    return manualOutletId || 'GLOBAL';
   };
 
   const expectedPayout = useMemo(() => {
@@ -477,6 +511,7 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
       const fileMetadata = {
         name: fileName, type: fileType, month, year, uploadedAt: timestamp,
         recordCount: csvData.length, userId: user.uid, storagePath,
+        bankAccountId: fileType === 'bank_statement' ? selectedBankAccountId : null,
         platform: mode === 'platform' ? onlinePlatform : 'NONE',
         outletId: (fileType === 'item' || fileType === 'sales') ? 'GLOBAL' : manualOutletId
       };
@@ -499,19 +534,29 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
       let count = 0;
       for (const row of csvData) {
         const recordRef = doc(collection(db, targetColl));
-        const recordData: any = { userId: user.uid, _fileId: fileId, createdAt: timestamp };
+        const recordData: any = { 
+          userId: user.uid, 
+          _fileId: fileId, 
+          createdAt: timestamp,
+          bankAccountId: fileType === 'bank_statement' ? selectedBankAccountId : null
+        };
         targetFields.forEach(f => {
           const val = row[mapping[f.id]];
-          const isNumeric = f.id.toLowerCase().match(/revenue|total|amount|tax|commission|quantity|value|payout|charge|discount|fee|tcs|tds|gst|deduction|addition|adjustment|recovery|redemption|compensation|subtotal/);
-          recordData[f.id] = isNumeric 
-            ? cleanNumber(val) 
-            : (val || '');
+          const isNumeric = f.id.toLowerCase().match(/revenue|total|amount|tax|commission|quantity|value|payout|charge|discount|fee|tcs|tds|gst|deduction|addition|adjustment|recovery|redemption|compensation|subtotal|balance/);
+          
+          if (isNumeric) {
+            recordData[f.id] = cleanNumber(val);
+          } else if (f.id === 'date' || f.id === 'orderDate') {
+            recordData[f.id] = normalizeDate(val);
+          } else {
+            recordData[f.id] = (val || '');
+          }
         });
         
-        // Resolve outlet per record if it's item sales or sales summary
-        if (fileType === 'item' || fileType === 'sales') {
-           const rowOutlet = row[mapping['outletId']];
-           recordData.outletId = resolveOutletId(rowOutlet);
+        // Resolve outlet per record if any outletId mapping exists
+        const rowOutletRaw = row[mapping['outletId']];
+        if (rowOutletRaw) {
+           recordData.outletId = resolveOutletId(rowOutletRaw);
         } else if (!recordData.outletId) {
            recordData.outletId = manualOutletId;
         }
@@ -534,6 +579,10 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
             recordData.type = 'debit';
           }
           recordData.isReconciled = false;
+          
+          if (!recordData.referenceNo || recordData.referenceNo === '') {
+            recordData.referenceNo = `AUTO-${timestamp}-${count}`;
+          }
         }
 
         batchRecords.set(recordRef, recordData);
@@ -1060,8 +1109,7 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
                     </div>
                   )}
 
-                  {/* Hide store attribution for mixed item and sales CSVs or mapping */}
-                  {(fileType !== 'item' && fileType !== 'sales' && fileType !== 'customer_mapping') && (
+                  {(fileType !== 'item' && fileType !== 'sales' && fileType !== 'customer_mapping' && fileType !== 'bank_statement') && (
                     <div>
                       <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-3">Store Attribution</label>
                       <div className="relative">
@@ -1070,6 +1118,29 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
                         </select>
                         <MapPin size={18} className="absolute right-6 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" />
                       </div>
+                    </div>
+                  )}
+
+                  {fileType === 'bank_statement' && (
+                    <div className="animate-in fade-in slide-in-from-top-2 duration-300">
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-3 text-indigo-600">Select Target Bank Account</label>
+                      <div className="relative">
+                        <select 
+                          required
+                          value={selectedBankAccountId} 
+                          onChange={e => setSelectedBankAccountId(e.target.value)} 
+                          className="w-full px-6 py-5 rounded-2xl bg-indigo-50/50 border border-indigo-100 font-bold outline-none appearance-none uppercase text-indigo-900 pr-12"
+                        >
+                          <option value="">-- Choose Account --</option>
+                          {bankAccounts.map(acc => (
+                            <option key={acc.id} value={acc.id}>{acc.name} ({acc.bankName})</option>
+                          ))}
+                        </select>
+                        <Building2 size={18} className="absolute right-6 top-1/2 -translate-y-1/2 text-indigo-400 pointer-events-none" />
+                      </div>
+                      {bankAccounts.length === 0 && (
+                        <p className="text-[9px] font-bold text-rose-500 mt-2 ml-1">No bank accounts found. Add one in Bank Management.</p>
+                      )}
                     </div>
                   )}
 

@@ -239,7 +239,9 @@ const Dashboard: React.FC<{ user: User }> = ({ user }) => {
       if (file.type === 'sales') {
         for (const oId in outletImpacts) {
           const impact = outletImpacts[oId];
-          const snapId = `${user.uid}_${oId}_${file.year}_${file.month}`;
+          const dYear = file.year.includes(' ') ? new Date(file.year).getFullYear().toString() : file.year;
+          const dMonth = (file.month && file.month !== "undefined") ? file.month : MONTH_NAMES[new Date(file.year).getMonth()];
+          const snapId = `${user.uid}_${oId}_${dYear}_${dMonth}`;
           const snapRef = doc(db, 'sales_snapshots', snapId);
           const snapDoc = await getDoc(snapRef);
           if (snapDoc.exists()) {
@@ -266,7 +268,9 @@ const Dashboard: React.FC<{ user: User }> = ({ user }) => {
       } else if (file.type === 'expense' || file.type === 'purchase') {
         for (const oId in outletImpacts) {
           const impact = outletImpacts[oId];
-          const snapId = `${user.uid}_${oId}_${file.year}_${file.month}`;
+          const eYear = file.year.includes(' ') ? new Date(file.year).getFullYear().toString() : file.year;
+          const eMonth = (file.month && file.month !== "undefined") ? file.month : MONTH_NAMES[new Date(file.year).getMonth()];
+          const snapId = `${user.uid}_${oId}_${eYear}_${eMonth}`;
           const snapRef = doc(db, 'expense_snapshots', snapId);
           const snapDoc = await getDoc(snapRef);
           if (snapDoc.exists()) {
@@ -296,7 +300,9 @@ const Dashboard: React.FC<{ user: User }> = ({ user }) => {
       } else if (file.type === 'item' || file.type === 'platform_item') {
         for (const oId in outletImpacts) {
           const impact = outletImpacts[oId];
-          const snapId = `${user.uid}_${oId}_${file.year}_${file.month}`;
+          const iYear = file.year.includes(' ') ? new Date(file.year).getFullYear().toString() : file.year;
+          const iMonth = (file.month && file.month !== "undefined") ? file.month : MONTH_NAMES[new Date(file.year).getMonth()];
+          const snapId = `${user.uid}_${oId}_${iYear}_${iMonth}`;
           const snapRef = doc(db, 'item_snapshots', snapId);
           const snapDoc = await getDoc(snapRef);
           if (snapDoc.exists()) {
