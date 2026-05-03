@@ -75,6 +75,18 @@ const BankReconciliation: React.FC<{ user: User }> = ({ user }) => {
   const [categories, setCategories] = useState<string[]>(RECONCILIATION_CATEGORIES);
   const [newCategoryName, setNewCategoryName] = useState('');
   const [isAddingCategory, setIsAddingCategory] = useState(false);
+  const [learnedRules, setLearnedRules] = useState<Record<string, string>>({});
+
+  const availableCategories = useMemo(() => {
+    const fromTransactions = bankTransactions
+      .map(t => t.category?.toUpperCase())
+      .filter((c): c is string => !!c);
+    
+    const fromRules = rules.map(r => r.category.toUpperCase());
+    
+    const combined = new Set([...RECONCILIATION_CATEGORIES, ...categories, ...fromTransactions, ...fromRules]);
+    return Array.from(combined).sort();
+  }, [bankTransactions, rules, categories]);
 
   const fetchReconciliationData = async () => {
     setLoading(true);
@@ -113,6 +125,27 @@ const BankReconciliation: React.FC<{ user: User }> = ({ user }) => {
   useEffect(() => {
     fetchReconciliationData();
   }, [user]);
+
+  // Derived suggestions from history
+  useEffect(() => {
+    const verified = bankTransactions.filter(t => t.isVerified && t.category);
+    const map: Record<string, { [cat: string]: number }> = {};
+    
+    verified.forEach(t => {
+      // Use first 3 words as a signature
+      const sig = t.description.split(' ').slice(0, 3).join(' ').toLowerCase();
+      if (!map[sig]) map[sig] = {};
+      map[sig][t.category!] = (map[sig][t.category!] || 0) + 1;
+    });
+
+    const suggestions: Record<string, string> = {};
+    Object.entries(map).forEach(([sig, counts]) => {
+      // Pick the category with highest frequency
+      const bestCat = Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0];
+      suggestions[sig] = bestCat;
+    });
+    setLearnedRules(suggestions);
+  }, [bankTransactions]);
 
   const filteredBT = useMemo(() => {
     const monthIdx = (MONTH_NAMES.indexOf(selectedMonth) + 1).toString().padStart(2, '0');
@@ -155,31 +188,56 @@ const BankReconciliation: React.FC<{ user: User }> = ({ user }) => {
   // Learning Engine: Match description against keywords
   const suggestCategory = (description: string): string | null => {
     const desc = description.toLowerCase();
-    // Sort rules by keyword length (longest first for better specificity)
+    
+    // 1. Check explicit rules (highest priority)
     const sortedRules = [...rules].sort((a, b) => b.keyword.length - a.keyword.length);
     for (const rule of sortedRules) {
       if (desc.includes(rule.keyword.toLowerCase())) {
-        return rule.category;
+        return rule.category.toUpperCase();
       }
     }
+
+    // 2. Check learned history (fallback)
+    const sig = description.split(' ').slice(0, 3).join(' ').toLowerCase();
+    if (learnedRules[sig]) {
+      return learnedRules[sig].toUpperCase();
+    }
+
     return null;
   };
 
-  const handleManualMap = async (btId: string, category: string, isVerified = true) => {
+  const handleManualMap = async (btId: string, category: string, isVerified = false, purchaseId?: string) => {
     setUpdatingId(btId);
+    const normalizedCategory = category.toUpperCase();
     try {
       const bt = bankTransactions.find(t => t.id === btId);
       if (!bt) return;
 
-      await updateDoc(doc(db, 'bank_transactions', btId), {
-        category,
+      const batch = writeBatch(db);
+      
+      // 1. Update the bank transaction
+      const btRef = doc(db, 'bank_transactions', btId);
+      batch.update(btRef, {
+        category: normalizedCategory,
         isVerified,
-        isReconciled: true // In this new mode, being categorized = reconciled
+        isReconciled: true,
+        matchedPurchaseId: purchaseId || bt.matchedPurchaseId || null
       });
+
+      // 2. If a purchase is linked, update it too
+      if (purchaseId) {
+        const pRef = doc(db, 'purchases', purchaseId);
+        batch.update(pRef, {
+          category: normalizedCategory, // Sync the category
+          isBankVerified: true
+        });
+      }
+
+      await batch.commit();
 
       // Update local state for immediate feedback
       setBankTransactions(prev => prev.map(t => 
-        t.id === btId ? { ...t, category, isVerified, isReconciled: true } : t
+        t.id === btId ? { ...t, category: normalizedCategory, isVerified, isReconciled: true, matchedPurchaseId: purchaseId || t.matchedPurchaseId } : t
       ));
 
       // Learning Opportunity: Check if we should suggest a rule
@@ -208,14 +266,21 @@ const BankReconciliation: React.FC<{ user: User }> = ({ user }) => {
     const batch = writeBatch(db);
     let count = 0;
 
-    for (const bt of filteredBT) {
+    // We want to auto-map ALL unverified transactions for this month, 
+    // regardless of what's currently filtered by search or tabs.
+    const monthIdx = (MONTH_NAMES.indexOf(selectedMonth) + 1).toString().padStart(2, '0');
+    const datePrefix = `${selectedYear}-${monthIdx}`;
+    
+    const periodTransactions = bankTransactions.filter(t => t.date.startsWith(datePrefix));
+
+    for (const bt of periodTransactions) {
       if (bt.isVerified) continue;
       
       const suggested = suggestCategory(bt.description);
       if (suggested && suggested !== bt.category) {
         batch.update(doc(db, 'bank_transactions', bt.id!), {
           category: suggested,
-          isVerified: false, // Mark as suggested, needs confirmation
+          isVerified: false, // Keep as unverified so user can review/confirm
           isReconciled: true
         });
         count++;
@@ -223,8 +288,22 @@ const BankReconciliation: React.FC<{ user: User }> = ({ user }) => {
     }
 
     if (count > 0) {
-      await batch.commit();
-      await fetchReconciliationData();
+      try {
+        await batch.commit();
+        // Update local state directly for immediate speed before/during re-fetch
+        setBankTransactions(prev => prev.map(t => {
+          if (t.date.startsWith(datePrefix) && !t.isVerified) {
+            const suggested = suggestCategory(t.description);
+            if (suggested) {
+              return { ...t, category: suggested, isReconciled: true };
+            }
+          }
+          return t;
+        }));
+        await fetchReconciliationData();
+      } catch (err) {
+        console.error("Bulk auto-map failed:", err);
+      }
     }
     setLoading(false);
   };
@@ -237,7 +316,7 @@ const BankReconciliation: React.FC<{ user: User }> = ({ user }) => {
     try {
       const newRule: CategorizationRule = {
         keyword,
-        category,
+        category: category.toUpperCase(),
         userId: user.uid,
         usageCount: 1,
         lastUsedAt: Date.now()
@@ -299,28 +378,49 @@ const BankReconciliation: React.FC<{ user: User }> = ({ user }) => {
   };
 
   const stats = useMemo(() => {
-    const total = filteredBT.length;
-    const verified = filteredBT.filter(t => t.isVerified).length;
-    const unverified = total - verified;
+    // Stats should be based on ALL transactions for the selected period/bank/type, 
+    // NOT filtered by the 'unverified'/'verified' tabs.
+    const monthIdx = (MONTH_NAMES.indexOf(selectedMonth) + 1).toString().padStart(2, '0');
+    const datePrefix = `${selectedYear}-${monthIdx}`;
+    
+    const periodBT = bankTransactions
+      .filter(t => t.date.startsWith(datePrefix))
+      .filter(t => {
+        if (selectedBankId !== 'all' && t.bankAccountId !== selectedBankId) return false;
+        if (selectedType !== 'all' && t.type !== selectedType) return false;
+        return true;
+      });
+
+    const total = periodBT.length;
+    const verifiedCount = periodBT.filter(t => t.isVerified).length;
+    const unverifiedCount = total - verifiedCount;
     
     const categoryBreakdown: Record<string, number> = {};
-    let totalValue = 0;
-    let mappedValue = 0;
+    let totalDebitValue = 0;
+    let mappedDebitValue = 0;
 
-    filteredBT.forEach(t => {
+    periodBT.forEach(t => {
       if (t.type === 'debit') {
-        totalValue += t.amount;
+        const amt = Number(t.amount) || 0;
+        totalDebitValue += amt;
         if (t.category) {
-          categoryBreakdown[t.category] = (categoryBreakdown[t.category] || 0) + t.amount;
-          mappedValue += t.amount;
+          categoryBreakdown[t.category] = (categoryBreakdown[t.category] || 0) + amt;
+          mappedDebitValue += amt;
         } else {
-          categoryBreakdown['UNMAPPED'] = (categoryBreakdown['UNMAPPED'] || 0) + t.amount;
+          categoryBreakdown['UNMAPPED'] = (categoryBreakdown['UNMAPPED'] || 0) + amt;
         }
       }
     });
 
-    return { total, verified, unverified, categoryBreakdown, totalValue, mappedValue };
-  }, [filteredBT]);
+    return { 
+      total, 
+      verified: verifiedCount, 
+      unverified: unverifiedCount, 
+      categoryBreakdown, 
+      totalValue: totalDebitValue, 
+      mappedValue: mappedDebitValue 
+    };
+  }, [bankTransactions, selectedMonth, selectedYear, selectedBankId, selectedType]);
 
   return (
     <div className="space-y-10 animate-in fade-in duration-700 pb-20">
@@ -576,8 +676,8 @@ const BankReconciliation: React.FC<{ user: User }> = ({ user }) => {
                               </button>
                               <div className="relative">
                                 <select 
-                                  value={bt.category || ''} 
-                                  onChange={e => handleManualMap(bt.id!, e.target.value)}
+                                  value={bt.category?.toUpperCase() || ''} 
+                                  onChange={e => handleManualMap(bt.id!, e.target.value, false)}
                                   disabled={isUpdating}
                                   className={`pl-10 pr-10 py-2.5 rounded-xl text-[10px] font-black uppercase outline-none appearance-none border transition-all ${
                                     bt.category 
@@ -586,7 +686,7 @@ const BankReconciliation: React.FC<{ user: User }> = ({ user }) => {
                                   }`}
                                 >
                                   <option value="">Unmapped</option>
-                                  {categories.map(cat => (
+                                  {availableCategories.map(cat => (
                                     <option key={cat} value={cat}>{cat}</option>
                                   ))}
                                 </select>
@@ -596,7 +696,7 @@ const BankReconciliation: React.FC<{ user: User }> = ({ user }) => {
 
                               {!bt.category && suggestion && (
                                 <button
-                                  onClick={() => handleManualMap(bt.id!, suggestion, false)}
+                                  onClick={() => handleManualMap(bt.id!, suggestion, true)}
                                   className="flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-600 rounded-xl text-[9px] font-black uppercase border border-indigo-100 animate-pulse"
                                 >
                                   <Sparkles size={12} /> Map as {suggestion}?
@@ -782,7 +882,7 @@ const BankReconciliation: React.FC<{ user: User }> = ({ user }) => {
 
                           <button 
                             onClick={async () => {
-                              await handleManualMap(discoveryTxn.id!, p.category || 'COGS', true);
+                              await handleManualMap(discoveryTxn.id!, (p.category || 'COGS').toUpperCase(), true, p.id);
                               setDiscoveryTxn(null);
                             }}
                             className={`p-3 rounded-2xl transition-all ${isExact ? 'bg-emerald-600 text-white shadow-emerald-200' : 'bg-slate-900 text-white shadow-slate-200'} shadow-xl`}
