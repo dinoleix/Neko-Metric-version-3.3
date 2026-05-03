@@ -1,8 +1,8 @@
-import { initializeApp } from '@firebase/app';
-// Use @firebase/auth for modular imports to avoid missing export errors in this environment.
-import { getAuth } from '@firebase/auth';
-import { getFirestore } from '@firebase/firestore';
-import { getStorage } from '@firebase/storage';
+import { initializeApp } from 'firebase/app';
+// Use firebase modular imports
+import { getAuth } from 'firebase/auth';
+import { getFirestore } from 'firebase/firestore';
+import { getStorage } from 'firebase/storage';
 
 const firebaseConfig = {
   apiKey: "AIzaSyB3j7skPl-ykXVLxFQEvCZLrQEYslc0e5w",

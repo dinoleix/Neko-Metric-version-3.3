@@ -1,9 +1,9 @@
 
 import React, { useState, useEffect } from 'react';
-import type { User } from '@firebase/auth';
-import { initializeApp, deleteApp, getApp } from '@firebase/app';
-import { getAuth, createUserWithEmailAndPassword } from '@firebase/auth';
-import { collection, getDocs, doc, setDoc, deleteDoc } from '@firebase/firestore';
+import type { User } from 'firebase/auth';
+import { initializeApp, deleteApp, getApp } from 'firebase/app';
+import { getAuth, createUserWithEmailAndPassword } from 'firebase/auth';
+import { collection, getDocs, doc, setDoc, deleteDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 // Reuse config for secondary instance
 import { auth as primaryAuth } from '../firebase';

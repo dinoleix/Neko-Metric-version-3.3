@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import type { User } from '@firebase/auth';
-import { doc, getDoc, setDoc, collection, query, where, getDocs, writeBatch, deleteDoc, addDoc } from '@firebase/firestore';
+import type { User } from 'firebase/auth';
+import { doc, getDoc, setDoc, collection, query, where, getDocs, writeBatch, deleteDoc, addDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { ai } from '../geminiService';
 import { 

@@ -1,10 +1,11 @@
 
 import React, { useState, useEffect } from 'react';
-import type { User } from '@firebase/auth';
-import { collection, query, getDocs, where, addDoc, doc, deleteDoc, writeBatch, serverTimestamp } from '@firebase/firestore';
+import type { User } from 'firebase/auth';
+import { collection, query, getDocs, where, addDoc, doc, deleteDoc, writeBatch, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase';
 import { Holiday, StoreRental, MASTER_OUTLETS } from '../types';
-import { GoogleGenAI, Type } from "@google/genai";
+import { ai } from '../geminiService';
+import { Type } from "@google/genai";
 import { 
   Calendar, 
   Plus, 
@@ -96,8 +97,6 @@ const HolidayRegistry: React.FC<{ user: User }> = ({ user }) => {
     setIsSeeding(true);
     setStatus(null);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
-      
       // Get unique regions from outlets
       const regions = Array.from(new Set(outlets.map(o => o.address || '').filter(a => a.length > 0)));
       const regionContext = regions.length > 0 

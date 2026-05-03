@@ -18,7 +18,7 @@ import {
   where, 
   getDocs, 
   orderBy 
-} from '@firebase/firestore';
+} from 'firebase/firestore';
 import { db } from '../firebase';
 import { 
   SalesMonthlySnapshot, 

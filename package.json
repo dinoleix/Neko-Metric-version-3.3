@@ -10,17 +10,13 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
-    "@firebase/app": "^0.14.6",
-    "@firebase/auth": "^1.12.0",
-    "@firebase/firestore": "^4.9.3",
-    "@firebase/storage": "^0.14.0",
     "@google/genai": "^1.34.0",
-    "firebase": "^12.7.0",
-    "lucide-react": "^0.562.0",
-    "motion": "^12.34.4",
-    "react": "^19.2.3",
-    "react-dom": "^19.2.3",
-    "recharts": "^3.8.0"
+    "firebase": "^11.1.0",
+    "lucide-react": "^0.474.0",
+    "motion": "^12.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "recharts": "^2.15.0"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

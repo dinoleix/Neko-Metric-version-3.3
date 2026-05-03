@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import type { User } from '@firebase/auth';
-import { collection, query, getDocs, where, doc, setDoc, writeBatch } from '@firebase/firestore';
+import type { User } from 'firebase/auth';
+import { collection, query, getDocs, where, doc, setDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import { 
   ItemMonthlySnapshot, 

@@ -1,15 +1,15 @@
 
 import { WeatherData, WeatherForecast } from './types';
-import { collection, query, where, getDocs, addDoc, updateDoc, doc, limit, orderBy } from '@firebase/firestore';
+import { collection, query, where, getDocs, addDoc, updateDoc, doc, limit, orderBy } from 'firebase/firestore';
 import { db } from './firebase';
-import { GoogleGenAI, Type } from "@google/genai";
+import { Type } from "@google/genai";
+import { ai } from './geminiService';
 
 const API_KEY = import.meta.env.VITE_OPENWEATHER_API_KEY;
 const BASE_URL = 'https://api.openweathermap.org/data/2.5';
 
 export const fetchWeatherSimulated = async (lat: number, lon: number): Promise<Partial<WeatherData>> => {
   try {
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: `Simulate the current weather for coordinates (${lat}, ${lon}). 
@@ -45,7 +45,6 @@ export const fetchWeatherSimulated = async (lat: number, lon: number): Promise<P
 
 export const fetchForecastSimulated = async (lat: number, lon: number): Promise<WeatherForecast[]> => {
   try {
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: `Simulate a 5-day weather forecast for coordinates (${lat}, ${lon}). 

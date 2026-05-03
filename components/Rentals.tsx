@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import type { User } from '@firebase/auth';
-import { collection, query, getDocs, where, addDoc, doc, updateDoc, arrayUnion, deleteDoc, deleteField } from '@firebase/firestore';
+import type { User } from 'firebase/auth';
+import { collection, query, getDocs, where, addDoc, doc, updateDoc, arrayUnion, deleteDoc, deleteField } from 'firebase/firestore';
 import { db } from '../firebase';
 import { StoreRental, RentalHistory, MASTER_OUTLETS, getOutletName, StoreTier } from '../types';
 // COMMENT: Added Loader2 to lucide-react imports

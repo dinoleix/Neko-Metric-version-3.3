@@ -1,24 +1,30 @@
-
 import React, { useState, useEffect, useMemo } from 'react';
 import type { User } from 'firebase/auth';
 import { 
   collection, 
-  query, 
+   query, 
   where, 
   getDocs, 
   orderBy, 
+  getDoc,
   doc, 
   updateDoc, 
   addDoc,
-  writeBatch
+  writeBatch,
+  setDoc,
+  deleteDoc,
+  increment,
+  limit
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { 
   BankTransaction, 
-  PurchaseRecord, 
+  CategorizationRule,
+  BankAccount,
+  PurchaseRecord,
+  RECONCILIATION_CATEGORIES,
   MONTH_NAMES, 
   YEAR_OPTIONS,
-  MASTER_OUTLETS,
   getOutletName
 } from '../types';
 import { 
@@ -32,13 +38,16 @@ import {
   Loader2, 
   CalendarDays,
   IndianRupee,
-  Link as LinkIcon,
   Tag,
-  Store,
-  ShoppingBag,
-  X,
+  BarChart3,
+  PieChart as PieIcon,
+  Trash2,
+  RefreshCcw,
   ChevronDown,
-  ChevronRight,
+  Sparkles,
+  Check,
+  BrainCircuit,
+  Info,
   Database,
   History
 } from 'lucide-react';
@@ -49,26 +58,28 @@ const BankReconciliation: React.FC<{ user: User }> = ({ user }) => {
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear().toString());
   const [loading, setLoading] = useState(true);
   const [bankTransactions, setBankTransactions] = useState<BankTransaction[]>([]);
-  const [purchases, setPurchases] = useState<PurchaseRecord[]>([]);
-  const [reconcilingId, setReconcilingId] = useState<string | null>(null);
-  const [splittingBT, setSplittingBT] = useState<BankTransaction | null>(null);
-  const [purchaseSearch, setPurchaseSearch] = useState('');
-  const [multiSelectedIds, setMultiSelectedIds] = useState<string[]>([]);
+  const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
+  const [rules, setRules] = useState<CategorizationRule[]>([]);
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [showSummary, setShowSummary] = useState(false);
+  const [filterMode, setFilterMode] = useState<'all' | 'unverified' | 'verified'>('unverified');
+  const [selectedBankId, setSelectedBankId] = useState<string>('all');
+  const [selectedType, setSelectedType] = useState<'all' | 'debit' | 'credit'>('all');
+  
+  // Match Discovery Modal
+  const [discoveryTxn, setDiscoveryTxn] = useState<BankTransaction | null>(null);
+  const [discoveryResults, setDiscoveryResults] = useState<PurchaseRecord[]>([]);
+  const [isSearchingDiscovery, setIsSearchingDiscovery] = useState(false);
+  const [discoveryDateRange, setDiscoveryDateRange] = useState<number>(0); // 0, 1, or 2 days offset
+  const [categories, setCategories] = useState<string[]>(RECONCILIATION_CATEGORIES);
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [isAddingCategory, setIsAddingCategory] = useState(false);
 
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
-  const [typeFilter, setTypeFilter] = useState<'all' | 'debit' | 'credit'>('all');
-  const [amountSearch, setAmountSearch] = useState('');
-
-  const fetchAuditData = async () => {
+  const fetchReconciliationData = async () => {
     setLoading(true);
     try {
-      // Find transactions in the selected month
-      // Note: We'll fetch all and filter by date string in JS for simplicity if needed, 
-      // but let's try to query if possible. 
-      // Our BankTransaction.date is likely YYYY-MM-DD
-      const monthIdx = (MONTH_NAMES.indexOf(selectedMonth) + 1).toString().padStart(2, '0');
-      const datePrefix = `${selectedYear}-${monthIdx}`;
-
+      // 1. Fetch Transactions
       const bankQ = query(
         collection(db, 'bank_transactions'),
         where('userId', '==', user.uid)
@@ -76,12 +87,22 @@ const BankReconciliation: React.FC<{ user: User }> = ({ user }) => {
       const bSnap = await getDocs(bankQ);
       setBankTransactions(bSnap.docs.map(d => ({ id: d.id, ...d.data() } as BankTransaction)));
 
-      const purchaseQ = query(
-        collection(db, 'purchases'),
+      // 2. Fetch Categorization Rules
+      const rulesQ = query(
+        collection(db, 'categorization_rules'),
         where('userId', '==', user.uid)
       );
-      const pSnap = await getDocs(purchaseQ);
-      setPurchases(pSnap.docs.map(d => ({ id: d.id, ...d.data() } as PurchaseRecord)));
+      const rSnap = await getDocs(rulesQ);
+      setRules(rSnap.docs.map(d => ({ id: d.id, ...d.data() } as CategorizationRule)));
+
+      // 3. Fetch Bank Accounts
+      const bankAccQ = query(
+        collection(db, 'bank_accounts'),
+        where('userId', '==', user.uid)
+      );
+      const accSnap = await getDocs(bankAccQ);
+      setBankAccounts(accSnap.docs.map(d => ({ id: d.id, ...d.data() } as BankAccount)));
+      
     } catch (err) {
       console.error("Reconciliation fetch error:", err);
     } finally {
@@ -90,619 +111,711 @@ const BankReconciliation: React.FC<{ user: User }> = ({ user }) => {
   };
 
   useEffect(() => {
-    fetchAuditData();
-  }, [user, selectedMonth, selectedYear]);
+    fetchReconciliationData();
+  }, [user]);
 
-  const filteredAndSortedBT = useMemo(() => {
+  const filteredBT = useMemo(() => {
     const monthIdx = (MONTH_NAMES.indexOf(selectedMonth) + 1).toString().padStart(2, '0');
     const datePrefix = `${selectedYear}-${monthIdx}`;
     
     return bankTransactions
       .filter(t => t.date.startsWith(datePrefix))
       .filter(t => {
-        if (typeFilter === 'all') return true;
-        if (typeFilter === 'debit') return t.type === 'debit' || !t.type;
-        return t.type === 'credit';
+        if (filterMode === 'verified') return t.isVerified;
+        if (filterMode === 'unverified') return !t.isVerified;
+        return true;
       })
       .filter(t => {
-        if (!amountSearch) return true;
-        return t.amount.toString().includes(amountSearch);
+        if (selectedBankId !== 'all' && t.bankAccountId !== selectedBankId) return false;
+        if (selectedType !== 'all' && t.type !== selectedType) return false;
+        return true;
       })
-      .sort((a, b) => {
-        const comp = b.date.localeCompare(a.date);
-        return sortOrder === 'desc' ? comp : -comp;
-      });
-  }, [bankTransactions, selectedMonth, selectedYear, sortOrder, typeFilter, amountSearch]);
+      .filter(t => {
+        if (!searchTerm) return true;
+        const search = searchTerm.toLowerCase();
+        return (
+          t.description.toLowerCase().includes(search) || 
+          t.amount.toString().includes(search) ||
+          (t.category || '').toLowerCase().includes(search)
+        );
+      })
+      .sort((a, b) => b.date.localeCompare(a.date));
+  }, [bankTransactions, selectedMonth, selectedYear, searchTerm, filterMode, selectedBankId, selectedType]);
 
-  const filteredPurchases = useMemo(() => {
-    const monthIdx = (MONTH_NAMES.indexOf(selectedMonth) + 1).toString().padStart(2, '0');
-    const datePrefix = `${selectedYear}-${monthIdx}`;
-    return purchases.filter(p => p.date.startsWith(datePrefix));
-  }, [purchases, selectedMonth, selectedYear]);
+  const handleDeleteTransaction = async (id: string) => {
+    if (!confirm("Delete this bank transaction?")) return;
+    try {
+      await deleteDoc(doc(db, 'bank_transactions', id));
+      setBankTransactions(prev => prev.filter(t => t.id !== id));
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  // Learning Engine: Match description against keywords
+  const suggestCategory = (description: string): string | null => {
+    const desc = description.toLowerCase();
+    // Sort rules by keyword length (longest first for better specificity)
+    const sortedRules = [...rules].sort((a, b) => b.keyword.length - a.keyword.length);
+    for (const rule of sortedRules) {
+      if (desc.includes(rule.keyword.toLowerCase())) {
+        return rule.category;
+      }
+    }
+    return null;
+  };
+
+  const handleManualMap = async (btId: string, category: string, isVerified = true) => {
+    setUpdatingId(btId);
+    try {
+      const bt = bankTransactions.find(t => t.id === btId);
+      if (!bt) return;
+
+      await updateDoc(doc(db, 'bank_transactions', btId), {
+        category,
+        isVerified,
+        isReconciled: true // In this new mode, being categorized = reconciled
+      });
+
+      // Update local state for immediate feedback
+      setBankTransactions(prev => prev.map(t => 
+        t.id === btId ? { ...t, category, isVerified, isReconciled: true } : t
+      ));
+
+      // Learning Opportunity: Check if we should suggest a rule
+      // If user manually mapped, and it's not a rule yet
+      const existingRule = rules.find(r => r.category === category && bt.description.toLowerCase().includes(r.keyword.toLowerCase()));
+      
+      if (!existingRule) {
+        // We might want to prompt for rule creation, but for now let's auto-learn simple keywords
+      } else {
+        // Update rule usage count
+        await updateDoc(doc(db, 'categorization_rules', existingRule.id!), {
+          usageCount: increment(1),
+          lastUsedAt: Date.now()
+        });
+      }
+
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setUpdatingId(null);
+    }
+  };
+
+  const handleBulkAutoMap = async () => {
+    setLoading(true);
+    const batch = writeBatch(db);
+    let count = 0;
+
+    for (const bt of filteredBT) {
+      if (bt.isVerified) continue;
+      
+      const suggested = suggestCategory(bt.description);
+      if (suggested && suggested !== bt.category) {
+        batch.update(doc(db, 'bank_transactions', bt.id!), {
+          category: suggested,
+          isVerified: false, // Mark as suggested, needs confirmation
+          isReconciled: true
+        });
+        count++;
+      }
+    }
+
+    if (count > 0) {
+      await batch.commit();
+      await fetchReconciliationData();
+    }
+    setLoading(false);
+  };
+
+  const createRuleFromTransaction = async (description: string, category: string) => {
+    // Simple rule creation: use the first two words or cleaned description
+    const keyword = description.split(' ').slice(0, 3).join(' ').trim();
+    if (!keyword) return;
+
+    try {
+      const newRule: CategorizationRule = {
+        keyword,
+        category,
+        userId: user.uid,
+        usageCount: 1,
+        lastUsedAt: Date.now()
+      };
+      await addDoc(collection(db, 'categorization_rules'), newRule);
+      await fetchReconciliationData();
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleAddCategory = () => {
+    if (!newCategoryName.trim()) return;
+    const upper = newCategoryName.trim().toUpperCase();
+    if (!categories.includes(upper)) {
+      setCategories(prev => [...prev, upper]);
+    }
+    setNewCategoryName('');
+    setIsAddingCategory(false);
+  };
+
+  const findMatchingPurchases = async (txn: BankTransaction, daysOffset: number) => {
+    setIsSearchingDiscovery(true);
+    setDiscoveryDateRange(daysOffset);
+    try {
+      const txnDate = new Date(txn.date);
+      const searchDates: string[] = [];
+      
+      for (let i = 0; i <= daysOffset; i++) {
+        const d = new Date(txnDate);
+        d.setDate(d.getDate() + i);
+        searchDates.push(d.toISOString().split('T')[0]);
+      }
+
+      // Query purchases for these dates
+      // Due to Firebase limitation of 'in' queries being limited and wanting to be efficient:
+      // We look for all user purchases in those dates.
+      const q = query(
+        collection(db, 'purchases'),
+        where('userId', '==', user.uid),
+        where('date', 'in', searchDates)
+      );
+
+      const snap = await getDocs(q);
+      const records = snap.docs.map(d => ({ id: d.id, ...d.data() } as PurchaseRecord));
+      
+      // Sort by closeness to amount first
+      setDiscoveryResults(records.sort((a, b) => {
+        const diffA = Math.abs(a.amount - txn.amount);
+        const diffB = Math.abs(b.amount - txn.amount);
+        return diffA - diffB;
+      }));
+      setDiscoveryTxn(txn);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsSearchingDiscovery(false);
+    }
+  };
 
   const stats = useMemo(() => {
-    const debits = filteredAndSortedBT.filter(t => t.type === 'debit' || !t.type);
-    const credits = filteredAndSortedBT.filter(t => t.type === 'credit');
+    const total = filteredBT.length;
+    const verified = filteredBT.filter(t => t.isVerified).length;
+    const unverified = total - verified;
     
-    const total = debits.length;
-    const reconciled = debits.filter(t => t.isReconciled).length;
-    const partiallyReconciled = debits.filter(t => !t.isReconciled && (t.matchedPurchaseIds?.length || 0) > 0).length;
-    const missing = total - reconciled - partiallyReconciled;
-    
-    const totalValue = debits.reduce((sum, t) => sum + t.amount, 0);
-    const reconciledValue = debits.reduce((sum, t) => sum + (t.reconciledAmount || (t.isReconciled ? t.amount : 0)), 0);
-    
-    const totalCreditValue = credits.reduce((sum, t) => sum + t.amount, 0);
-    
-    return { 
-      total, 
-      reconciled, 
-      partiallyReconciled,
-      missing, 
-      completion: total > 0 ? (reconciledValue / totalValue) * 100 : 0,
-      totalValue,
-      reconciledValue,
-      totalCredits: credits.length,
-      totalCreditValue
-    };
-  }, [bankTransactions]);
+    const categoryBreakdown: Record<string, number> = {};
+    let totalValue = 0;
+    let mappedValue = 0;
 
-  const findSuggestedPurchase = (bt: BankTransaction) => {
-    if (bt.type === 'credit') return null; // Only debits match purchases
-    return filteredPurchases.find(p => {
-      // Match if amount is exact and date is within range
-      const btDate = new Date(bt.date);
-      const pDate = new Date(p.date);
-      const diffTime = Math.abs(btDate.getTime() - pDate.getTime());
-      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-      
-      return p.amount === bt.amount && diffDays <= 7;
+    filteredBT.forEach(t => {
+      if (t.type === 'debit') {
+        totalValue += t.amount;
+        if (t.category) {
+          categoryBreakdown[t.category] = (categoryBreakdown[t.category] || 0) + t.amount;
+          mappedValue += t.amount;
+        } else {
+          categoryBreakdown['UNMAPPED'] = (categoryBreakdown['UNMAPPED'] || 0) + t.amount;
+        }
+      }
     });
-  };
 
-  const handleQuickReconcile = async (bt: BankTransaction, purchaseId: string) => {
-    setReconcilingId(bt.id!);
-    try {
-      const p = filteredPurchases.find(p => p.id === purchaseId);
-      const amount = p?.amount || 0;
-      
-      const newIds = Array.from(new Set([...(bt.matchedPurchaseIds || []), purchaseId]));
-      const newAmount = (bt.reconciledAmount || 0) + amount;
-      const isDone = newAmount >= bt.amount;
-
-      await updateDoc(doc(db, 'bank_transactions', bt.id!), {
-        isReconciled: isDone,
-        matchedPurchaseId: purchaseId, // Maintain for legacy
-        matchedPurchaseIds: newIds,
-        reconciledAmount: newAmount
-      });
-      fetchAuditData();
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setReconcilingId(null);
-    }
-  };
-
-  const handleBulkReconcile = async () => {
-    if (!splittingBT) return;
-    setReconcilingId(splittingBT.id!);
-    try {
-      const selectedPurchases = filteredPurchases.filter(p => multiSelectedIds.includes(p.id!));
-      const totalSelectedAmount = selectedPurchases.reduce((sum, p) => sum + p.amount, 0);
-      
-      const isDone = totalSelectedAmount >= splittingBT.amount;
-
-      await updateDoc(doc(db, 'bank_transactions', splittingBT.id!), {
-        isReconciled: isDone,
-        matchedPurchaseIds: multiSelectedIds,
-        reconciledAmount: totalSelectedAmount,
-        matchedPurchaseId: multiSelectedIds[0] || null
-      });
-      
-      setSplittingBT(null);
-      setMultiSelectedIds([]);
-      fetchAuditData();
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setReconcilingId(null);
-    }
-  };
-
-  const handleCreateAndReconcile = async (bt: BankTransaction) => {
-    setReconcilingId(bt.id!);
-    try {
-      // 1. Create Purchase Record
-      const newPurchase: Partial<PurchaseRecord> = {
-        userId: user.uid,
-        date: bt.date,
-        amount: bt.amount,
-        productName: bt.description,
-        category: 'UNCATEGORIZED',
-        vendor: 'UNKNOWN',
-        outletId: 'GLOBAL', // Default
-        isBankVerified: true,
-        createdAt: Date.now()
-      };
-      
-      const pRef = await addDoc(collection(db, 'purchases'), newPurchase);
-      
-      // 2. Link bank transaction
-      await updateDoc(doc(db, 'bank_transactions', bt.id!), {
-        isReconciled: true,
-        matchedPurchaseId: pRef.id
-      });
-      
-      fetchAuditData();
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setReconcilingId(null);
-    }
-  };
+    return { total, verified, unverified, categoryBreakdown, totalValue, mappedValue };
+  }, [filteredBT]);
 
   return (
     <div className="space-y-10 animate-in fade-in duration-700 pb-20">
       <header className="flex flex-col md:flex-row md:items-end justify-between gap-6">
         <div>
           <div className="flex items-center gap-4 mb-2">
-            <div className="w-12 h-12 bg-slate-900 rounded-2xl flex items-center justify-center text-white shadow-xl">
-              <ShieldCheck size={24} />
+            <div className="w-12 h-12 bg-indigo-600 rounded-2xl flex items-center justify-center text-white shadow-xl">
+              <RefreshCcw size={24} />
             </div>
-            <h2 className="text-3xl font-black text-slate-900 tracking-tighter">Bank Inbound Audit</h2>
+            <h2 className="text-3xl font-black text-slate-900 tracking-tighter">Transaction Categorizer</h2>
           </div>
-          <p className="text-slate-500 font-medium uppercase text-xs tracking-widest flex items-center gap-2">
-             <History size={14} className="text-indigo-500"/> Verification Suite for Financial Integrity
+          <p className="text-slate-500 font-medium uppercase text-[10px] tracking-widest flex items-center gap-2">
+             <BrainCircuit size={14} className="text-indigo-500"/> AI-Assisted Financial Learning & Mapping
           </p>
         </div>
 
-        <div className="flex gap-4 p-1.5 bg-slate-100 rounded-2xl border border-slate-200 shadow-inner">
-          <div className="relative">
-            <select 
-              value={selectedMonth} 
-              onChange={e => setSelectedMonth(e.target.value)}
-              className="pl-4 pr-10 py-3 bg-white rounded-xl text-xs font-black uppercase outline-none appearance-none border border-slate-200 shadow-sm"
-            >
-              {MONTH_NAMES.map(m => <option key={m} value={m}>{m}</option>)}
-            </select>
-            <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
-          </div>
-          <div className="relative">
-            <select 
-              value={selectedYear} 
-              onChange={e => setSelectedYear(e.target.value)}
-              className="pl-4 pr-10 py-3 bg-white rounded-xl text-xs font-black outline-none appearance-none border border-slate-200 shadow-sm"
-            >
-              {YEAR_OPTIONS.map(y => <option key={y} value={y}>{y}</option>)}
-            </select>
-            <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
-          </div>
-        </div>
-
         <div className="flex flex-wrap items-center gap-4">
-          <div className="flex p-1 bg-slate-100 rounded-xl border border-slate-200">
-            {[
-              { id: 'all', label: 'All Transactions' },
-              { id: 'debit', label: 'Withdrawals (Dr)' },
-              { id: 'credit', label: 'Deposits (Cr)' }
-            ].map(tab => (
-              <button
-                key={tab.id}
-                onClick={() => setTypeFilter(tab.id as any)}
-                className={`px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-tight transition-all ${
-                  typeFilter === tab.id 
-                    ? 'bg-white text-slate-900 shadow-sm' 
-                    : 'text-slate-400 hover:text-slate-600'
-                }`}
+          <div className="flex p-1 bg-slate-100 rounded-2xl border border-slate-200">
+            <div className="relative">
+              <select 
+                value={selectedBankId} 
+                onChange={e => setSelectedBankId(e.target.value)}
+                className="pl-4 pr-10 py-2.5 bg-white rounded-xl text-[10px] font-black uppercase outline-none appearance-none border border-slate-200 shadow-sm"
               >
-                {tab.label}
-              </button>
-            ))}
+                <option value="all">All Banks</option>
+                {bankAccounts.map(acc => (
+                  <option key={acc.id} value={acc.id}>{acc.name}</option>
+                ))}
+              </select>
+              <ChevronDown size={12} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            </div>
+            <div className="relative ml-2">
+              <select 
+                value={selectedType} 
+                onChange={e => setSelectedType(e.target.value as any)}
+                className="pl-4 pr-10 py-2.5 bg-white rounded-xl text-[10px] font-black uppercase outline-none appearance-none border border-slate-200 shadow-sm"
+              >
+                <option value="all">All Types</option>
+                <option value="debit">Debits (-)</option>
+                <option value="credit">Credits (+)</option>
+              </select>
+              <ChevronDown size={12} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            </div>
+          </div>
+
+          <div className="flex p-1 bg-slate-100 rounded-2xl border border-slate-200">
+            <div className="relative">
+              <select 
+                value={selectedMonth} 
+                onChange={e => setSelectedMonth(e.target.value)}
+                className="pl-4 pr-10 py-2.5 bg-white rounded-xl text-[10px] font-black uppercase outline-none appearance-none border border-slate-200 shadow-sm"
+              >
+                {MONTH_NAMES.map(m => <option key={m} value={m}>{m}</option>)}
+              </select>
+              <ChevronDown size={12} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            </div>
+            <div className="relative ml-2">
+              <select 
+                value={selectedYear} 
+                onChange={e => setSelectedYear(e.target.value)}
+                className="pl-4 pr-10 py-2.5 bg-white rounded-xl text-[10px] font-black outline-none appearance-none border border-slate-200 shadow-sm"
+              >
+                {YEAR_OPTIONS.map(y => <option key={y} value={y}>{y}</option>)}
+              </select>
+              <ChevronDown size={12} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            </div>
           </div>
 
           <div className="relative">
             <Search size={14} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
             <input 
               type="text" 
-              placeholder="SEARCH BY AMOUNT..."
-              value={amountSearch}
-              onChange={e => setAmountSearch(e.target.value)}
-              className="pl-10 pr-4 py-3 bg-white border border-slate-200 rounded-xl text-xs font-bold uppercase outline-none focus:ring-2 ring-indigo-500/20 w-44 shadow-sm"
+              placeholder="SEARCH TRANSACTIONS..."
+              value={searchTerm}
+              onChange={e => setSearchTerm(e.target.value)}
+              className="pl-10 pr-4 py-3 bg-white border border-slate-200 rounded-xl text-xs font-bold uppercase outline-none focus:ring-2 ring-indigo-500/20 w-64 shadow-sm"
             />
           </div>
+
+          <button 
+            onClick={() => setShowSummary(!showSummary)}
+            className={`flex items-center gap-2 px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all shadow-xl ${showSummary ? 'bg-slate-900 text-white shadow-slate-200' : 'bg-white text-slate-900 border border-slate-200 shadow-slate-100'}`}
+          >
+            {showSummary ? <Database size={14} /> : <PieIcon size={14} />} 
+            {showSummary ? 'View Ledger' : 'View Insights'}
+          </button>
         </div>
       </header>
 
-      {/* Stats Overview */}
-      <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
-        <div className="bg-white rounded-[2.5rem] border border-slate-100 p-8 shadow-sm">
-          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Total Debits</p>
-          <div className="flex items-baseline gap-2">
-            <h4 className="text-4xl font-black text-slate-900 tracking-tighter">{stats.total}</h4>
-            <span className="text-xs font-bold text-slate-400">Records</span>
-          </div>
+      {/* Action Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-6 bg-indigo-50/50 p-6 rounded-[2.5rem] border border-indigo-100">
+        <div className="flex items-center gap-6">
+          <button 
+            onClick={() => setFilterMode('unverified')}
+            className={`flex items-center gap-2 px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all ${filterMode === 'unverified' ? 'bg-rose-600 text-white shadow-lg' : 'bg-white text-slate-400'}`}
+          >
+            <AlertCircle size={14} /> Pending ({stats.unverified})
+          </button>
+          <button 
+            onClick={() => setFilterMode('verified')}
+            className={`flex items-center gap-2 px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all ${filterMode === 'verified' ? 'bg-indigo-600 text-white shadow-lg' : 'bg-white text-slate-400'}`}
+          >
+            <CheckCircle2 size={14} /> Verified ({stats.verified})
+          </button>
+          <button 
+            onClick={() => setFilterMode('all')}
+            className={`flex items-center gap-2 px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all ${filterMode === 'all' ? 'bg-slate-900 text-white shadow-lg' : 'bg-white text-slate-400'}`}
+          >
+            <Database size={14} /> All
+          </button>
         </div>
-        <div className="bg-white rounded-[2.5rem] border border-slate-100 p-8 shadow-sm">
-          <p className="text-[10px] font-black text-emerald-600 uppercase tracking-widest mb-2 font-bold">Total Credits</p>
-          <div className="flex items-baseline gap-2">
-            <h4 className="text-4xl font-black text-emerald-500 tracking-tighter">{stats.totalCredits}</h4>
-            <span className="text-xs font-bold text-slate-400">Deposits</span>
-          </div>
-        </div>
-        <div className="bg-white rounded-[2.5rem] border border-slate-100 p-8 shadow-sm">
-          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Reconciled (Dr)</p>
-          <div className="flex items-baseline gap-2">
-            <h4 className="text-4xl font-black text-emerald-500 tracking-tighter">{stats.reconciled}</h4>
-            <span className="text-xs font-bold text-slate-400">Match Found</span>
-          </div>
-        </div>
-        <div className="bg-white rounded-[2.5rem] border border-slate-100 p-8 shadow-sm">
-          <p className="text-[10px] font-black text-amber-600 uppercase tracking-widest mb-2 font-bold">Unmapped Leakage</p>
-          <div className="flex items-baseline gap-2">
-            <h4 className="text-4xl font-black text-rose-500 tracking-tighter">{(stats.totalValue - stats.reconciledValue).toLocaleString()}</h4>
-            <span className="text-xs font-bold text-slate-400">₹ Pending</span>
-          </div>
-        </div>
-        <div className="bg-slate-900 rounded-[2.5rem] p-8 shadow-xl relative overflow-hidden">
-          <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/10 rounded-full -mr-16 -mt-16 blur-2xl font-black"></div>
-          <p className="text-[10px] font-black text-indigo-300 uppercase tracking-widest mb-2">Health Index</p>
-          <div className="flex items-baseline gap-2">
-            <h4 className="text-4xl font-black text-white tracking-tighter">{Math.round(stats.completion)}%</h4>
-            <div className="flex-1 h-3 bg-white/10 rounded-full overflow-hidden self-center ml-2">
-              <motion.div 
-                initial={{ width: 0 }}
-                animate={{ width: `${stats.completion}%` }}
-                className="h-full bg-indigo-400"
-              />
-            </div>
-          </div>
+
+        <div className="flex items-center gap-4">
+          <button 
+            onClick={handleBulkAutoMap}
+            disabled={loading}
+            className="flex items-center gap-2 px-6 py-3 bg-indigo-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-100 disabled:opacity-50"
+          >
+            <Sparkles size={14} /> Auto-Map month
+          </button>
+          
+          <button 
+            onClick={() => setIsAddingCategory(true)}
+            className="flex items-center gap-2 px-6 py-3 bg-white text-slate-900 border border-slate-200 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-50 transition-all shadow-sm"
+          >
+            <Plus size={14} /> Custom Category
+          </button>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-12 gap-10">
-        {/* Left Column: Bank Transactions */}
-        <div className="xl:col-span-12 space-y-6">
-          <div className="bg-white rounded-[3rem] border border-slate-100 shadow-sm overflow-hidden min-h-[600px] flex flex-col">
-            <div className="p-8 border-b border-slate-50 bg-slate-50/50 flex items-center justify-between">
-              <div className="flex items-center gap-4">
-                <div className="w-10 h-10 bg-slate-900 text-white rounded-xl flex items-center justify-center shadow-lg"><Database size={20} /></div>
-                <div><h3 className="font-black text-slate-800 uppercase tracking-tight">Bank Ledger Inbound</h3><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Scanning withdrawals from uploaded statements</p></div>
-              </div>
-              <div className="flex items-center gap-3">
-                 <div className="px-4 py-2 bg-indigo-50 text-indigo-600 rounded-xl text-[10px] font-black uppercase border border-indigo-100 shadow-sm">Audit Active</div>
-              </div>
-            </div>
+      <AnimatePresence mode="wait">
+        {showSummary ? (
+          <motion.div 
+            key="summary"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="grid grid-cols-1 lg:grid-cols-2 gap-10"
+          >
+            <div className="bg-white p-10 rounded-[3rem] border border-slate-100 shadow-sm">
+                <div className="flex items-center gap-4 mb-10">
+                  <div className="p-3 bg-indigo-50 text-indigo-600 rounded-2xl"><PieIcon size={24} /></div>
+                  <div><h3 className="text-xl font-black text-slate-900 uppercase tracking-tight">Spending Anatomy</h3><p className="text-slate-400 text-xs font-medium">Categorical distribution of bank withdrawals.</p></div>
+                </div>
 
-            <div className="flex-1 overflow-x-auto">
-              {loading ? (
-                <div className="h-full flex flex-col items-center justify-center py-20 text-slate-400">
-                  <Loader2 className="animate-spin mb-4" size={32} />
-                  <p className="font-bold uppercase text-[10px] tracking-[0.2em]">Processing relational maps...</p>
-                </div>
-              ) : filteredAndSortedBT.length === 0 ? (
-                <div className="h-full flex flex-col items-center justify-center py-20 text-slate-300">
-                  <CalendarDays size={48} className="mb-4 opacity-20" />
-                  <p className="font-black uppercase text-sm">No Statements Found for this period</p>
-                  <p className="text-[10px] font-medium uppercase mt-1">Upload a Bank Statement CSV in the Data Hub to begin</p>
-                </div>
-              ) : (
-                <table className="w-full text-left border-separate border-spacing-0">
-                  <thead>
-                    <tr className="bg-slate-50/30">
-                      <th 
-                        className="px-8 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100 cursor-pointer hover:bg-slate-100 transition-colors"
-                        onClick={() => setSortOrder(prev => prev === 'desc' ? 'asc' : 'desc')}
-                      >
-                        <div className="flex items-center gap-2">
-                          Transaction Date
-                          <ChevronDown size={12} className={`transition-transform duration-300 ${sortOrder === 'asc' ? 'rotate-180' : ''}`} />
+                <div className="space-y-6">
+                  {(Object.entries(stats.categoryBreakdown) as [string, number][])
+                    .sort((a, b) => b[1] - a[1])
+                    .map(([cat, val]) => (
+                      <div key={cat} className="group">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className={`text-[10px] font-black uppercase tracking-widest ${cat === 'UNMAPPED' ? 'text-rose-500' : 'text-slate-500'}`}>{cat}</span>
+                          <span className="text-sm font-black text-slate-900">₹{val.toLocaleString()}</span>
                         </div>
-                      </th>
-                      <th className="px-8 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">Type</th>
-                      <th className="px-8 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">Description / Narration</th>
-                      <th className="px-8 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">Amount (Dr/Cr)</th>
-                      <th className="px-8 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">Balance</th>
-                      <th className="px-8 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">Reconciliation Status</th>
-                      <th className="px-8 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100 text-right">Integrity Action</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-50">
-                    {filteredAndSortedBT.map(bt => {
-                      const suggestion = bt.isReconciled ? null : findSuggestedPurchase(bt);
-                      const isReconciling = reconcilingId === bt.id;
-
-                      return (
-                        <tr key={bt.id} className="group hover:bg-slate-50/50 transition-colors">
-                          <td className="px-8 py-6">
-                            <div className="flex flex-col">
-                              <span className="text-sm font-black text-slate-900">{new Date(bt.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}</span>
-                              <div className="flex items-center gap-1">
-                                <span className="text-[9px] font-bold text-slate-400 uppercase">{new Date(bt.date).getFullYear()}</span>
-                                {bt.date.includes('T') && new Date(bt.date).getHours() + new Date(bt.date).getMinutes() > 0 && (
-                                  <>
-                                    <span className="text-[9px] font-bold text-slate-300">•</span>
-                                    <span className="text-[9px] font-black text-indigo-500 uppercase">{new Date(bt.date).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</span>
-                                  </>
-                                )}
-                              </div>
-                            </div>
-                          </td>
-                          <td className="px-8 py-6">
-                            <span className={`px-2 py-0.5 rounded-md text-[8px] font-black uppercase tracking-widest ${bt.type === 'credit' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
-                              {bt.type === 'credit' ? 'CREDIT' : 'DEBIT'}
-                            </span>
-                          </td>
-                          <td className="px-8 py-6">
-                            <p className="text-xs font-bold text-slate-700 uppercase leading-snug line-clamp-2 max-w-[300px]">{bt.description}</p>
-                            {bt.referenceNo && !bt.referenceNo.startsWith('AUTO-') && (
-                              <span className="text-[9px] font-black text-slate-400 uppercase tracking-tighter">REF: {bt.referenceNo}</span>
-                            )}
-                          </td>
-                          <td className="px-8 py-6">
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-xs font-black text-slate-400">₹</span>
-                              <span className={`text-lg font-black tracking-tighter ${bt.type === 'credit' ? 'text-emerald-600' : 'text-slate-900'}`}>{bt.amount.toLocaleString('en-IN')}</span>
-                            </div>
-                          </td>
-                          <td className="px-8 py-6">
-                            {bt.balance !== undefined && (
-                              <div className="flex items-center gap-1.5">
-                                <span className="text-[10px] font-bold text-slate-400">₹</span>
-                                <span className="text-sm font-black text-slate-600 tracking-tighter">{bt.balance.toLocaleString('en-IN')}</span>
-                              </div>
-                            )}
-                          </td>
-                          <td className="px-8 py-6">
-                            {bt.isReconciled ? (
-                              <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-emerald-50 text-emerald-600 rounded-full text-[10px] font-black uppercase border border-emerald-100">
-                                <CheckCircle2 size={12} /> Reconciled
-                              </div>
-                            ) : (bt.matchedPurchaseIds?.length || 0) > 0 ? (
-                              <div className="flex flex-col gap-1 w-full">
-                                <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-indigo-50 text-indigo-600 rounded-full text-[10px] font-black uppercase border border-indigo-100 w-fit">
-                                  <ArrowRightLeft size={12} /> Partially Mapped ({(bt.matchedPurchaseIds?.length || 0)})
-                                </div>
-                                <div className="w-full h-1.5 bg-slate-100 rounded-full mt-1 overflow-hidden">
-                                  <div 
-                                    className="h-full bg-indigo-500" 
-                                    style={{ width: `${Math.min(100, ((bt.reconciledAmount || 0) / bt.amount) * 100)}%` }}
-                                  />
-                                </div>
-                                <p className="text-[8px] font-bold text-slate-400 uppercase mt-1">₹{(bt.amount - (bt.reconciledAmount || 0)).toLocaleString()} Remaining</p>
-                              </div>
-                            ) : suggestion ? (
-                              <div className="flex flex-col gap-1.5 animate-in fade-in duration-500">
-                                <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-amber-50 text-amber-600 rounded-full text-[10px] font-black uppercase border border-amber-100 w-fit">
-                                  <AlertCircle size={12} /> Suggestion Found
-                                </div>
-                                <div className="p-2 bg-indigo-50 border border-indigo-100 rounded-xl flex items-center gap-3 shadow-sm">
-                                   <div className="p-2 bg-indigo-600 text-white rounded-lg"><ShoppingBag size={12}/></div>
-                                   <div className="flex-1 min-w-0">
-                                      <p className="text-[9px] font-black text-slate-900 truncate uppercase">{suggestion.productName}</p>
-                                      <p className="text-[8px] font-bold text-indigo-500 uppercase">{getOutletName(suggestion.outletId)}</p>
-                                   </div>
-                                   <button 
-                                      onClick={() => handleQuickReconcile(bt, suggestion.id!)}
-                                      disabled={isReconciling}
-                                      className="p-1.5 bg-white text-indigo-600 rounded-lg hover:bg-indigo-600 hover:text-white transition-all shadow-sm border border-indigo-100"
-                                    >
-                                      {isReconciling ? <Loader2 size={12} className="animate-spin"/> : <LinkIcon size={12}/>}
-                                   </button>
-                                </div>
-                              </div>
-                            ) : (
-                              <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-rose-50 text-rose-500 rounded-full text-[10px] font-black uppercase border border-rose-100">
-                                <X size={12} /> Record Missing
-                              </div>
-                            )}
-                          </td>
-                          <td className="px-8 py-6 text-right">
-                             {!bt.isReconciled && bt.type !== 'credit' && (
-                               <div className="flex items-center justify-end gap-3">
-                                  <button 
-                                    onClick={() => {
-                                      setSplittingBT(bt);
-                                      setMultiSelectedIds(bt.matchedPurchaseIds || []);
-                                      setPurchaseSearch('');
-                                    }}
-                                    className="p-2 bg-indigo-50 text-indigo-600 rounded-xl hover:bg-indigo-600 hover:text-white transition-all border border-indigo-100"
-                                    title="Manual Split / Multi-Match"
-                                  >
-                                    <ArrowRightLeft size={16} />
-                                  </button>
-                                  <button 
-                                    onClick={() => handleCreateAndReconcile(bt)}
-                                    disabled={isReconciling}
-                                    className="flex items-center gap-2 px-4 py-2 bg-slate-900 text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-800 transition-all shadow-lg hover:shadow-slate-200"
-                                  >
-                                    {isReconciling ? <Loader2 size={14} className="animate-spin"/> : <Plus size={14} />} Fast Log
-                                  </button>
-                               </div>
-                             )}
-                             {bt.type === 'credit' && (
-                               <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest italic">Inflow Record</span>
-                             )}
-                             {bt.isReconciled && (
-                               <div className="flex items-center justify-end gap-3">
-                                  <button 
-                                    onClick={() => {
-                                      setSplittingBT(bt);
-                                      setMultiSelectedIds(bt.matchedPurchaseIds || []);
-                                    }}
-                                    className="text-[9px] font-black text-indigo-600 uppercase hover:underline"
-                                  >
-                                    View Links
-                                  </button>
-                                  <div className="flex flex-col items-end gap-1">
-                                    <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Matched Records</span>
-                                    <span className="text-[8px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-100 uppercase">
-                                      {bt.matchedPurchaseIds?.length || 1} Linked
-                                    </span>
-                                  </div>
-                               </div>
-                             )}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              )}
-            </div>
-
-            <div className="p-8 bg-slate-50 border-t border-slate-100 flex items-center justify-between">
-               <div className="flex items-center gap-6">
-                  <div className="flex items-center gap-2 text-[10px] font-black text-slate-400 uppercase">
-                     <div className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
-                     <span>Reconciled</span>
-                  </div>
-                  <div className="flex items-center gap-2 text-[10px] font-black text-slate-400 uppercase">
-                     <div className="w-2.5 h-2.5 rounded-full bg-amber-500" />
-                     <span>Suggested Fix</span>
-                  </div>
-                  <div className="flex items-center gap-2 text-[10px] font-black text-slate-400 uppercase">
-                     <div className="w-2.5 h-2.5 rounded-full bg-rose-500" />
-                     <span>Leakage Found</span>
-                  </div>
-               </div>
-               <div className="flex items-center gap-4 text-xs font-black text-slate-400 uppercase tracking-widest">
-                  Total Managed Volume: <span className="text-slate-900">₹{stats.totalValue.toLocaleString()}</span>
-               </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <AnimatePresence>
-        {splittingBT && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 md:p-10">
-            <motion.div 
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setSplittingBT(null)}
-              className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm"
-            />
-            <motion.div 
-              initial={{ scale: 0.95, opacity: 0, y: 20 }}
-              animate={{ scale: 1, opacity: 1, y: 0 }}
-              exit={{ scale: 0.95, opacity: 0, y: 20 }}
-              className="relative w-full max-w-4xl bg-white rounded-[3rem] shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
-            >
-              <div className="p-8 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
-                <div className="flex items-center gap-4">
-                  <div className="w-12 h-12 bg-indigo-600 text-white rounded-2xl flex items-center justify-center shadow-lg shadow-indigo-200">
-                    <ArrowRightLeft size={24} />
-                  </div>
-                  <div>
-                    <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight">Split Reconciliation</h3>
-                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Map multiple purchases to one bank transaction</p>
-                  </div>
+                        <div className="h-3 bg-slate-50 rounded-full overflow-hidden border border-slate-100">
+                          <motion.div 
+                            initial={{ width: 0 }}
+                            animate={{ width: `${(val / (stats.totalValue || 1)) * 100}%` }}
+                            className={`h-full ${cat === 'UNMAPPED' ? 'bg-rose-400' : 'bg-indigo-500'}`}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  
+                  {Object.keys(stats.categoryBreakdown).length === 0 && (
+                    <div className="py-20 text-center">
+                      <p className="text-xs font-black text-slate-300 uppercase">No mapped data available for this month</p>
+                    </div>
+                  )}
                 </div>
-                <button onClick={() => setSplittingBT(null)} className="p-3 hover:bg-slate-100 rounded-2xl text-slate-400 transition-colors">
-                  <X size={20} />
-                </button>
+            </div>
+
+            <div className="bg-slate-900 p-10 rounded-[3rem] shadow-xl text-white overflow-hidden relative">
+              <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-500/10 rounded-full -mr-32 -mt-32 blur-3xl" />
+              <div className="flex items-center gap-4 mb-10">
+                <div className="p-3 bg-white/10 text-white rounded-2xl"><BarChart3 size={24} /></div>
+                <div><h3 className="text-xl font-black text-white uppercase tracking-tight">Financial Health</h3><p className="text-indigo-300/50 text-xs font-medium">Month-to-date mapping efficiency.</p></div>
               </div>
 
-              <div className="p-8 flex-1 overflow-y-auto space-y-8">
-                {/* Bank Transaction Header */}
-                <div className="p-6 bg-slate-900 rounded-3xl text-white flex items-center justify-between shadow-xl">
-                  <div className="flex flex-col gap-1">
-                    <p className="text-[10px] font-black text-indigo-300 uppercase tracking-[0.2em]">Bank Transaction</p>
-                    <p className="text-sm font-bold truncate max-w-[400px] uppercase">{splittingBT.description}</p>
-                    <p className="text-[10px] font-black text-slate-400 uppercase italic">Date: {splittingBT.date}</p>
+              <div className="grid grid-cols-2 gap-6">
+                 <div className="bg-white/5 p-8 rounded-3xl border border-white/10">
+                    <p className="text-[10px] font-black text-indigo-300 uppercase tracking-widest mb-2">Total Managed</p>
+                    <h4 className="text-3xl font-black text-white tracking-tighter">₹{stats.totalValue.toLocaleString()}</h4>
+                 </div>
+                 <div className="bg-white/5 p-8 rounded-3xl border border-white/10">
+                    <p className="text-[10px] font-black text-indigo-300 uppercase tracking-widest mb-2">Mapped Coverage</p>
+                    <h4 className="text-3xl font-black text-white tracking-tighter">{stats.totalValue > 0 ? Math.round((stats.mappedValue / stats.totalValue) * 100) : 0}%</h4>
+                 </div>
+              </div>
+
+              <div className="mt-10 p-8 bg-indigo-600 rounded-3xl shadow-inner border border-white/10">
+                 <h5 className="text-[10px] font-black text-white uppercase tracking-widest mb-4 flex items-center gap-2">
+                   <Sparkles size={12} /> System IQ
+                 </h5>
+                 <p className="text-indigo-100 text-sm font-medium leading-relaxed">
+                   Your account has <b>{rules.length} active categorization rules</b>. The system has automatically identified <b>{filteredBT.filter(t => t.category || suggestCategory(t.description)).length} patterns</b> in your statement this month.
+                 </p>
+              </div>
+            </div>
+          </motion.div>
+        ) : (
+          <motion.div 
+            key="ledger"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="bg-white rounded-[3rem] border border-slate-100 shadow-sm overflow-hidden min-h-[600px] flex flex-col"
+          >
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-separate border-spacing-0">
+                <thead>
+                  <tr className="bg-slate-50/50">
+                    <th className="px-8 py-6 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">Transaction Date</th>
+                    <th className="px-8 py-6 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">Entity / Narration</th>
+                    <th className="px-8 py-6 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">Amount</th>
+                    <th className="px-8 py-6 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">Functional Category</th>
+                    <th className="px-8 py-6 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100 text-right">Verification</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                  {filteredBT.map(bt => {
+                    const suggestion = bt.category ? null : suggestCategory(bt.description);
+                    const isUpdating = updatingId === bt.id;
+
+                    return (
+                      <tr key={bt.id} className={`group hover:bg-slate-50/50 transition-colors ${bt.isVerified ? 'opacity-60' : ''}`}>
+                        <td className="px-8 py-6">
+                           <div className="flex flex-col">
+                             <span className="text-sm font-black text-slate-900">{new Date(bt.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}</span>
+                             <span className="text-[9px] font-bold text-slate-400 uppercase">{new Date(bt.date).getFullYear()}</span>
+                           </div>
+                        </td>
+                        <td className="px-8 py-6">
+                           <p className="text-xs font-bold text-slate-700 uppercase leading-snug max-w-[350px]">{bt.description}</p>
+                           {bt.referenceNo && !bt.referenceNo.startsWith('AUTO-') && (
+                             <span className="text-[9px] font-black text-slate-400 uppercase tracking-tighter">UTR: {bt.referenceNo}</span>
+                           )}
+                        </td>
+                        <td className="px-8 py-6">
+                          <div className={`flex items-baseline gap-1 ${bt.type === 'credit' ? 'text-emerald-600' : 'text-slate-900'}`}>
+                            <span className="text-xs font-black">₹</span>
+                            <span className="text-lg font-black tracking-tighter">{bt.amount.toLocaleString()}</span>
+                          </div>
+                        </td>
+                        <td className="px-8 py-6">
+                           <div className="flex items-center gap-3">
+                              <button 
+                                onClick={() => findMatchingPurchases(bt, 0)}
+                                className={`p-2 rounded-xl border transition-all ${discoveryTxn?.id === bt.id ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-400 border-slate-200 hover:text-indigo-600 hover:border-indigo-200'}`}
+                                title="Find Matching Bills"
+                              >
+                                {isSearchingDiscovery && discoveryTxn?.id === bt.id ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />}
+                              </button>
+                              <div className="relative">
+                                <select 
+                                  value={bt.category || ''} 
+                                  onChange={e => handleManualMap(bt.id!, e.target.value)}
+                                  disabled={isUpdating}
+                                  className={`pl-10 pr-10 py-2.5 rounded-xl text-[10px] font-black uppercase outline-none appearance-none border transition-all ${
+                                    bt.category 
+                                      ? 'bg-white border-slate-200 text-slate-900' 
+                                      : 'bg-rose-50 border-rose-100 text-rose-500'
+                                  }`}
+                                >
+                                  <option value="">Unmapped</option>
+                                  {categories.map(cat => (
+                                    <option key={cat} value={cat}>{cat}</option>
+                                  ))}
+                                </select>
+                                <Tag size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                                <ChevronDown size={12} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                              </div>
+
+                              {!bt.category && suggestion && (
+                                <button
+                                  onClick={() => handleManualMap(bt.id!, suggestion, false)}
+                                  className="flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-600 rounded-xl text-[9px] font-black uppercase border border-indigo-100 animate-pulse"
+                                >
+                                  <Sparkles size={12} /> Map as {suggestion}?
+                                </button>
+                              )}
+                           </div>
+                        </td>
+                        <td className="px-8 py-6 text-right">
+                           <div className="flex items-center justify-end gap-3">
+                              <button 
+                                onClick={() => handleDeleteTransaction(bt.id!)}
+                                className="p-3 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-2xl transition-all"
+                                title="Delete Record"
+                              >
+                                <Trash2 size={18} />
+                              </button>
+                              {bt.category && !bt.isVerified && (
+                                <button 
+                                  onClick={() => handleManualMap(bt.id!, bt.category!, true)}
+                                  className="p-3 bg-emerald-50 text-emerald-600 rounded-2xl hover:bg-emerald-600 hover:text-white transition-all border border-emerald-100 shadow-sm"
+                                  title="Confirm Intelligence"
+                                >
+                                  <Check size={18} />
+                                </button>
+                              )}
+                              {bt.isVerified ? (
+                                <div className="p-3 bg-slate-50 text-emerald-500 rounded-2xl border border-slate-100" title="Verified Transaction">
+                                  <ShieldCheck size={18} />
+                                </div>
+                              ) : bt.category ? (
+                                <button 
+                                  onClick={() => createRuleFromTransaction(bt.description, bt.category!)}
+                                  className="p-3 bg-indigo-50 text-indigo-600 rounded-2xl hover:bg-indigo-600 hover:text-white transition-all border border-indigo-100 shadow-sm"
+                                  title="Create Learning Rule"
+                                >
+                                  <RefreshCcw size={18} />
+                                </button>
+                              ) : (
+                                <div className="p-3 bg-rose-50 text-rose-400 rounded-2xl border border-rose-100" title="Pending Action">
+                                  <AlertCircle size={18} />
+                                </div>
+                              )}
+                           </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+
+                  {filteredBT.length === 0 && (
+                    <tr>
+                      <td colSpan={5} className="py-40 text-center">
+                         <div className="flex flex-col items-center justify-center text-slate-300">
+                           <CalendarDays size={64} className="mb-4 opacity-20" />
+                           <h4 className="text-xl font-black uppercase">No Ledger Entries</h4>
+                           <p className="text-[10px] font-bold uppercase mt-1">Upload statements for this period to begin reconciliation</p>
+                         </div>
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Manual Category Modal */}
+      <AnimatePresence>
+        {isAddingCategory && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-6">
+             <motion.div 
+               initial={{ opacity: 0, scale: 0.9 }}
+               animate={{ opacity: 1, scale: 1 }}
+               exit={{ opacity: 0, scale: 0.9 }}
+               className="bg-white rounded-[3rem] w-full max-w-md shadow-2xl overflow-hidden border border-slate-100"
+             >
+                <div className="p-10 border-b border-slate-50">
+                  <div className="flex items-center gap-4 mb-6">
+                    <div className="p-4 bg-indigo-50 text-indigo-600 rounded-2xl shadow-sm"><IndianRupee size={32} /></div>
+                    <div><h3 className="text-2xl font-black text-slate-900 tracking-tight">Custom Category</h3><p className="text-slate-400 text-sm font-medium">Expand your chart of accounts.</p></div>
                   </div>
-                  <div className="text-right">
-                    <p className="text-[10px] font-black text-indigo-300 uppercase tracking-[0.2em]">Transaction Value</p>
-                    <p className="text-2xl font-black tracking-tighter">₹{splittingBT.amount.toLocaleString()}</p>
+                  <div className="space-y-4">
+                     <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Category Name</label>
+                     <input 
+                       type="text" 
+                       placeholder="e.g. MARKETING / LOANS"
+                       value={newCategoryName}
+                       onChange={e => setNewCategoryName(e.target.value)}
+                       className="w-full px-6 py-4 bg-slate-50 rounded-2xl font-bold text-slate-700 border border-slate-100 outline-none focus:ring-2 ring-indigo-500/20"
+                     />
                   </div>
                 </div>
+                <div className="p-6 bg-slate-50 flex gap-4">
+                  <button onClick={() => setIsAddingCategory(false)} className="flex-1 py-4 bg-white text-slate-400 rounded-2xl font-black uppercase text-[10px] tracking-widest border border-slate-200">Cancel</button>
+                  <button onClick={handleAddCategory} className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black uppercase text-[10px] tracking-widest shadow-xl shadow-indigo-100">Add Category</button>
+                </div>
+             </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Available Purchases (This Month)</h4>
-                    <div className="relative w-64">
-                      <Search size={14} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
-                      <input 
-                        type="text" 
-                        placeholder="SEARCH PURCHASES..."
-                        value={purchaseSearch}
-                        onChange={e => setPurchaseSearch(e.target.value)}
-                        className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-[10px] font-bold uppercase outline-none focus:ring-2 ring-indigo-500/20"
-                      />
+      {/* Match Discovery Modal */}
+      <AnimatePresence>
+        {discoveryTxn && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-50 flex items-center justify-center p-6">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="bg-white rounded-[3rem] w-full max-w-4xl shadow-2xl overflow-hidden border border-slate-100 flex flex-col max-h-[85vh]"
+            >
+              <div className="p-10 border-b border-slate-50 shrink-0">
+                <div className="flex items-center justify-between gap-6 mb-8">
+                  <div className="flex items-center gap-4">
+                    <div className="p-3 bg-indigo-50 text-indigo-600 rounded-2xl"><Search size={24} /></div>
+                    <div>
+                      <h3 className="text-xl font-black text-slate-900 tracking-tight flex items-center gap-2">Match Discovery</h3>
+                      <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest">Searching related bills & purchase evidence</p>
                     </div>
                   </div>
+                  <button onClick={() => setDiscoveryTxn(null)} className="p-3 text-slate-400 hover:text-slate-900 bg-slate-50 rounded-2xl transition-all">
+                    <Plus size={20} className="rotate-45" />
+                  </button>
+                </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {filteredPurchases
-                      .filter(p => !p.isBankVerified || multiSelectedIds.includes(p.id!))
-                      .filter(p => p.productName.toLowerCase().includes(purchaseSearch.toLowerCase()) || p.vendor.toLowerCase().includes(purchaseSearch.toLowerCase()))
-                      .map(p => {
-                        const isSelected = multiSelectedIds.includes(p.id!);
-                        return (
-                          <button 
-                            key={p.id}
-                            onClick={() => {
-                              if (isSelected) setMultiSelectedIds(prev => prev.filter(id => id !== p.id));
-                              else setMultiSelectedIds(prev => [...prev, p.id!]);
-                            }}
-                            className={`p-4 rounded-2xl border transition-all text-left group ${isSelected ? 'bg-indigo-600 border-indigo-600 text-white shadow-lg shadow-indigo-100 scale-[1.02]' : 'bg-white border-slate-100 hover:border-indigo-200 hover:bg-indigo-50/30'}`}
-                          >
-                            <div className="flex items-start justify-between mb-2">
-                              <div className={`p-2 rounded-lg ${isSelected ? 'bg-indigo-500' : 'bg-slate-100'}`}>
-                                <ShoppingBag size={14} />
-                              </div>
-                              <p className={`text-sm font-black tracking-tighter ${isSelected ? 'text-white' : 'text-slate-900'}`}>₹{p.amount.toLocaleString()}</p>
-                            </div>
-                            <p className={`text-[10px] font-black uppercase truncate ${isSelected ? 'text-indigo-100' : 'text-slate-800'}`}>{p.productName}</p>
-                            <div className="flex items-center gap-2 mt-1">
-                              <Store size={10} className={isSelected ? 'text-indigo-300' : 'text-slate-400'} />
-                              <p className={`text-[9px] font-bold uppercase ${isSelected ? 'text-indigo-200' : 'text-slate-400'}`}>{getOutletName(p.outletId)}</p>
-                            </div>
-                          </button>
-                        );
-                      })}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-slate-50 p-6 rounded-3xl border border-slate-100">
+                  <div>
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Transaction Source</p>
+                    <p className="text-sm font-black text-slate-900 truncate">{discoveryTxn.description}</p>
+                    <div className="flex items-center gap-4 mt-2">
+                       <span className="text-[10px] font-black text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded">₹{discoveryTxn.amount.toLocaleString()}</span>
+                       <span className="text-[10px] font-bold text-slate-400 uppercase">{new Date(discoveryTxn.date).toLocaleDateString()}</span>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-end gap-3">
+                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest mr-2">Search Range:</span>
+                    {[0, 1, 2].map(days => (
+                      <button
+                        key={days}
+                        onClick={() => findMatchingPurchases(discoveryTxn, days)}
+                        className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${discoveryDateRange === days ? 'bg-indigo-600 text-white' : 'bg-white text-slate-400 border border-slate-200'}`}
+                      >
+                        +{days} Day{days !== 1 ? 's' : ''}
+                      </button>
+                    ))}
                   </div>
                 </div>
               </div>
 
-              <div className="p-8 bg-slate-50 border-t border-slate-100 flex items-center justify-between">
-                <div className="flex flex-col">
-                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Total Mapped</p>
-                  <div className="flex items-baseline gap-2">
-                    <span className={`text-2xl font-black tracking-tighter ${
-                      multiSelectedIds.reduce((sum, id) => sum + (filteredPurchases.find(p => p.id === id)?.amount || 0), 0) > splittingBT.amount 
-                        ? 'text-rose-500' 
-                        : 'text-indigo-600'
-                    }`}>
-                      ₹{multiSelectedIds.reduce((sum, id) => sum + (filteredPurchases.find(p => p.id === id)?.amount || 0), 0).toLocaleString()}
-                    </span>
-                    <span className="text-[10px] font-bold text-slate-400">/ ₹{splittingBT.amount.toLocaleString()}</span>
+              <div className="flex-1 overflow-y-auto p-10">
+                {isSearchingDiscovery ? (
+                  <div className="flex flex-col items-center justify-center py-20 grayscale opacity-40">
+                    <Loader2 size={48} className="animate-spin text-indigo-600 mb-4" />
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Querying Datacenter...</p>
                   </div>
-                </div>
+                ) : discoveryResults.length === 0 ? (
+                  <div className="text-center py-20 border-2 border-dashed border-slate-100 rounded-[2rem]">
+                    <Database size={48} className="mx-auto text-slate-200 mb-4" />
+                    <h4 className="text-sm font-black text-slate-400 uppercase tracking-widest">No matching bills found</h4>
+                    <p className="text-[9px] font-bold text-slate-300 uppercase mt-1">Try expanding the date range above</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {discoveryResults.map(p => {
+                      const amountDiff = Math.abs(p.amount - discoveryTxn.amount);
+                      const isExact = amountDiff < 1;
+                      
+                      return (
+                        <div key={p.id} className={`p-6 rounded-[2rem] border transition-all hover:shadow-lg flex items-start justify-between gap-4 ${isExact ? 'bg-emerald-50 border-emerald-100' : 'bg-white border-slate-100'}`}>
+                          <div>
+                             <div className="flex items-center gap-2 mb-1">
+                               <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full ${isExact ? 'bg-emerald-500 text-white' : 'bg-slate-900 text-white'}`}>
+                                 {getOutletName(p.outletId || 'GLOBAL')}
+                               </span>
+                               <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">{p.billNo || 'No Bill #'}</span>
+                             </div>
+                             <h5 className="text-sm font-black text-slate-900 line-clamp-1 mb-2">{p.productName}</h5>
+                             <div className="flex items-center gap-4">
+                                <span className={`text-lg font-black tracking-tighter ${isExact ? 'text-emerald-600' : 'text-slate-900'}`}>₹{p.amount.toLocaleString()}</span>
+                                <span className="text-[10px] font-bold text-slate-400 uppercase">{new Date(p.date).toLocaleDateString()}</span>
+                             </div>
+                          </div>
 
-                <div className="flex gap-4">
-                  <button 
-                    onClick={() => setSplittingBT(null)}
-                    className="px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest text-slate-400 hover:text-slate-600 transition-all"
-                  >
-                    Cancel
-                  </button>
-                  <button 
-                    onClick={handleBulkReconcile}
-                    disabled={reconcilingId === splittingBT.id}
-                    className="flex items-center gap-2 px-8 py-3 bg-indigo-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-100 disabled:opacity-50"
-                  >
-                    {reconcilingId === splittingBT.id ? <Loader2 size={14} className="animate-spin" /> : <ShieldCheck size={14} />} 
-                    Finalize Mapping
-                  </button>
-                </div>
+                          <button 
+                            onClick={async () => {
+                              await handleManualMap(discoveryTxn.id!, p.category || 'COGS', true);
+                              setDiscoveryTxn(null);
+                            }}
+                            className={`p-3 rounded-2xl transition-all ${isExact ? 'bg-emerald-600 text-white shadow-emerald-200' : 'bg-slate-900 text-white shadow-slate-200'} shadow-xl`}
+                            title="Auto-Map Category"
+                          >
+                            <ArrowRightLeft size={18} />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             </motion.div>
           </div>
         )}
       </AnimatePresence>
+
+      <div className="bg-indigo-900 rounded-[3rem] p-10 text-white shadow-xl relative overflow-hidden">
+        <div className="absolute top-0 right-0 p-10 opacity-10"><BrainCircuit size={120} /></div>
+        <div className="flex items-start gap-8 relative z-10">
+          <div className="p-5 bg-white/10 rounded-[2rem] border border-white/10 shadow-inner"><Info size={40} className="text-indigo-200" /></div>
+          <div className="space-y-4 max-w-3xl">
+            <h4 className="text-2xl font-black uppercase tracking-tight">System Intelligence Mode</h4>
+            <p className="text-indigo-100/70 text-base leading-relaxed">
+              This module operates on a <b>Keyword Intelligence Engine</b>. When you link a transaction description to a category (e.g. "Rental Group" to RENTALS), the system memorizes this pattern. 
+            </p>
+            <p className="text-indigo-100/70 text-base leading-relaxed">
+              Mappings will be used to generate your <b>P&L Profitability Snapshots</b>. Any withdrawal without a category is treated as "Unmapped Leakage" and will negatively impact your Health Index.
+            </p>
+          </div>
+        </div>
+      </div>
     </div>
   );
 };

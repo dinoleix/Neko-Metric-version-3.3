@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import type { User } from '@firebase/auth';
-import { collection, query, getDocs, where, orderBy, limit, doc, getDoc, increment, writeBatch, deleteDoc, updateDoc } from '@firebase/firestore';
+import type { User } from 'firebase/auth';
+import { collection, query, getDocs, where, orderBy, limit, doc, getDoc, increment, writeBatch, deleteDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { 
   SalesSummaryRecord, 
@@ -374,7 +374,11 @@ const RawSalesHub: React.FC<{ user: User }> = ({ user }) => {
       for (const batch of batchChunks) { await batch.commit(); }
       setSelectedIds(new Set());
       fetchData();
-    } catch (err) { console.error(err); alert("Delete failed."); } finally { setIsBulkDeleting(false); }
+    } catch (err) { 
+      console.error(err); 
+      const msg = err instanceof Error ? err.message : String(err);
+      alert(`Delete failed: ${msg}`); 
+    } finally { setIsBulkDeleting(false); }
   };
 
   const handleOpenEdit = (record: any) => {

@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import type { User } from '@firebase/auth';
-import { collection, query, getDocs, where, doc, getDoc } from '@firebase/firestore';
+import type { User } from 'firebase/auth';
+import { collection, query, getDocs, where, doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { 
   ExpenseMonthlySnapshot, 
   StoreRental, 
   Employee, 
   MonthlyPayroll, 
+  BankTransaction,
   CogsAdjustment, 
   DEFAULT_COGS, 
   DEFAULT_LABOUR, 
@@ -77,6 +78,7 @@ const ExpenseHub: React.FC<{ user: User }> = ({ user }) => {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [monthlyPayrolls, setMonthlyPayrolls] = useState<MonthlyPayroll[]>([]);
   const [adjustments, setAdjustments] = useState<CogsAdjustment[]>([]);
+  const [bankTxns, setBankTxns] = useState<BankTransaction[]>([]);
   const [loading, setLoading] = useState(false);
   
   const [cogsKeywords, setCogsKeywords] = useState<string[]>(DEFAULT_COGS);
@@ -108,12 +110,13 @@ const ExpenseHub: React.FC<{ user: User }> = ({ user }) => {
       // Fetch data for selected year and the one before it to support cross-year trajectory analysis
       const yearRange = [yearInt.toString(), (yearInt - 1).toString()];
       const settingsRef = doc(db, 'category_settings', user.uid);
-      const [snapSnap, rSnap, empSnap, paySnap, adjSnap, setSnap] = await Promise.all([
+      const [snapSnap, rSnap, empSnap, paySnap, adjSnap, bankSnap, setSnap] = await Promise.all([
         getDocs(query(collection(db, 'expense_snapshots'), where('userId', '==', user.uid), where('year', 'in', yearRange))),
         getDocs(query(collection(db, 'rentals'), where('userId', '==', user.uid))),
         getDocs(query(collection(db, 'employees'), where('userId', '==', user.uid))),
         getDocs(query(collection(db, 'monthly_payrolls'), where('userId', '==', user.uid))),
         getDocs(query(collection(db, 'cogs_adjustments'), where('userId', '==', user.uid))),
+        getDocs(query(collection(db, 'bank_transactions'), where('userId', '==', user.uid), where('isVerified', '==', true))),
         getDoc(settingsRef)
       ]);
       
@@ -130,6 +133,7 @@ const ExpenseHub: React.FC<{ user: User }> = ({ user }) => {
       setEmployees(empSnap.docs.map(d => ({ ...d.data(), id: d.id } as Employee)));
       setMonthlyPayrolls(paySnap.docs.map(d => ({ ...d.data(), id: d.id } as MonthlyPayroll)));
       setAdjustments(adjSnap.docs.map(d => ({ ...d.data(), id: d.id } as CogsAdjustment)));
+      setBankTxns(bankSnap.docs.map(d => ({ ...d.data(), id: d.id } as BankTransaction)));
     } catch (err: any) {
       console.error(err);
     } finally {
@@ -210,6 +214,34 @@ const ExpenseHub: React.FC<{ user: User }> = ({ user }) => {
         Object.entries(snap.expenseByCategory || {}).forEach(([cat, amt]) => classifyRow(cat, amt as number, 'Cash'));
       }
     });
+
+    // Add Verified Bank Transactions
+    const monthIdx = selectedMonth === 'All Months' ? null : (MONTH_NAMES.indexOf(selectedMonth) + 1).toString().padStart(2, '0');
+    const datePrefix = monthIdx ? `${selectedYear}-${monthIdx}` : `${selectedYear}`;
+    
+    bankTxns
+      .filter(t => t.date.startsWith(datePrefix))
+      .filter(t => t.type === 'debit') // Only outflows
+      .forEach(t => {
+        const amt = Number(t.amount);
+        const cat = t.category || 'UNCATEGORIZED';
+        
+        if (cat === 'COGS') csvCogs += amt;
+        else if (cat === 'SALARIES') csvLabour += amt;
+        else if (cat === 'RENTALS') fixedRent += amt;
+        else if (cat === 'OPERATIONS') {
+          csvOps += amt;
+          opsCatMap[t.description] = (opsCatMap[t.description] || 0) + amt;
+        } else if (cat === 'UNCATEGORIZED') {
+          csvUncat += amt;
+          if (!uncatCatMap[t.description]) uncatCatMap[t.description] = { amount: amt, source: 'Online' };
+          else uncatCatMap[t.description].amount += amt;
+        } else {
+          // Others (Loans, taxes etc) map to Ops for simplified PnL in this view, or separate
+          csvOps += amt;
+          opsCatMap[`${cat}: ${t.description}`] = (opsCatMap[`${cat}: ${t.description}`] || 0) + amt;
+        }
+      });
 
     let fixedBaseSalary = 0;
     let fixedRent = 0;
@@ -665,7 +697,15 @@ const ExpenseHub: React.FC<{ user: User }> = ({ user }) => {
                             <div className="p-6 bg-rose-50 rounded-[2rem] flex flex-col md:flex-row items-start gap-6 border border-rose-200 mb-6 shadow-inner">
                                <div className="p-4 bg-rose-100 rounded-2xl text-rose-600"><ClipboardList size={32} /></div>
                                <div>
-                                  <h4 className="text-lg font-black text-rose-900 uppercase tracking-tight mb-2">Unmapped Category Registry</h4>
+                                <div className="flex items-center justify-between gap-4 mb-2">
+                                  <h4 className="text-lg font-black text-rose-900 uppercase tracking-tight">Unmapped Category Registry</h4>
+                                  <div className="group relative">
+                                    <HelpCircle size={16} className="text-rose-300 hover:text-rose-500 cursor-help transition-colors" />
+                                    <div className="absolute right-0 top-full mt-2 w-64 p-4 bg-slate-900 text-white text-[10px] rounded-2xl shadow-2xl opacity-0 group-hover:opacity-100 pointer-events-none transition-all z-50 font-medium leading-relaxed">
+                                      To clear these items: Either map these keywords in <b>Mapping settings</b> to assign them to a pillar, or locate and delete the source file in the <b>Performance Hub</b> to wipe the data entirely.
+                                    </div>
+                                  </div>
+                                </div>
                                   <p className="text-[11px] text-rose-700 leading-relaxed font-bold uppercase tracking-tight">
                                     The following keywords were found in your CSV data but are not assigned to any core pillar (COGS, Labour, Ops). 
                                     Copy these names and add them to your <b>Mapping</b> settings to remove this leakage.

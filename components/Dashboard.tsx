@@ -59,6 +59,17 @@ import {
   ShieldCheck
 } from 'lucide-react';
 
+const FILE_RECORD_COLLECTIONS: Partial<Record<FileType, string>> = {
+  sales: 'sales_summary',
+  item: 'item_sales',
+  platform_item: 'item_sales',
+  expense: 'expenses',
+  purchase: 'purchases',
+  online_order: 'online_order_details',
+  customer_mapping: 'customer_name_mappings',
+  bank_statement: 'bank_transactions'
+};
+
 const Dashboard: React.FC<{ user: User }> = ({ user }) => {
   const [files, setFiles] = useState<FileMetadata[]>([]);
   const [analytics, setAnalytics] = useState<SalesAnalytics[]>([]);
@@ -109,12 +120,8 @@ const Dashboard: React.FC<{ user: User }> = ({ user }) => {
     setLoadingRecords(true);
     setRawRecords([]);
     try {
-      let collectionName = '';
-      if (file.type === 'sales') collectionName = 'sales_summary';
-      else if (file.type === 'item' || file.type === 'platform_item') collectionName = 'item_sales';
-      else if (file.type === 'expense') collectionName = 'expenses';
-      else if (file.type === 'purchase') collectionName = 'purchases';
-      else if (file.type === 'online_order') collectionName = 'online_order_details';
+      const collectionName = FILE_RECORD_COLLECTIONS[file.type];
+      if (!collectionName) return;
       const q = query(collection(db, collectionName), where('_fileId', '==', file.id), where('userId', '==', user.uid), limit(100));
       const snapshot = await getDocs(q);
       setRawRecords(snapshot.docs.map(doc => doc.data()));
@@ -140,14 +147,10 @@ const Dashboard: React.FC<{ user: User }> = ({ user }) => {
     if (!file.id) return;
     setLoading(true);
     try {
-      let collectionName = '';
-      if (file.type === 'sales') collectionName = 'sales_summary';
-      else if (file.type === 'item' || file.type === 'platform_item') collectionName = 'item_sales';
-      else if (file.type === 'expense') collectionName = 'expenses';
-      else if (file.type === 'purchase') collectionName = 'purchases';
-      else if (file.type === 'online_order') collectionName = 'online_order_details';
+      const collectionName = FILE_RECORD_COLLECTIONS[file.type];
+      if (!collectionName) throw new Error(`Unsupported file type for deletion: ${file.type}`);
       
-      const q = query(collection(db, collectionName), where('_fileId', '==', file.id));
+      const q = query(collection(db, collectionName), where('_fileId', '==', file.id), where('userId', '==', user.uid));
       const recordsSnap = await getDocs(q);
       const allRecords = recordsSnap.docs;
       
@@ -229,13 +232,15 @@ const Dashboard: React.FC<{ user: User }> = ({ user }) => {
         }
       });
 
-      for (let i = 0; i < allRecords.length; i += 400) {
+      // Delete records in chunks to respect Firestore 500-op limit
+      for (let i = 0; i < allRecords.length; i += 450) {
         const batch = writeBatch(db);
-        const chunk = allRecords.slice(i, i + 400);
+        const chunk = allRecords.slice(i, i + 450);
         chunk.forEach(docSnap => batch.delete(docSnap.ref));
         await batch.commit();
       }
 
+      // Snapshot Rollback Logic
       if (file.type === 'sales') {
         for (const oId in outletImpacts) {
           const impact = outletImpacts[oId];
@@ -337,7 +342,8 @@ const Dashboard: React.FC<{ user: User }> = ({ user }) => {
       fetchData();
     } catch (error) { 
       console.error("Wipe failure:", error); 
-      alert("Rollback failed. This usually happens if the connection is unstable."); 
+      const msg = error instanceof Error ? error.message : String(error);
+      alert(`Wipe failed: ${msg}. Check your connection or try again.`); 
     } finally { setLoading(false); }
   };
 
@@ -533,13 +539,13 @@ const Dashboard: React.FC<{ user: User }> = ({ user }) => {
 
       <section className="space-y-12">
         <div className="flex flex-wrap items-center bg-white p-1.5 rounded-2xl border border-slate-100 shadow-sm w-fit gap-1">
-          {(['all', 'sales', 'item', 'platform_item', 'expense', 'purchase'] as const).map((t) => (
-            <button 
-              key={t} 
-              onClick={() => setFilter(t)} 
+          {(['all', 'sales', 'item', 'platform_item', 'expense', 'purchase', 'bank_statement'] as const).map((t) => (
+            <button
+              key={t}
+              onClick={() => setFilter(t)}
               className={`px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${filter === t ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-900'}`}
             >
-              {t === 'platform_item' ? 'Online items' : t}
+              {t === 'platform_item' ? 'Online items' : t === 'bank_statement' ? 'Bank' : t}
             </button>
           ))}
         </div>
@@ -589,7 +595,7 @@ const Dashboard: React.FC<{ user: User }> = ({ user }) => {
                               <div className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest ${file.type === 'sales' ? 'bg-indigo-50 text-indigo-600' : (file.type === 'platform_item' ? 'bg-orange-50 text-orange-600' : 'bg-slate-50 text-slate-600')}`}>
                                 {file.type === 'platform_item' ? 'Platform Report' : file.type}
                               </div>
-                              <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-all">
+                              <div className="flex items-center gap-2 group-hover:opacity-100 transition-all opacity-40">
                                 {file.storagePath && (
                                   <button onClick={() => handleDownloadOriginal(file)} disabled={downloading === file.id} className="p-2 text-indigo-400 hover:text-indigo-600">
                                     <Download size={16} />

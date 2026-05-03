@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import type { User } from '@firebase/auth';
-import { collection, query, getDocs, where, limit } from '@firebase/firestore';
+import type { User } from 'firebase/auth';
+import { collection, query, getDocs, where, limit } from 'firebase/firestore';
 import { db } from '../firebase';
 import { SalesMonthlySnapshot, StoreRental, SkuMapping, SkuCategory, getOutletName, YEAR_OPTIONS, MONTH_NAMES } from '../types';
 import { 

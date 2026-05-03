@@ -76,7 +76,7 @@ const compressImage = (file: File, maxWidth: number = 1200): Promise<Blob> => {
     const reader = new FileReader();
     reader.readAsDataURL(file);
     reader.onload = (event) => {
-      const img = new Image();
+      const img = document.createElement('img');
       img.src = event.target?.result as string;
       img.onload = () => {
         const canvas = document.createElement('canvas');

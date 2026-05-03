@@ -1,8 +1,8 @@
 
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { type User } from '@firebase/auth';
-import { collection, addDoc, writeBatch, doc, setDoc, getDoc, increment, getDocs, query, where, arrayUnion, limit } from '@firebase/firestore';
-import { ref, uploadBytes } from '@firebase/storage';
+import { type User } from 'firebase/auth';
+import { collection, addDoc, writeBatch, doc, setDoc, getDoc, increment, getDocs, query, where, arrayUnion, limit } from 'firebase/firestore';
+import { ref, uploadBytes } from 'firebase/storage';
 import { db, storage } from '../firebase';
 import { ai } from '../geminiService';
 import { 
@@ -384,7 +384,7 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
     try {
       const prompt = `Map CSV headers: [${headers.join(', ')}] to standard fields: [${targetFields.map(f => f.id).join(', ')}]. Return ONLY JSON. Context: ${fileType}.`;
       const response: GenerateContentResponse = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
+        model: 'gemini-1.5-flash',
         contents: prompt,
         config: { responseMimeType: 'application/json' }
       });

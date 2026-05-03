@@ -1,6 +1,7 @@
 
-import { GoogleGenAI, Type } from "@google/genai";
-import { collection, query, where, getDocs, limit, orderBy } from '@firebase/firestore';
+import { Type } from "@google/genai";
+import { ai } from './geminiService';
+import { collection, query, where, getDocs, limit, orderBy } from 'firebase/firestore';
 import { db } from './firebase';
 import { SalesProjection, SalesMonthlySnapshot, Holiday, WeatherForecast, MONTH_NAMES } from './types';
 import { fetchForecastFromAPI } from './weatherService';
@@ -52,8 +53,6 @@ export const generateSalesProjection = async (
       .filter(h => h.date >= startDate && h.date <= endDate);
 
     // 2. Prepare AI Prompt
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
-    
     const prompt = `
       Act as a Senior Retail Data Scientist. Generate a 5-day sales projection for outlet ${outletId}.
       

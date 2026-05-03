@@ -1,6 +1,6 @@
 {
   "name": "Neko Metrics v1.33",
-  "description": "Optimized for Vercel deployment with SPA routing",
+  "description": "Comprehensive business metrics dashboard with AI-powered CSV mapping and data uploader.",
   "requestFramePermissions": [
     "camera"
   ]

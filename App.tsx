@@ -1,8 +1,8 @@
 
 import React, { useState, useEffect } from 'react';
-import { onAuthStateChanged, signOut } from '@firebase/auth';
-import type { User } from '@firebase/auth';
-import { doc, getDoc, setDoc } from '@firebase/firestore';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
+import type { User } from 'firebase/auth';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { auth, db } from './firebase';
 import { UserRole, UserProfile, getOutletName } from './types';
 import Login from './components/Login';

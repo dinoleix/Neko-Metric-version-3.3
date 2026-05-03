@@ -4,8 +4,8 @@ import {
   signInWithEmailAndPassword, 
   GoogleAuthProvider,
   signInWithPopup
-} from '@firebase/auth';
-import { doc, setDoc, getDoc } from '@firebase/firestore';
+} from 'firebase/auth';
+import { doc, setDoc, getDoc } from 'firebase/firestore';
 import { auth, db } from '../firebase';
 import { UserProfile } from '../types';
 import { Cat, Mail, Lock, LogIn } from 'lucide-react';

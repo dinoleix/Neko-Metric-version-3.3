@@ -616,11 +616,34 @@ export interface BankTransaction {
   balance?: number;
   bankAccountId?: string;
   isReconciled: boolean;
-  matchedPurchaseId?: string;
-  matchedPurchaseIds?: string[];
-  reconciledAmount?: number;
+  matchedPurchaseId?: string; // Legacy
+  matchedPurchaseIds?: string[]; // Legacy
+  reconciledAmount?: number; // Legacy
+  category?: string; // New: Categorical Reconciliation
+  isVerified?: boolean; // New: User confirmation
   createdAt: number;
 }
+
+export interface CategorizationRule {
+  id?: string;
+  keyword: string;
+  category: string;
+  userId: string;
+  usageCount: number;
+  lastUsedAt: number;
+}
+
+export const RECONCILIATION_CATEGORIES = [
+  'COGS',
+  'OPERATIONS',
+  'RENTALS',
+  'SALARIES',
+  'LOANS',
+  'TAXES',
+  'PERSONAL',
+  'INVESTMENTS',
+  'OTHER'
+];
 
 export const BANK_STATEMENT_TARGET_FIELDS = [
   { id: 'date', label: 'Date', required: true },
