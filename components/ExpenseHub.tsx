@@ -215,6 +215,10 @@ const ExpenseHub: React.FC<{ user: User }> = ({ user }) => {
       }
     });
 
+    let fixedBaseSalary = 0;
+    let fixedRent = 0;
+    let isPayrollFiscal = false;
+
     // Add Verified Bank Transactions
     const monthIdx = selectedMonth === 'All Months' ? null : (MONTH_NAMES.indexOf(selectedMonth) + 1).toString().padStart(2, '0');
     const datePrefix = monthIdx ? `${selectedYear}-${monthIdx}` : `${selectedYear}`;
@@ -242,10 +246,6 @@ const ExpenseHub: React.FC<{ user: User }> = ({ user }) => {
           opsCatMap[`${cat}: ${t.description}`] = (opsCatMap[`${cat}: ${t.description}`] || 0) + amt;
         }
       });
-
-    let fixedBaseSalary = 0;
-    let fixedRent = 0;
-    let isPayrollFiscal = false;
 
     if (viewMode === 'combined' || viewMode === 'purchase') {
       const relevantMonths = selectedMonth === 'All Months' ? MONTH_NAMES : [selectedMonth];
