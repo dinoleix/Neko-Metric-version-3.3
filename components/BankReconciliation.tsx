@@ -49,7 +49,8 @@ import {
   BrainCircuit,
   Info,
   Database,
-  History
+  History,
+  X
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -76,6 +77,8 @@ const BankReconciliation: React.FC<{ user: User }> = ({ user }) => {
   const [newCategoryName, setNewCategoryName] = useState('');
   const [isAddingCategory, setIsAddingCategory] = useState(false);
   const [learnedRules, setLearnedRules] = useState<Record<string, string>>({});
+  const [selectedBatchIds, setSelectedBatchIds] = useState<Set<string>>(new Set());
+  const [isBulkUpdating, setIsBulkUpdating] = useState(false);
 
   const availableCategories = useMemo(() => {
     const fromTransactions = bankTransactions
@@ -206,6 +209,56 @@ const BankReconciliation: React.FC<{ user: User }> = ({ user }) => {
     return null;
   };
 
+  const handleBulkMap = async (category: string) => {
+    if (selectedBatchIds.size === 0) return;
+    setIsBulkUpdating(true);
+    const normalizedCategory = category.toUpperCase();
+    
+    try {
+      const batch = writeBatch(db);
+      const idsArray = Array.from(selectedBatchIds);
+      
+      // Firestore batch limit is 500
+      for (const id of idsArray) {
+        if (typeof id !== 'string') continue;
+        batch.update(doc(db, 'bank_transactions', id), {
+          category: normalizedCategory,
+          isVerified: false, // Keep as unverified for user review or set to true if preferred
+          isReconciled: true
+        });
+      }
+
+      await batch.commit();
+
+      // Update local state
+      setBankTransactions(prev => prev.map(t => 
+        selectedBatchIds.has(t.id!) 
+          ? { ...t, category: normalizedCategory, isReconciled: true } 
+          : t
+      ));
+      
+      setSelectedBatchIds(new Set());
+    } catch (err) {
+      console.error("Bulk map failed:", err);
+    } finally {
+      setIsBulkUpdating(false);
+    }
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedBatchIds.size === filteredBT.length) {
+      setSelectedBatchIds(new Set());
+    } else {
+      setSelectedBatchIds(new Set(filteredBT.map(t => t.id!)));
+    }
+  };
+
+  const toggleSelectOne = (id: string) => {
+    const next = new Set(selectedBatchIds);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setSelectedBatchIds(next);
+  };
   const handleManualMap = async (btId: string, category: string, isVerified = false, purchaseId?: string) => {
     setUpdatingId(btId);
     const normalizedCategory = category.toUpperCase();
@@ -424,6 +477,49 @@ const BankReconciliation: React.FC<{ user: User }> = ({ user }) => {
 
   return (
     <div className="space-y-10 animate-in fade-in duration-700 pb-20">
+      {/* Bulk Actions Floating Bar */}
+      {selectedBatchIds.size > 0 && (
+        <motion.div 
+          initial={{ y: 50, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          className="fixed bottom-10 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white px-8 py-5 rounded-[2.5rem] shadow-2xl flex items-center gap-8 border border-slate-700 backdrop-blur-md"
+        >
+          <div className="flex flex-col">
+            <span className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Selected Batch</span>
+            <span className="text-2xl font-black text-indigo-400">{selectedBatchIds.size} <span className="text-sm text-slate-400">Transactions</span></span>
+          </div>
+
+          <div className="h-10 w-px bg-slate-800" />
+
+          <div className="flex items-center gap-4">
+            <div className="relative group">
+              <select 
+                onChange={(e) => {
+                  if(e.target.value) handleBulkMap(e.target.value);
+                }}
+                disabled={isBulkUpdating}
+                className="bg-slate-800 border border-slate-700 text-white rounded-2xl pl-10 pr-10 py-3 text-[10px] font-black uppercase tracking-widest outline-none appearance-none cursor-pointer focus:ring-2 ring-indigo-500 transition-all"
+              >
+                <option value="">Move to Category...</option>
+                {availableCategories.map(cat => (
+                  <option key={cat} value={cat}>{cat}</option>
+                ))}
+              </select>
+              <Tag size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
+              <ChevronDown size={14} className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
+            </div>
+
+            <button 
+              onClick={() => setSelectedBatchIds(new Set())}
+              className="p-3 bg-slate-800 text-slate-400 hover:text-white rounded-2xl transition-all"
+              title="Clear Selection"
+            >
+              <X size={20} />
+            </button>
+          </div>
+        </motion.div>
+      )}
+
       <header className="flex flex-col md:flex-row md:items-end justify-between gap-6">
         <div>
           <div className="flex items-center gap-4 mb-2">
@@ -489,15 +585,23 @@ const BankReconciliation: React.FC<{ user: User }> = ({ user }) => {
             </div>
           </div>
 
-          <div className="relative">
-            <Search size={14} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
+          <div className="relative group min-w-[300px]">
+            <Search size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-indigo-600 transition-colors" />
             <input 
               type="text" 
-              placeholder="SEARCH TRANSACTIONS..."
+              placeholder="Filter by description (e.g. 'Rent', 'Swiggy')..."
               value={searchTerm}
               onChange={e => setSearchTerm(e.target.value)}
-              className="pl-10 pr-4 py-3 bg-white border border-slate-200 rounded-xl text-xs font-bold uppercase outline-none focus:ring-2 ring-indigo-500/20 w-64 shadow-sm"
+              className="pl-12 pr-12 py-3.5 bg-white border-2 border-slate-100 rounded-2xl text-xs font-black uppercase tracking-widest outline-none focus:border-indigo-600 focus:ring-4 focus:ring-indigo-100/50 w-full shadow-sm transition-all"
             />
+            {searchTerm && (
+              <button 
+                onClick={() => setSearchTerm('')}
+                className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-900 transition-colors"
+              >
+                <X size={16} />
+              </button>
+            )}
           </div>
 
           <button 
@@ -633,6 +737,18 @@ const BankReconciliation: React.FC<{ user: User }> = ({ user }) => {
               <table className="w-full text-left border-separate border-spacing-0">
                 <thead>
                   <tr className="bg-slate-50/50">
+                    <th className="px-8 py-6 border-b border-slate-100">
+                      <div 
+                        onClick={toggleSelectAll}
+                        className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center cursor-pointer transition-all ${
+                          selectedBatchIds.size === filteredBT.length && filteredBT.length > 0
+                            ? 'bg-indigo-600 border-indigo-600' 
+                            : 'bg-white border-slate-200'
+                        }`}
+                      >
+                        {selectedBatchIds.size === filteredBT.length && filteredBT.length > 0 && <Check size={14} className="text-white" />}
+                      </div>
+                    </th>
                     <th className="px-8 py-6 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">Transaction Date</th>
                     <th className="px-8 py-6 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">Entity / Narration</th>
                     <th className="px-8 py-6 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">Amount</th>
@@ -646,7 +762,19 @@ const BankReconciliation: React.FC<{ user: User }> = ({ user }) => {
                     const isUpdating = updatingId === bt.id;
 
                     return (
-                      <tr key={bt.id} className={`group hover:bg-slate-50/50 transition-colors ${bt.isVerified ? 'opacity-60' : ''}`}>
+                      <tr key={bt.id} className={`group hover:bg-slate-50/50 transition-colors ${bt.isVerified ? 'opacity-60' : ''} ${selectedBatchIds.has(bt.id!) ? 'bg-indigo-50/30' : ''}`}>
+                        <td className="px-8 py-6">
+                           <div 
+                             onClick={() => toggleSelectOne(bt.id!)}
+                             className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center cursor-pointer transition-all ${
+                               selectedBatchIds.has(bt.id!) 
+                                 ? 'bg-indigo-600 border-indigo-600' 
+                                 : 'bg-white border-slate-200 group-hover:border-indigo-300'
+                             }`}
+                           >
+                             {selectedBatchIds.has(bt.id!) && <Check size={14} className="text-white" />}
+                           </div>
+                        </td>
                         <td className="px-8 py-6">
                            <div className="flex flex-col">
                              <span className="text-sm font-black text-slate-900">{new Date(bt.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}</span>
@@ -747,7 +875,7 @@ const BankReconciliation: React.FC<{ user: User }> = ({ user }) => {
 
                   {filteredBT.length === 0 && (
                     <tr>
-                      <td colSpan={5} className="py-40 text-center">
+                      <td colSpan={6} className="py-40 text-center">
                          <div className="flex flex-col items-center justify-center text-slate-300">
                            <CalendarDays size={64} className="mb-4 opacity-20" />
                            <h4 className="text-xl font-black uppercase">No Ledger Entries</h4>

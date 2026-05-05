@@ -42,9 +42,45 @@
         "lastUpdated": { "type": "number" }
       },
       "required": ["userId", "customerId", "totalOrders", "totalSpent", "platforms", "lastOrderDate", "lastOrderId", "lastUpdated"]
+    },
+    "CashFlowSnapshot": {
+      "title": "Cash Flow Snapshot",
+      "description": "Monthly debt and capex obligations against profit.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "month": { "type": "string" },
+        "year": { "type": "string" },
+        "netProfit": { "type": "number" },
+        "loanEmi": { "type": "number" },
+        "interestOnlyLoan": { "type": "number" },
+        "capexRepayment": { "type": "number" },
+        "realCashLeft": { "type": "number" },
+        "mappings": { "type": "object" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["userId", "month", "year", "netProfit", "loanEmi", "interestOnlyLoan", "capexRepayment", "realCashLeft", "updatedAt"]
+    },
+    "LoanProfile": {
+      "title": "Loan Profile",
+      "description": "Definitions for named loans and obligations.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "name": { "type": "string" },
+        "category": { "type": "string", "enum": ["LOAN_EMI", "INTEREST_ONLY", "CAPEX_REPAYMENT"] },
+        "description": { "type": "string" },
+        "isActive": { "type": "boolean" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["userId", "name", "category", "isActive", "createdAt"]
     }
   },
   "firestore": {
+    "/loan_profiles/{profileId}": {
+      "schema": "LoanProfile",
+      "description": "Collection of user-defined loan profiles."
+    },
     "/online_order_details/{orderDetailId}": {
       "schema": "OnlineOrderDetail",
       "description": "Collection of detailed online order records."
@@ -52,6 +88,10 @@
     "/online_customers/{customerId}": {
       "schema": "OnlineCustomer",
       "description": "Collection of aggregated online customer data."
+    },
+    "/cash_flow_snapshots/{snapshotId}": {
+      "schema": "CashFlowSnapshot",
+      "description": "Collection of monthly cash flow reality snapshots."
     }
   }
 }

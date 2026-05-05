@@ -633,15 +633,42 @@ export interface CategorizationRule {
   lastUsedAt: number;
 }
 
+export interface LoanProfile {
+  id?: string;
+  userId: string;
+  name: string;
+  category: 'LOAN_EMI' | 'INTEREST_ONLY' | 'CAPEX_REPAYMENT';
+  description?: string;
+  isActive: boolean;
+  createdAt: number;
+}
+
+export interface CashFlowSnapshot {
+  id?: string;
+  userId: string;
+  month: string;
+  year: string;
+  netProfit: number;
+  loanEmi: number;
+  interestOnlyLoan: number;
+  capexRepayment: number;
+  realCashLeft: number;
+  mappings?: Record<string, string>; // transactionId -> loanProfileId
+  updatedAt: number;
+}
+
 export const RECONCILIATION_CATEGORIES = [
   'COGS',
   'OPERATIONS',
-  'RENTALS',
-  'SALARIES',
-  'LOANS',
-  'TAXES',
+  'RENT',
+  'PAYROLL',
+  'MARKETING',
+  'LOAN_EMI',
+  'INTEREST_ONLY',
+  'CAPEX_REPAYMENT',
+  'TAX',
   'PERSONAL',
-  'INVESTMENTS',
+  'INVESTMENT',
   'OTHER'
 ];
 
