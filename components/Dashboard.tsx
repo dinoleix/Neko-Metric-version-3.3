@@ -70,7 +70,7 @@ const FILE_RECORD_COLLECTIONS: Partial<Record<FileType, string>> = {
   bank_statement: 'bank_transactions'
 };
 
-const Dashboard: React.FC<{ user: User }> = ({ user }) => {
+const Dashboard: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
   const [files, setFiles] = useState<FileMetadata[]>([]);
   const [analytics, setAnalytics] = useState<SalesAnalytics[]>([]);
   const [loading, setLoading] = useState(true);
@@ -95,8 +95,8 @@ const Dashboard: React.FC<{ user: User }> = ({ user }) => {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const qFiles = query(collection(db, 'files'), where('userId', '==', user.uid));
-      const qAnalytics = query(collection(db, 'sales_analytics'), where('userId', '==', user.uid));
+      const qFiles = query(collection(db, 'files'), where('userId', '==', dataOwnerId));
+      const qAnalytics = query(collection(db, 'sales_analytics'), where('userId', '==', dataOwnerId));
       const [filesSnap, analyticsSnap] = await Promise.all([getDocs(qFiles), getDocs(qAnalytics)]);
       
       const fileList = filesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as FileMetadata));
@@ -122,7 +122,7 @@ const Dashboard: React.FC<{ user: User }> = ({ user }) => {
     try {
       const collectionName = FILE_RECORD_COLLECTIONS[file.type];
       if (!collectionName) return;
-      const q = query(collection(db, collectionName), where('_fileId', '==', file.id), where('userId', '==', user.uid), limit(100));
+      const q = query(collection(db, collectionName), where('_fileId', '==', file.id), where('userId', '==', dataOwnerId), limit(100));
       const snapshot = await getDocs(q);
       setRawRecords(snapshot.docs.map(doc => doc.data()));
     } catch (error) { console.error(error); } finally { setLoadingRecords(false); }
@@ -150,7 +150,7 @@ const Dashboard: React.FC<{ user: User }> = ({ user }) => {
       const collectionName = FILE_RECORD_COLLECTIONS[file.type];
       if (!collectionName) throw new Error(`Unsupported file type for deletion: ${file.type}`);
       
-      const q = query(collection(db, collectionName), where('_fileId', '==', file.id), where('userId', '==', user.uid));
+      const q = query(collection(db, collectionName), where('_fileId', '==', file.id), where('userId', '==', dataOwnerId));
       const recordsSnap = await getDocs(q);
       const allRecords = recordsSnap.docs;
       
@@ -162,7 +162,7 @@ const Dashboard: React.FC<{ user: User }> = ({ user }) => {
 
       let cogsKeywords = DEFAULT_COGS;
       let cogsBucketMapping: Record<string, CogsBucket> = {};
-      const settingsSnap = await getDoc(doc(db, 'category_settings', user.uid));
+      const settingsSnap = await getDoc(doc(db, 'category_settings', dataOwnerId));
       if (settingsSnap.exists()) {
         const sData = settingsSnap.data() as CategorySettings;
         if (sData.cogsKeywords) cogsKeywords = sData.cogsKeywords.map(k => k.trim().toUpperCase());
@@ -351,7 +351,7 @@ const Dashboard: React.FC<{ user: User }> = ({ user }) => {
     if (!confirm(`GLOBAL PURGE: Wipe ALL ${purgeType} data and snapshots for ${purgeMonth} ${purgeYear}?`)) return;
     setIsPurging(true);
     try {
-      const q = query(collection(db, 'files'), where('userId', '==', user.uid), where('month', '==', purgeMonth), where('year', '==', purgeYear), where('type', '==', purgeType));
+      const q = query(collection(db, 'files'), where('userId', '==', dataOwnerId), where('month', '==', purgeMonth), where('year', '==', purgeYear), where('type', '==', purgeType));
       const filesSnap = await getDocs(q);
       
       for (const fileDoc of filesSnap.docs) { 
@@ -365,7 +365,7 @@ const Dashboard: React.FC<{ user: User }> = ({ user }) => {
       else if (purgeType === 'online_order') snapCollection = 'sales_snapshots';
 
       if (snapCollection) {
-        const snapQ = query(collection(db, snapCollection), where('userId', '==', user.uid), where('month', '==', purgeMonth), where('year', '==', purgeYear));
+        const snapQ = query(collection(db, snapCollection), where('userId', '==', dataOwnerId), where('month', '==', purgeMonth), where('year', '==', purgeYear));
         const snapshots = await getDocs(snapQ);
         const batch = writeBatch(db);
         snapshots.docs.forEach(d => batch.delete(d.ref));

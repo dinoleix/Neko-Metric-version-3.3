@@ -82,7 +82,7 @@ const GLOBAL_ID = 'GLOBAL';
 
 type CatalogTab = 'heatmap' | 'audit';
 
-const DataCatalog: React.FC<{ user: User }> = ({ user }) => {
+const DataCatalog: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
   const [activeTab, setActiveTab] = useState<CatalogTab>('audit');
   const [files, setFiles] = useState<FileMetadata[]>([]);
   const [salesSnaps, setSalesSnaps] = useState<SalesMonthlySnapshot[]>([]);
@@ -97,7 +97,7 @@ const DataCatalog: React.FC<{ user: User }> = ({ user }) => {
   const fetchCatalog = async () => {
     setLoading(true);
     try {
-      const constraints = [where('userId', '==', user.uid)];
+      const constraints = [where('userId', '==', dataOwnerId)];
       const [fSnap, sSnap, eSnap, iSnap] = await Promise.all([
         getDocs(query(collection(db, 'files'), ...constraints)),
         getDocs(query(collection(db, 'sales_snapshots'), ...constraints)),
@@ -124,16 +124,16 @@ const DataCatalog: React.FC<{ user: User }> = ({ user }) => {
     const isGlobal = outletId === GLOBAL_ID || outletId === 'Global / Mixed' || outletId === 'MIXED';
     
     try {
-      const baseConstraints = [where('userId', '==', user.uid)];
+      const baseConstraints = [where('userId', '==', dataOwnerId)];
       const constraints = isGlobal ? baseConstraints : [...baseConstraints, where('outletId', '==', outletId)];
 
-      const settingsRef = doc(db, 'category_settings', user.uid);
+      const settingsRef = doc(db, 'category_settings', dataOwnerId);
       const [setSnap, aliasSnap, costsSnap, rentSnap, skuMapSnap] = await Promise.all([
         getDoc(settingsRef),
-        getDocs(query(collection(db, 'platform_item_mappings'), where('userId', '==', user.uid))),
-        getDocs(query(collection(db, 'item_costs'), where('userId', '==', user.uid))),
-        getDocs(query(collection(db, 'rentals'), where('userId', '==', user.uid))),
-        getDocs(query(collection(db, 'sku_mappings'), where('userId', '==', user.uid)))
+        getDocs(query(collection(db, 'platform_item_mappings'), where('userId', '==', dataOwnerId))),
+        getDocs(query(collection(db, 'item_costs'), where('userId', '==', dataOwnerId))),
+        getDocs(query(collection(db, 'rentals'), where('userId', '==', dataOwnerId))),
+        getDocs(query(collection(db, 'sku_mappings'), where('userId', '==', dataOwnerId)))
       ]);
 
       let cogsKeywords = DEFAULT_COGS;

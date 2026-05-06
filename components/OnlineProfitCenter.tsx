@@ -62,7 +62,7 @@ import {
   Legend
 } from 'recharts';
 
-const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
+const OnlineProfitCenter: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
   const [allSalesSnaps, setAllSalesSnaps] = useState<SalesMonthlySnapshot[]>([]);
   const [itemSnaps, setItemSnaps] = useState<ItemMonthlySnapshot[]>([]);
   const [rentals, setRentals] = useState<StoreRental[]>([]);
@@ -99,7 +99,7 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
     try {
       const q = query(
         collection(db, 'online_customers'),
-        where('userId', '==', user.uid),
+        where('userId', '==', dataOwnerId),
         orderBy('totalOrders', 'desc'),
         limit(50)
       );
@@ -121,7 +121,7 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
     if (activeTab === 'super_clients') {
       fetchCustomers();
     }
-  }, [activeTab, user.uid]);
+  }, [activeTab, dataOwnerId]);
 
   const handleCopy = (id: string) => {
     navigator.clipboard.writeText(id);
@@ -133,7 +133,7 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
     if (!newName.trim()) return;
     setIsSavingName(true);
     try {
-      const cRef = doc(db, 'online_customers', `${user.uid}_${customerId}`);
+      const cRef = doc(db, 'online_customers', `${dataOwnerId}_${customerId}`);
       await updateDoc(cRef, { 
         name: newName.trim(),
         lastUpdated: Date.now()
@@ -164,7 +164,7 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
         ? currentTags.filter(t => t !== tag)
         : [...currentTags, tag];
 
-      const cRef = doc(db, 'online_customers', `${user.uid}_${customerId}`);
+      const cRef = doc(db, 'online_customers', `${dataOwnerId}_${customerId}`);
       await updateDoc(cRef, { 
         tags: nextTags,
         lastUpdated: Date.now()
@@ -185,7 +185,7 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
     setLoading(true);
     try {
       const constraints = [
-        where('userId', '==', user.uid),
+        where('userId', '==', dataOwnerId),
         where('year', '==', selectedYear),
         where('month', '==', selectedMonth)
       ];
@@ -193,11 +193,11 @@ const OnlineProfitCenter: React.FC<{ user: User }> = ({ user }) => {
       const [sSnap, iSnap, rSnap, cSnap, skuSnap, normSnap, allSSnap] = await Promise.all([
         getDocs(query(collection(db, 'sales_snapshots'), ...constraints)),
         getDocs(query(collection(db, 'item_snapshots'), ...constraints)),
-        getDocs(query(collection(db, 'rentals'), where('userId', '==', user.uid))),
-        getDocs(query(collection(db, 'item_costs'), where('userId', '==', user.uid))),
-        getDocs(query(collection(db, 'sku_mappings'), where('userId', '==', user.uid))),
-        getDocs(query(collection(db, 'menu_normalization'), where('userId', '==', user.uid))),
-        getDocs(query(collection(db, 'sales_snapshots'), where('userId', '==', user.uid)))
+        getDocs(query(collection(db, 'rentals'), where('userId', '==', dataOwnerId))),
+        getDocs(query(collection(db, 'item_costs'), where('userId', '==', dataOwnerId))),
+        getDocs(query(collection(db, 'sku_mappings'), where('userId', '==', dataOwnerId))),
+        getDocs(query(collection(db, 'menu_normalization'), where('userId', '==', dataOwnerId))),
+        getDocs(query(collection(db, 'sales_snapshots'), where('userId', '==', dataOwnerId)))
       ]);
 
       // We still keep month-specific snaps for overview

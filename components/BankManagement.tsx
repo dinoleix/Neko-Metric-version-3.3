@@ -21,7 +21,7 @@ import {
   MapPin
 } from 'lucide-react';
 
-const BankManagement: React.FC<{ user: User }> = ({ user }) => {
+const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
   const [accounts, setAccounts] = useState<BankAccount[]>([]);
   const [activeOutletIds, setActiveOutletIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
@@ -42,7 +42,7 @@ const BankManagement: React.FC<{ user: User }> = ({ user }) => {
       // Fetch Active Outlets from Store Hub (Rentals)
       const rentalsQ = query(
         collection(db, 'rentals'),
-        where('userId', '==', user.uid),
+        where('userId', '==', dataOwnerId),
         where('status', '==', 'active')
       );
       const rentalsSnap = await getDocs(rentalsQ);
@@ -51,7 +51,7 @@ const BankManagement: React.FC<{ user: User }> = ({ user }) => {
 
       const q = query(
         collection(db, 'bank_accounts'),
-        where('userId', '==', user.uid)
+        where('userId', '==', dataOwnerId)
       );
       const snap = await getDocs(q);
       const fetchedAccounts = snap.docs.map(d => ({ id: d.id, ...d.data() } as BankAccount));

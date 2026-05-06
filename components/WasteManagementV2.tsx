@@ -68,7 +68,7 @@ const PILLARS: { id: CogsBucket, label: string, icon: any, color: string, ring: 
   { id: 'DRINKS SERVINGS', label: 'Drinks Packaging', icon: Grape, color: 'text-rose-500', ring: 'ring-rose-500', hex: '#f43f5e' }
 ];
 
-const WasteManagementV2: React.FC<{ user: User }> = ({ user }) => {
+const WasteManagementV2: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
   const [itemSnaps, setItemSnaps] = useState<ItemMonthlySnapshot[]>([]);
   const [expenseSnaps, setExpenseSnaps] = useState<ExpenseMonthlySnapshot[]>([]);
   const [itemCosts, setItemCosts] = useState<ItemCost[]>([]);
@@ -88,7 +88,7 @@ const WasteManagementV2: React.FC<{ user: User }> = ({ user }) => {
 
   const fetchPrerequisites = async () => {
     try {
-      const constraints = [where('userId', '==', user.uid)];
+      const constraints = [where('userId', '==', dataOwnerId)];
       const [cSnap, skuSnap, rSnap, normSnap] = await Promise.all([
         getDocs(query(collection(db, 'item_costs'), ...constraints)),
         getDocs(query(collection(db, 'sku_mappings'), ...constraints)),
@@ -144,7 +144,7 @@ const WasteManagementV2: React.FC<{ user: User }> = ({ user }) => {
     setLoading(true);
     try {
       const periodConstraints = [
-        where('userId', '==', user.uid),
+        where('userId', '==', dataOwnerId),
         where('year', '==', selectedYear),
         where('month', '==', selectedMonth)
       ];

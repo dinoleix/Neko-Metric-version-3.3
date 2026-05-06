@@ -72,7 +72,7 @@ const PILLAR_COLORS: Record<string, string> = {
   'UNCATEGORIZED': '#ef4444' // Bright Red
 };
 
-const ExpenseHub: React.FC<{ user: User }> = ({ user }) => {
+const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
   const [snapshots, setSnapshots] = useState<ExpenseMonthlySnapshot[]>([]);
   const [rentals, setRentals] = useState<StoreRental[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -109,14 +109,14 @@ const ExpenseHub: React.FC<{ user: User }> = ({ user }) => {
       const yearInt = parseInt(selectedYear);
       // Fetch data for selected year and the one before it to support cross-year trajectory analysis
       const yearRange = [yearInt.toString(), (yearInt - 1).toString()];
-      const settingsRef = doc(db, 'category_settings', user.uid);
+      const settingsRef = doc(db, 'category_settings', dataOwnerId);
       const [snapSnap, rSnap, empSnap, paySnap, adjSnap, bankSnap, setSnap] = await Promise.all([
-        getDocs(query(collection(db, 'expense_snapshots'), where('userId', '==', user.uid), where('year', 'in', yearRange))),
-        getDocs(query(collection(db, 'rentals'), where('userId', '==', user.uid))),
-        getDocs(query(collection(db, 'employees'), where('userId', '==', user.uid))),
-        getDocs(query(collection(db, 'monthly_payrolls'), where('userId', '==', user.uid))),
-        getDocs(query(collection(db, 'cogs_adjustments'), where('userId', '==', user.uid))),
-        getDocs(query(collection(db, 'bank_transactions'), where('userId', '==', user.uid), where('isVerified', '==', true))),
+        getDocs(query(collection(db, 'expense_snapshots'), where('userId', '==', dataOwnerId), where('year', 'in', yearRange))),
+        getDocs(query(collection(db, 'rentals'), where('userId', '==', dataOwnerId))),
+        getDocs(query(collection(db, 'employees'), where('userId', '==', dataOwnerId))),
+        getDocs(query(collection(db, 'monthly_payrolls'), where('userId', '==', dataOwnerId))),
+        getDocs(query(collection(db, 'cogs_adjustments'), where('userId', '==', dataOwnerId))),
+        getDocs(query(collection(db, 'bank_transactions'), where('userId', '==', dataOwnerId), where('isVerified', '==', true))),
         getDoc(settingsRef)
       ]);
       
@@ -161,8 +161,8 @@ const ExpenseHub: React.FC<{ user: User }> = ({ user }) => {
       return matchesStore && matchesPeriod;
     });
     
-    const opsCatMap: Record<string, number> = {};
-    const uncatCatMap: Record<string, { amount: number, source: 'Cash' | 'Online' | 'Mixed' }> = {};
+    const opsCatMap: Record<string, { amount: number, source: 'Cash' | 'Online' | 'Bank' | 'Mixed' }> = {};
+    const uncatCatMap: Record<string, { amount: number, source: 'Cash' | 'Online' | 'Bank' | 'Mixed' }> = {};
     const cogsBucketAgg: Record<string, number> = { 'FOOD': 0, 'DRINKS': 0, 'FOOD SERVINGS': 0, 'DRINKS SERVINGS': 0, 'UNCATEGORIZED': 0 };
     const cogsItemBreakdown: Record<string, Record<string, { amount: number, source: 'Cash' | 'Online' | 'Mixed' }>> = { 
       'FOOD': {}, 'DRINKS': {}, 'FOOD SERVINGS': {}, 'DRINKS SERVINGS': {}, 'UNCATEGORIZED': {} 
@@ -194,7 +194,12 @@ const ExpenseHub: React.FC<{ user: User }> = ({ user }) => {
           csvLabour += val;
         } else if (opsKeywords.includes(upper)) {
           csvOps += val;
-          opsCatMap[cat] = (opsCatMap[cat] || 0) + val;
+          if (!opsCatMap[cat]) {
+            opsCatMap[cat] = { amount: val, source };
+          } else {
+            opsCatMap[cat].amount += val;
+            if (opsCatMap[cat].source !== source) opsCatMap[cat].source = 'Mixed';
+          }
         } else {
           csvUncat += val;
           if (!uncatCatMap[cat]) {
@@ -225,7 +230,8 @@ const ExpenseHub: React.FC<{ user: User }> = ({ user }) => {
     
     bankTxns
       .filter(t => t.date.startsWith(datePrefix))
-      .filter(t => t.type === 'debit') // Only outflows
+      .filter(t => t.type === 'debit')
+      .filter(t => t.pushedToPurchases === true) // Only bank transactions explicitly pushed to purchases count here
       .forEach(t => {
         const amt = Number(t.amount);
         const cat = t.category || 'UNCATEGORIZED';
@@ -235,15 +241,18 @@ const ExpenseHub: React.FC<{ user: User }> = ({ user }) => {
         else if (cat === 'RENTALS') fixedRent += amt;
         else if (cat === 'OPERATIONS') {
           csvOps += amt;
-          opsCatMap[t.description] = (opsCatMap[t.description] || 0) + amt;
+          if (!opsCatMap[t.description]) opsCatMap[t.description] = { amount: amt, source: 'Bank' };
+          else { opsCatMap[t.description].amount += amt; if (opsCatMap[t.description].source !== 'Bank') opsCatMap[t.description].source = 'Mixed'; }
         } else if (cat === 'UNCATEGORIZED') {
           csvUncat += amt;
-          if (!uncatCatMap[t.description]) uncatCatMap[t.description] = { amount: amt, source: 'Online' };
-          else uncatCatMap[t.description].amount += amt;
+          if (!uncatCatMap[t.description]) uncatCatMap[t.description] = { amount: amt, source: 'Bank' };
+          else { uncatCatMap[t.description].amount += amt; if (uncatCatMap[t.description].source !== 'Bank') uncatCatMap[t.description].source = 'Mixed'; }
         } else {
           // Others (Loans, taxes etc) map to Ops for simplified PnL in this view, or separate
           csvOps += amt;
-          opsCatMap[`${cat}: ${t.description}`] = (opsCatMap[`${cat}: ${t.description}`] || 0) + amt;
+          const key = `${cat}: ${t.description}`;
+          if (!opsCatMap[key]) opsCatMap[key] = { amount: amt, source: 'Bank' };
+          else { opsCatMap[key].amount += amt; if (opsCatMap[key].source !== 'Bank') opsCatMap[key].source = 'Mixed'; }
         }
       });
 
@@ -298,7 +307,7 @@ const ExpenseHub: React.FC<{ user: User }> = ({ user }) => {
       .filter(key => catMap.hasOwnProperty(key))
       .map(key => [key, catMap[key]] as [string, number]);
 
-    const finalOpsBreakdown = Object.entries(opsCatMap).sort((a, b) => b[1] - a[1]);
+    const finalOpsBreakdown = Object.entries(opsCatMap).sort((a, b) => b[1].amount - a[1].amount);
     const finalUncatBreakdown = Object.entries(uncatCatMap).sort((a, b) => b[1].amount - a[1].amount);
     const currentTotal = adjustedCogsTotal + totalLabour + fixedRent + csvOps + csvUncat;
 
@@ -731,7 +740,13 @@ const ExpenseHub: React.FC<{ user: User }> = ({ user }) => {
                                               </div>
                                            </td>
                                            <td className="px-6 py-4 text-center">
-                                              <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase border ${data.source === 'Cash' ? 'bg-indigo-50 border-indigo-100 text-indigo-500' : (data.source === 'Online' ? 'bg-orange-50 border-orange-100 text-orange-500' : 'bg-slate-100 border-slate-200 text-slate-500')}`}>
+                                              <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase border ${
+                                                data.source === 'Cash' ? 'bg-indigo-50 border-indigo-100 text-indigo-500' :
+                                                data.source === 'Online' ? 'bg-orange-50 border-orange-100 text-orange-500' :
+                                                data.source === 'Bank' ? 'bg-teal-50 border-teal-100 text-teal-600' :
+                                                data.source === 'Mixed' ? 'bg-purple-50 border-purple-100 text-purple-500' :
+                                                'bg-slate-100 border-slate-200 text-slate-500'
+                                              }`}>
                                                  {data.source}
                                               </span>
                                            </td>
@@ -757,10 +772,18 @@ const ExpenseHub: React.FC<{ user: User }> = ({ user }) => {
 
                        {isOps && isExpanded && (
                          <div className="ml-16 space-y-4 pt-3 pb-8 border-l-4 border-pink-500/20 pl-8 animate-in slide-in-from-top-3 duration-300">
-                            {analytics.opsBreakdown.map(([sc, sa]) => (
+                            {analytics.opsBreakdown.map(([sc, sd]: [string, any]) => (
                                <div key={sc} className="flex justify-between items-center group text-[11px] font-bold text-slate-500 hover:text-pink-600 transition-colors">
-                                  <span className="uppercase tracking-widest">{sc}</span>
-                                  <span className="text-slate-800 font-black">₹{sa.toLocaleString()}</span>
+                                  <div className="flex items-center gap-2">
+                                     <span className="uppercase tracking-widest">{sc}</span>
+                                     {sd.source === 'Bank' && (
+                                        <span className="px-1.5 py-0.5 rounded text-[8px] font-black uppercase border bg-teal-50 border-teal-100 text-teal-600">Bank</span>
+                                     )}
+                                     {sd.source === 'Mixed' && (
+                                        <span className="px-1.5 py-0.5 rounded text-[8px] font-black uppercase border bg-purple-50 border-purple-100 text-purple-500">Mixed</span>
+                                     )}
+                                  </div>
+                                  <span className="text-slate-800 font-black">₹{sd.amount.toLocaleString()}</span>
                                </div>
                             ))}
                             {analytics.opsBreakdown.length === 0 && (

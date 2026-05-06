@@ -69,7 +69,7 @@ import {
 
 type PnlTab = 'overview' | 'menu-engineering' | 'unit-economics';
 
-const PnLAnalytics: React.FC<{ user: User }> = ({ user }) => {
+const PnLAnalytics: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
   const [salesSnaps, setSalesSnaps] = useState<SalesMonthlySnapshot[]>([]);
   const [expenseSnaps, setExpenseSnaps] = useState<ExpenseMonthlySnapshot[]>([]);
   const [itemSnaps, setItemSnaps] = useState<ItemMonthlySnapshot[]>([]);
@@ -107,8 +107,8 @@ const PnLAnalytics: React.FC<{ user: User }> = ({ user }) => {
 
   const fetchPrerequisites = async () => {
     try {
-      const constraints = [where('userId', '==', user.uid)];
-      const settingsRef = doc(db, 'category_settings', user.uid);
+      const constraints = [where('userId', '==', dataOwnerId)];
+      const settingsRef = doc(db, 'category_settings', dataOwnerId);
       const [rent, setSnap, skuSnap, costs, normSnap] = await Promise.all([
         getDocs(query(collection(db, 'rentals'), ...constraints)),
         getDoc(settingsRef),
@@ -172,7 +172,7 @@ const PnLAnalytics: React.FC<{ user: User }> = ({ user }) => {
     setLoading(true);
     try {
       const periodConstraints = [
-        where('userId', '==', user.uid),
+        where('userId', '==', dataOwnerId),
         where('year', '==', selectedYear),
         where('month', '==', selectedMonth)
       ];

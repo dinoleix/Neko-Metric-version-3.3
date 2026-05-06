@@ -32,7 +32,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
-const CashFlowTracker: React.FC<{ user: User }> = ({ user }) => {
+const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear().toString());
   const [selectedMonth, setSelectedMonth] = useState(MONTH_NAMES[new Date().getMonth()]);
   const [pnlSnaps, setPnlSnaps] = useState<PnLMonthlySnapshot[]>([]);
@@ -60,7 +60,7 @@ const CashFlowTracker: React.FC<{ user: User }> = ({ user }) => {
       // 1. Fetch Profit Data
       const pnlQuery = query(
         collection(db, 'pnl_snapshots'),
-        where('userId', '==', user.uid),
+        where('userId', '==', dataOwnerId),
         where('month', '==', selectedMonth),
         where('year', '==', selectedYear)
       );
@@ -68,14 +68,14 @@ const CashFlowTracker: React.FC<{ user: User }> = ({ user }) => {
       setPnlSnaps(pnlRes.docs.map(d => d.data() as PnLMonthlySnapshot));
 
       // 2. Fetch Loan Profiles
-      const lpQuery = query(collection(db, 'loan_profiles'), where('userId', '==', user.uid));
+      const lpQuery = query(collection(db, 'loan_profiles'), where('userId', '==', dataOwnerId));
       const lpRes = await getDocs(lpQuery);
       setLoanProfiles(lpRes.docs.map(d => ({ id: d.id, ...d.data() } as LoanProfile)));
 
       // 3. Fetch bank transactions for this period
       const bankQuery = query(
         collection(db, 'bank_transactions'),
-        where('userId', '==', user.uid),
+        where('userId', '==', dataOwnerId),
         where('category', 'in', ['LOAN_EMI', 'INTEREST_ONLY', 'CAPEX_REPAYMENT'])
       );
       const bankRes = await getDocs(bankQuery);
@@ -89,7 +89,7 @@ const CashFlowTracker: React.FC<{ user: User }> = ({ user }) => {
       // 4. Fetch Cash Flow Snapshot (Mappings)
       const snapId = `${user.uid}_${selectedYear}_${selectedMonth}`;
       const snapRef = doc(db, 'cash_flow_snapshots', snapId);
-      const cfRes = await getDocs(query(collection(db, 'cash_flow_snapshots'), where('userId', '==', user.uid), where('month', '==', selectedMonth), where('year', '==', selectedYear)));
+      const cfRes = await getDocs(query(collection(db, 'cash_flow_snapshots'), where('userId', '==', dataOwnerId), where('month', '==', selectedMonth), where('year', '==', selectedYear)));
       
       if (!cfRes.empty) {
         const data = cfRes.docs[0].data() as CashFlowSnapshot;

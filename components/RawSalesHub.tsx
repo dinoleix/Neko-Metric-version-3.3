@@ -53,7 +53,7 @@ import {
 
 type VerifyMode = 'sales' | 'online-orders' | 'online-items' | 'expenses' | 'purchases';
 
-const RawSalesHub: React.FC<{ user: User }> = ({ user }) => {
+const RawSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
   const [activeView, setActiveView] = useState<VerifyMode>('sales');
   const [records, setRecords] = useState<SalesSummaryRecord[]>([]);
   const [onlineOrders, setOnlineOrders] = useState<any[]>([]);
@@ -87,10 +87,10 @@ const RawSalesHub: React.FC<{ user: User }> = ({ user }) => {
   useEffect(() => {
     const fetchPrerequisites = async () => {
       try {
-        const setRef = doc(db, 'category_settings', user.uid);
+        const setRef = doc(db, 'category_settings', dataOwnerId);
         const [setSnap, rSnap] = await Promise.all([
           getDoc(setRef),
-          getDocs(query(collection(db, 'rentals'), where('userId', '==', user.uid)))
+          getDocs(query(collection(db, 'rentals'), where('userId', '==', dataOwnerId)))
         ]);
         if (setSnap.exists()) setSettings(setSnap.data() as CategorySettings);
         setRentals(rSnap.docs.map(d => d.data() as StoreRental));
@@ -103,7 +103,7 @@ const RawSalesHub: React.FC<{ user: User }> = ({ user }) => {
     setLoading(true);
     setSelectedIds(new Set());
     try {
-      const constraints = [where('userId', '==', user.uid)];
+      const constraints = [where('userId', '==', dataOwnerId)];
       
       if (activeView === 'sales') {
         const sSnap = await getDocs(query(collection(db, 'sales_summary'), ...constraints));
@@ -112,7 +112,7 @@ const RawSalesHub: React.FC<{ user: User }> = ({ user }) => {
         const oSnap = await getDocs(query(collection(db, 'online_order_details'), ...constraints));
         setOnlineOrders(oSnap.docs.map(d => ({ ...d.data(), id: d.id })));
       } else if (activeView === 'online-items') {
-        const iSnap = await getDocs(query(collection(db, 'item_sales'), where('userId', '==', user.uid), where('isPlatform', '==', true), limit(1000)));
+        const iSnap = await getDocs(query(collection(db, 'item_sales'), where('userId', '==', dataOwnerId), where('isPlatform', '==', true), limit(1000)));
         setItemRecords(iSnap.docs.map(d => ({ ...d.data(), id: d.id } as ItemSalesRecord)));
       } else if (activeView === 'expenses') {
         const eSnap = await getDocs(query(collection(db, 'expenses'), ...constraints));

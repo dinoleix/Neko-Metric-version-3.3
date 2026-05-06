@@ -28,7 +28,7 @@ import {
   CalendarDays
 } from 'lucide-react';
 
-const Team: React.FC<{ user: User }> = ({ user }) => {
+const Team: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [rentals, setRentals] = useState<StoreRental[]>([]);
   const [monthlyPayrolls, setMonthlyPayrolls] = useState<MonthlyPayroll[]>([]);
@@ -62,7 +62,7 @@ const Team: React.FC<{ user: User }> = ({ user }) => {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const constraints = [where('userId', '==', user.uid)];
+      const constraints = [where('userId', '==', dataOwnerId)];
       const [empSnap, rentSnap, paySnap] = await Promise.all([
         getDocs(query(collection(db, 'employees'), ...constraints)),
         getDocs(query(collection(db, 'rentals'), ...constraints)),

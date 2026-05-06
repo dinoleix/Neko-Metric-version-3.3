@@ -73,10 +73,10 @@ const UserManagement: React.FC<{ user: User }> = ({ user }) => {
     }
     try {
       const userRef = doc(db, 'users', targetUid);
-      const updates: Partial<UserProfile> = { role };
+      const updates: Partial<UserProfile> = { role, ownerId: user.uid };
       if (role === 'crew' && outletId) updates.assignedOutlet = outletId;
       else updates.assignedOutlet = '';
-      
+
       await setDoc(userRef, updates, { merge: true });
       fetchUsers();
     } catch (err) {

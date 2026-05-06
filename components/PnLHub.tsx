@@ -77,7 +77,7 @@ import PnLPerformanceTrends from './PnLPerformanceTrends';
 
 type DetailTab = 'statement' | 'waterfall' | 'pnl-waterfall' | 'performance-trends' | 'audit-log';
 
-const PnLHub: React.FC<{ user: User, readOnly?: boolean }> = ({ user, readOnly = false }) => {
+const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> = ({ user, dataOwnerId, readOnly = false }) => {
   const [salesSnaps, setSalesSnaps] = useState<SalesMonthlySnapshot[]>([]);
   const [expenseSnaps, setExpenseSnaps] = useState<ExpenseMonthlySnapshot[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -120,13 +120,13 @@ const PnLHub: React.FC<{ user: User, readOnly?: boolean }> = ({ user, readOnly =
     setLoading(true);
     try {
       const periodConstraints = [
-        where('userId', '==', user.uid),
+        where('userId', '==', dataOwnerId),
         where('year', '==', selectedYear),
         where('month', '==', selectedMonth)
       ];
 
-      const globalConstraints = [where('userId', '==', user.uid)];
-      const settingsRef = doc(db, 'category_settings', user.uid);
+      const globalConstraints = [where('userId', '==', dataOwnerId)];
+      const settingsRef = doc(db, 'category_settings', dataOwnerId);
 
       const [sSnaps, eSnaps, emp, rent, adj, pay, setSnap, pnlSnap] = await Promise.all([
         getDocs(query(collection(db, 'sales_snapshots'), ...periodConstraints)),
@@ -783,10 +783,11 @@ const PnLHub: React.FC<{ user: User, readOnly?: boolean }> = ({ user, readOnly =
                    </div>
                 </div>
              ) : activeDetailTab === 'performance-trends' ? (
-                <PnLPerformanceTrends 
-                  user={user} 
-                  selectedOutlets={selectedOutlets} 
-                  rentals={rentals} 
+                <PnLPerformanceTrends
+                  user={user}
+                  dataOwnerId={dataOwnerId}
+                  selectedOutlets={selectedOutlets}
+                  rentals={rentals}
                 />
              ) : activeDetailTab === 'waterfall' ? (
                 <div className="bg-white p-12 rounded-[3.5rem] border border-slate-100 shadow-sm space-y-12">

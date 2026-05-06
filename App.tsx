@@ -130,6 +130,7 @@ const App: React.FC = () => {
   const isReadOnly = role === 'viewer';
   const isCrew = role === 'crew';
   const isAdmin = role === 'admin';
+  const dataOwnerId = userProfile.ownerId || user.uid;
 
   // If user is crew, provide a specialized fullscreen layout
   if (isCrew) {
@@ -301,28 +302,28 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {activeTab === 'exec-dashboard' && <ExecDashboard user={user} />}
-          {activeTab === 'dashboard' && !isReadOnly && <Dashboard user={user} />}
-          {activeTab === 'sales' && <SalesHub user={user} />}
-          {activeTab === 'online-profit' && <OnlineProfitCenter user={user} />}
-          {activeTab === 'raw-verify' && !isReadOnly && <RawSalesHub user={user} />}
-          {activeTab === 'expenses' && <ExpenseHub user={user} />}
-          {activeTab === 'items' && <ItemSalesHub user={user} />}
-          {activeTab === 'waste' && <WasteManagement user={user} />}
-          {activeTab === 'waste-v2' && <WasteManagementV2 user={user} />}
-          {activeTab === 'integrity' && !isReadOnly && <IntegrityAudit user={user} />}
-          {activeTab === 'pnl' && <PnLHub user={user} readOnly={isReadOnly} />}
-          {activeTab === 'cash-flow' && <CashFlowTracker user={user} />}
-          {activeTab === 'pnl-insights' && <PnLAnalytics user={user} />}
-          {activeTab === 'partnership' && <PartnershipModel user={user} />}
-          {activeTab === 'catalog' && !isReadOnly && <DataCatalog user={user} />}
-          {activeTab === 'category-settings' && !isReadOnly && <CategorySettings user={user} />}
-          {activeTab === 'team' && !isReadOnly && <Team user={user} />}
-          {activeTab === 'rentals' && !isReadOnly && <Rentals user={user} />}
-          {activeTab === 'holidays' && !isReadOnly && <HolidayRegistry user={user} />}
-          {activeTab === 'bank-management' && !isReadOnly && <BankManagement user={user} />}
-          {activeTab === 'bank-audit' && !isReadOnly && <BankReconciliation user={user} />}
-          {activeTab === 'upload' && !isReadOnly && <Uploader user={user} onSuccess={() => setActiveTab('exec-dashboard')} />}
+          {activeTab === 'exec-dashboard' && <ExecDashboard user={user} dataOwnerId={dataOwnerId} />}
+          {activeTab === 'dashboard' && !isReadOnly && <Dashboard user={user} dataOwnerId={dataOwnerId} />}
+          {activeTab === 'sales' && <SalesHub user={user} dataOwnerId={dataOwnerId} />}
+          {activeTab === 'online-profit' && <OnlineProfitCenter user={user} dataOwnerId={dataOwnerId} />}
+          {activeTab === 'raw-verify' && !isReadOnly && <RawSalesHub user={user} dataOwnerId={dataOwnerId} />}
+          {activeTab === 'expenses' && <ExpenseHub user={user} dataOwnerId={dataOwnerId} />}
+          {activeTab === 'items' && <ItemSalesHub user={user} dataOwnerId={dataOwnerId} />}
+          {activeTab === 'waste' && <WasteManagement user={user} dataOwnerId={dataOwnerId} />}
+          {activeTab === 'waste-v2' && <WasteManagementV2 user={user} dataOwnerId={dataOwnerId} />}
+          {activeTab === 'integrity' && !isReadOnly && <IntegrityAudit user={user} dataOwnerId={dataOwnerId} />}
+          {activeTab === 'pnl' && <PnLHub user={user} dataOwnerId={dataOwnerId} readOnly={isReadOnly} />}
+          {activeTab === 'cash-flow' && <CashFlowTracker user={user} dataOwnerId={dataOwnerId} />}
+          {activeTab === 'pnl-insights' && <PnLAnalytics user={user} dataOwnerId={dataOwnerId} />}
+          {activeTab === 'partnership' && <PartnershipModel user={user} dataOwnerId={dataOwnerId} />}
+          {activeTab === 'catalog' && !isReadOnly && <DataCatalog user={user} dataOwnerId={dataOwnerId} />}
+          {activeTab === 'category-settings' && !isReadOnly && <CategorySettings user={user} dataOwnerId={dataOwnerId} />}
+          {activeTab === 'team' && !isReadOnly && <Team user={user} dataOwnerId={dataOwnerId} />}
+          {activeTab === 'rentals' && !isReadOnly && <Rentals user={user} dataOwnerId={dataOwnerId} />}
+          {activeTab === 'holidays' && !isReadOnly && <HolidayRegistry user={user} dataOwnerId={dataOwnerId} />}
+          {activeTab === 'bank-management' && !isReadOnly && <BankManagement user={user} dataOwnerId={dataOwnerId} />}
+          {activeTab === 'bank-audit' && !isReadOnly && <BankReconciliation user={user} dataOwnerId={dataOwnerId} />}
+          {activeTab === 'upload' && !isReadOnly && <Uploader user={user} dataOwnerId={dataOwnerId} onSuccess={() => setActiveTab('exec-dashboard')} />}
           {activeTab === 'crew-terminal' && <CrewTerminal user={user} profile={userProfile} />}
           {activeTab === 'users' && isAdmin && <UserManagement user={user} />}
         </div>

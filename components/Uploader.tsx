@@ -81,7 +81,7 @@ const parseIndianTime = (timeStr: string): number => {
   return hour % 24;
 };
 
-const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuccess }) => {
+const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => void }> = ({ user, dataOwnerId, onSuccess }) => {
   const [mode, setMode] = useState<UploadMode>('csv');
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [fileType, setFileType] = useState<FileType>('sales');
@@ -125,15 +125,15 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
 
   useEffect(() => {
     const fetchSettings = async () => {
-      const q = query(collection(db, 'rentals'), where('userId', '==', user.uid));
+      const q = query(collection(db, 'rentals'), where('userId', '==', dataOwnerId));
       const rentalsSnap = await getDocs(q);
       setRentals(rentalsSnap.docs.map(d => d.data() as StoreRental));
 
-      const bankQ = query(collection(db, 'bank_accounts'), where('userId', '==', user.uid));
+      const bankQ = query(collection(db, 'bank_accounts'), where('userId', '==', dataOwnerId));
       const bankSnap = await getDocs(bankQ);
       setBankAccounts(bankSnap.docs.map(d => ({ id: d.id, ...d.data() })));
 
-      const setRef = doc(db, 'category_settings', user.uid);
+      const setRef = doc(db, 'category_settings', dataOwnerId);
       const setSnap = await getDoc(setRef);
       if (setSnap.exists()) {
         const d = setSnap.data();
@@ -887,7 +887,7 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
         if (cCount > 0) await customerBatch.commit();
       } else if (fileType === 'expense' || fileType === 'purchase') {
         const outletAggs: Record<string, any> = {};
-        const settingsSnap = await getDoc(doc(db, 'category_settings', user.uid));
+        const settingsSnap = await getDoc(doc(db, 'category_settings', dataOwnerId));
         let customCogs = DEFAULT_COGS;
         let customBucketMapping: Record<string, CogsBucket> = {};
         if (settingsSnap.exists()) {
@@ -954,7 +954,7 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
           }
         }
       } else if (fileType === 'item' || fileType === 'platform_item') {
-        const normSnap = await getDocs(query(collection(db, 'menu_normalization'), where('userId', '==', user.uid)));
+        const normSnap = await getDocs(query(collection(db, 'menu_normalization'), where('userId', '==', dataOwnerId)));
         const normMap: Record<string, string> = {};
         normSnap.docs.forEach(d => { const data = d.data() as MenuNormalization; normMap[data.sourceName] = data.masterName; });
 
@@ -1043,7 +1043,7 @@ const Uploader: React.FC<{ user: User, onSuccess: () => void }> = ({ user, onSuc
           // Find the customerId associated with this orderId
           const q = query(
             collection(db, 'online_order_details'), 
-            where('userId', '==', user.uid), 
+            where('userId', '==', dataOwnerId), 
             where('orderId', '==', orderId),
             limit(1)
           );

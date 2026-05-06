@@ -28,14 +28,14 @@ import {
   getOutletName
 } from '../types';
 import { 
-  ShieldCheck, 
-  Search, 
-  Filter, 
-  CheckCircle2, 
-  AlertCircle, 
-  ArrowRightLeft, 
-  Plus, 
-  Loader2, 
+  ShieldCheck,
+  Search,
+  Filter,
+  CheckCircle2,
+  AlertCircle,
+  ArrowRightLeft,
+  Plus,
+  Loader2,
   CalendarDays,
   IndianRupee,
   Tag,
@@ -50,11 +50,12 @@ import {
   Info,
   Database,
   History,
-  X
+  X,
+  PackagePlus
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
-const BankReconciliation: React.FC<{ user: User }> = ({ user }) => {
+const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
   const [selectedMonth, setSelectedMonth] = useState(MONTH_NAMES[new Date().getMonth()]);
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear().toString());
   const [loading, setLoading] = useState(true);
@@ -79,6 +80,7 @@ const BankReconciliation: React.FC<{ user: User }> = ({ user }) => {
   const [learnedRules, setLearnedRules] = useState<Record<string, string>>({});
   const [selectedBatchIds, setSelectedBatchIds] = useState<Set<string>>(new Set());
   const [isBulkUpdating, setIsBulkUpdating] = useState(false);
+  const [pushingId, setPushingId] = useState<string | null>(null);
 
   const availableCategories = useMemo(() => {
     const fromTransactions = bankTransactions
@@ -97,7 +99,7 @@ const BankReconciliation: React.FC<{ user: User }> = ({ user }) => {
       // 1. Fetch Transactions
       const bankQ = query(
         collection(db, 'bank_transactions'),
-        where('userId', '==', user.uid)
+        where('userId', '==', dataOwnerId)
       );
       const bSnap = await getDocs(bankQ);
       setBankTransactions(bSnap.docs.map(d => ({ id: d.id, ...d.data() } as BankTransaction)));
@@ -105,7 +107,7 @@ const BankReconciliation: React.FC<{ user: User }> = ({ user }) => {
       // 2. Fetch Categorization Rules
       const rulesQ = query(
         collection(db, 'categorization_rules'),
-        where('userId', '==', user.uid)
+        where('userId', '==', dataOwnerId)
       );
       const rSnap = await getDocs(rulesQ);
       setRules(rSnap.docs.map(d => ({ id: d.id, ...d.data() } as CategorizationRule)));
@@ -113,7 +115,7 @@ const BankReconciliation: React.FC<{ user: User }> = ({ user }) => {
       // 3. Fetch Bank Accounts
       const bankAccQ = query(
         collection(db, 'bank_accounts'),
-        where('userId', '==', user.uid)
+        where('userId', '==', dataOwnerId)
       );
       const accSnap = await getDocs(bankAccQ);
       setBankAccounts(accSnap.docs.map(d => ({ id: d.id, ...d.data() } as BankAccount)));
@@ -314,6 +316,43 @@ const BankReconciliation: React.FC<{ user: User }> = ({ user }) => {
     }
   };
 
+  const handlePushToPurchases = async (bt: BankTransaction) => {
+    if (!bt.id) return;
+    setPushingId(bt.id);
+    try {
+      const purchase: Omit<PurchaseRecord, 'id'> = {
+        billNo: bt.referenceNo && !bt.referenceNo.startsWith('AUTO-') ? bt.referenceNo : `BANK-${bt.id.slice(-6).toUpperCase()}`,
+        date: bt.date,
+        productName: bt.description,
+        amount: bt.amount,
+        category: bt.category || 'UNCATEGORIZED',
+        vendor: bt.description,
+        userId: user.uid,
+        _fileId: 'BANK_PUSH',
+        createdAt: Date.now(),
+      };
+
+      const purchaseRef = await addDoc(collection(db, 'purchases'), purchase);
+
+      await updateDoc(doc(db, 'bank_transactions', bt.id), {
+        matchedPurchaseId: purchaseRef.id,
+        pushedToPurchases: true,
+        isVerified: true,
+        isReconciled: true,
+      });
+
+      setBankTransactions(prev => prev.map(t =>
+        t.id === bt.id
+          ? { ...t, matchedPurchaseId: purchaseRef.id, pushedToPurchases: true, isVerified: true, isReconciled: true }
+          : t
+      ));
+    } catch (err) {
+      console.error('Push to purchases error:', err);
+    } finally {
+      setPushingId(null);
+    }
+  };
+
   const handleBulkAutoMap = async () => {
     setLoading(true);
     const batch = writeBatch(db);
@@ -409,7 +448,7 @@ const BankReconciliation: React.FC<{ user: User }> = ({ user }) => {
       // We look for all user purchases in those dates.
       const q = query(
         collection(db, 'purchases'),
-        where('userId', '==', user.uid),
+        where('userId', '==', dataOwnerId),
         where('date', 'in', searchDates)
       );
 
@@ -834,15 +873,33 @@ const BankReconciliation: React.FC<{ user: User }> = ({ user }) => {
                         </td>
                         <td className="px-8 py-6 text-right">
                            <div className="flex items-center justify-end gap-3">
-                              <button 
+                              <button
                                 onClick={() => handleDeleteTransaction(bt.id!)}
                                 className="p-3 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-2xl transition-all"
                                 title="Delete Record"
                               >
                                 <Trash2 size={18} />
                               </button>
+
+                              {/* Push to Purchases — only for debits not yet linked to any purchase */}
+                              {bt.type === 'debit' && !bt.matchedPurchaseId && (
+                                <button
+                                  onClick={() => handlePushToPurchases(bt)}
+                                  disabled={pushingId === bt.id}
+                                  className="p-3 bg-amber-50 text-amber-600 rounded-2xl hover:bg-amber-600 hover:text-white transition-all border border-amber-100 shadow-sm disabled:opacity-50"
+                                  title="Push to Purchase Records"
+                                >
+                                  {pushingId === bt.id ? <Loader2 size={18} className="animate-spin" /> : <PackagePlus size={18} />}
+                                </button>
+                              )}
+                              {bt.pushedToPurchases && (
+                                <div className="p-3 bg-amber-50 text-amber-500 rounded-2xl border border-amber-100" title="Pushed to Purchases">
+                                  <PackagePlus size={18} />
+                                </div>
+                              )}
+
                               {bt.category && !bt.isVerified && (
-                                <button 
+                                <button
                                   onClick={() => handleManualMap(bt.id!, bt.category!, true)}
                                   className="p-3 bg-emerald-50 text-emerald-600 rounded-2xl hover:bg-emerald-600 hover:text-white transition-all border border-emerald-100 shadow-sm"
                                   title="Confirm Intelligence"
@@ -855,7 +912,7 @@ const BankReconciliation: React.FC<{ user: User }> = ({ user }) => {
                                   <ShieldCheck size={18} />
                                 </div>
                               ) : bt.category ? (
-                                <button 
+                                <button
                                   onClick={() => createRuleFromTransaction(bt.description, bt.category!)}
                                   className="p-3 bg-indigo-50 text-indigo-600 rounded-2xl hover:bg-indigo-600 hover:text-white transition-all border border-indigo-100 shadow-sm"
                                   title="Create Learning Rule"

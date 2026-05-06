@@ -76,7 +76,7 @@ const SKU_CATEGORIES: {id: SkuCategory, label: string, color: string, icon: any}
 
 type SettingsTab = 'purchase' | 'master-menu' | 'product' | 'tiered-costs' | 'servings' | 'segments';
 
-const CategorySettings: React.FC<{ user: User }> = ({ user }) => {
+const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
   const [activeTab, setActiveTab] = useState<SettingsTab>('purchase');
   
   // Basic UI State
@@ -127,8 +127,8 @@ const CategorySettings: React.FC<{ user: User }> = ({ user }) => {
     setLoading(true);
     setError('');
     try {
-      const constraints = [where('userId', '==', user.uid)];
-      const settingsRef = doc(db, 'category_settings', user.uid);
+      const constraints = [where('userId', '==', dataOwnerId)];
+      const settingsRef = doc(db, 'category_settings', dataOwnerId);
       
       const [setSnap, itemSnapDocs, skuMapSnaps, normSnap, servingSnap, costSnap] = await Promise.all([
         getDoc(settingsRef),

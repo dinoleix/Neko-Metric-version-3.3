@@ -53,7 +53,7 @@ import {
 type BurnViewMode = 'combined' | 'pos' | 'online';
 type ItemsViewMode = 'grid' | 'list';
 
-const WasteManagement: React.FC<{ user: User }> = ({ user }) => {
+const WasteManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
   const [itemSnapshots, setItemSnapshots] = useState<ItemMonthlySnapshot[]>([]);
   const [expenseSnapshots, setExpenseSnapshots] = useState<ExpenseMonthlySnapshot[]>([]);
   const [itemCosts, setItemCosts] = useState<ItemCost[]>([]);
@@ -74,8 +74,8 @@ const WasteManagement: React.FC<{ user: User }> = ({ user }) => {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const constraints = [where('userId', '==', user.uid)];
-      const settingsRef = doc(db, 'category_settings', user.uid);
+      const constraints = [where('userId', '==', dataOwnerId)];
+      const settingsRef = doc(db, 'category_settings', dataOwnerId);
 
       const [iSnap, eSnap, cSnap, skuSnap, adjSnap, setSnap] = await Promise.all([
         getDocs(query(collection(db, 'item_snapshots'), ...constraints, where('year', '==', selectedYear))),

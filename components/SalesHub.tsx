@@ -53,7 +53,7 @@ const OUTLET_COLORS: Record<string, string> = {
   'default': '#94a3b8'
 };
 
-const SalesHub: React.FC<{ user: User }> = ({ user }) => {
+const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
   const [snapshots, setSnapshots] = useState<SalesMonthlySnapshot[]>([]);
   const [rentals, setRentals] = useState<StoreRental[]>([]);
   const [loading, setLoading] = useState(false);
@@ -75,8 +75,8 @@ const SalesHub: React.FC<{ user: User }> = ({ user }) => {
     setLoading(true);
     setError('');
     try {
-      const snapQ = query(collection(db, 'sales_snapshots'), where('userId', '==', user.uid));
-      const rentQ = query(collection(db, 'rentals'), where('userId', '==', user.uid));
+      const snapQ = query(collection(db, 'sales_snapshots'), where('userId', '==', dataOwnerId));
+      const rentQ = query(collection(db, 'rentals'), where('userId', '==', dataOwnerId));
       const [sSnap, rSnap] = await Promise.all([getDocs(snapQ), getDocs(rentQ)]);
       setSnapshots(sSnap.docs.map(d => ({ ...d.data(), id: d.id } as SalesMonthlySnapshot)));
       setRentals(rSnap.docs.map(d => ({ id: d.id, ...d.data() } as StoreRental)));
@@ -253,7 +253,7 @@ const SalesHub: React.FC<{ user: User }> = ({ user }) => {
             {storeFilter !== 'all' && rentals.find(r => r.outletId === storeFilter) && (
               <WeatherWidget 
                 outlet={rentals.find(r => r.outletId === storeFilter)!} 
-                userId={user.uid} 
+                userId={dataOwnerId} 
               />
             )}
             <div className="bg-white px-4 py-2.5 rounded-xl border border-slate-100 shadow-sm flex items-center gap-2">
@@ -579,7 +579,7 @@ const SalesHub: React.FC<{ user: User }> = ({ user }) => {
                 ) : (
                   <ProjectionEngine 
                     outlet={rentals.find(r => r.outletId === storeFilter)!} 
-                    userId={user.uid} 
+                    userId={dataOwnerId} 
                   />
                 )}
               </div>

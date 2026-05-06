@@ -43,7 +43,7 @@ import {
 } from 'lucide-react';
 import WeatherWidget from './WeatherWidget';
 
-const ExecDashboard: React.FC<{ user: User }> = ({ user }) => {
+const ExecDashboard: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
   const [salesSnaps, setSalesSnaps] = useState<SalesMonthlySnapshot[]>([]);
   const [expenseSnaps, setExpenseSnaps] = useState<ExpenseMonthlySnapshot[]>([]);
   const [adjustments, setAdjustments] = useState<CogsAdjustment[]>([]);
@@ -55,7 +55,7 @@ const ExecDashboard: React.FC<{ user: User }> = ({ user }) => {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const constraints = [where('userId', '==', user.uid)];
+      const constraints = [where('userId', '==', dataOwnerId)];
       const [sSnap, eSnap, aSnap, empSnap, rentSnap, paySnap] = await Promise.all([
         getDocs(query(collection(db, 'sales_snapshots'), ...constraints)),
         getDocs(query(collection(db, 'expense_snapshots'), ...constraints)),
@@ -212,7 +212,7 @@ const ExecDashboard: React.FC<{ user: User }> = ({ user }) => {
         
         <div className="flex items-center gap-4 overflow-x-auto pb-2 no-scrollbar max-w-full">
           {rentals.filter(r => r.status === 'active').slice(0, 3).map(r => (
-            <WeatherWidget key={r.id} outlet={r} userId={user.uid} />
+            <WeatherWidget key={r.id} outlet={r} userId={dataOwnerId} />
           ))}
         </div>
 

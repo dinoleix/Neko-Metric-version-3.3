@@ -619,8 +619,9 @@ export interface BankTransaction {
   matchedPurchaseId?: string; // Legacy
   matchedPurchaseIds?: string[]; // Legacy
   reconciledAmount?: number; // Legacy
-  category?: string; // New: Categorical Reconciliation
-  isVerified?: boolean; // New: User confirmation
+  category?: string;
+  isVerified?: boolean;
+  pushedToPurchases?: boolean; // True when this transaction was used to create a new purchase record
   createdAt: number;
 }
 

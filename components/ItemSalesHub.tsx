@@ -94,7 +94,7 @@ interface Combo {
   avgOrderValue: number;
 }
 
-const ItemSalesHub: React.FC<{ user: User }> = ({ user }) => {
+const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
   const [snapshots, setSnapshots] = useState<ItemMonthlySnapshot[]>([]);
   const [rentals, setRentals] = useState<StoreRental[]>([]);
   const [itemCosts, setItemCosts] = useState<ItemCost[]>([]);
@@ -119,7 +119,7 @@ const ItemSalesHub: React.FC<{ user: User }> = ({ user }) => {
     if (!user?.uid) return;
     setLoading(true);
     try {
-      let constraints = [where('userId', '==', user.uid)];
+      let constraints = [where('userId', '==', dataOwnerId)];
       
       if (analysisPeriod === 'custom') {
         constraints.push(where('year', '==', selectedYear));
@@ -137,11 +137,11 @@ const ItemSalesHub: React.FC<{ user: User }> = ({ user }) => {
 
       const [snap, rSnap, cSnap, skuSnap, servingSnap, normSnap] = await Promise.all([
         getDocs(query(collection(db, 'item_snapshots'), ...constraints)),
-        getDocs(query(collection(db, 'rentals'), where('userId', '==', user.uid))),
-        getDocs(query(collection(db, 'item_costs'), where('userId', '==', user.uid))),
-        getDocs(query(collection(db, 'sku_mappings'), where('userId', '==', user.uid))),
-        getDocs(query(collection(db, 'serving_options'), where('userId', '==', user.uid))),
-        getDocs(query(collection(db, 'menu_normalization'), where('userId', '==', user.uid)))
+        getDocs(query(collection(db, 'rentals'), where('userId', '==', dataOwnerId))),
+        getDocs(query(collection(db, 'item_costs'), where('userId', '==', dataOwnerId))),
+        getDocs(query(collection(db, 'sku_mappings'), where('userId', '==', dataOwnerId))),
+        getDocs(query(collection(db, 'serving_options'), where('userId', '==', dataOwnerId))),
+        getDocs(query(collection(db, 'menu_normalization'), where('userId', '==', dataOwnerId)))
       ]);
 
       let fetchedSnaps = snap.docs.map(d => ({ ...d.data(), id: d.id } as ItemMonthlySnapshot));

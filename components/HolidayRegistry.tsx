@@ -20,7 +20,7 @@ import {
   Globe
 } from 'lucide-react';
 
-const HolidayRegistry: React.FC<{ user: User }> = ({ user }) => {
+const HolidayRegistry: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
   const [holidays, setHolidays] = useState<Holiday[]>([]);
   const [outlets, setOutlets] = useState<StoreRental[]>([]);
   const [loading, setLoading] = useState(true);
@@ -38,13 +38,13 @@ const HolidayRegistry: React.FC<{ user: User }> = ({ user }) => {
     setLoading(true);
     try {
       // Fetch Holidays
-      const hQuery = query(collection(db, 'holidays'), where('userId', '==', user.uid));
+      const hQuery = query(collection(db, 'holidays'), where('userId', '==', dataOwnerId));
       const hSnap = await getDocs(hQuery);
       const hList = hSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Holiday));
       setHolidays(hList.sort((a, b) => a.date.localeCompare(b.date)));
 
       // Fetch Outlets for region context
-      const oQuery = query(collection(db, 'rentals'), where('userId', '==', user.uid));
+      const oQuery = query(collection(db, 'rentals'), where('userId', '==', dataOwnerId));
       const oSnap = await getDocs(oQuery);
       setOutlets(oSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as StoreRental)));
     } catch (err) {

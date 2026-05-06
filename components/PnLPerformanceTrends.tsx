@@ -41,6 +41,7 @@ import {
 
 interface PnLPerformanceTrendsProps {
   user: any;
+  dataOwnerId: string;
   selectedOutlets: string[];
   rentals: any[];
 }
@@ -58,7 +59,7 @@ const METRIC_CONFIG = {
   netMargin: { label: 'Net Margin %', color: '#06b6d4', type: 'percent' },
 };
 
-const PnLPerformanceTrends: React.FC<PnLPerformanceTrendsProps> = ({ user, selectedOutlets, rentals }) => {
+const PnLPerformanceTrends: React.FC<PnLPerformanceTrendsProps> = ({ user, dataOwnerId, selectedOutlets, rentals }) => {
   const [period, setPeriod] = useState<number>(6); // Default 6 months
   const [loading, setLoading] = useState(false);
   const [trendData, setTrendData] = useState<any[]>([]);
@@ -81,11 +82,11 @@ const PnLPerformanceTrends: React.FC<PnLPerformanceTrendsProps> = ({ user, selec
       // especially since we need multiple months
       const salesQuery = query(
         collection(db, 'sales_snapshots'),
-        where('userId', '==', user.uid)
+        where('userId', '==', dataOwnerId)
       );
       const pnlQuery = query(
         collection(db, 'pnl_snapshots'),
-        where('userId', '==', user.uid)
+        where('userId', '==', dataOwnerId)
       );
 
       const [salesSnap, pnlSnap] = await Promise.all([

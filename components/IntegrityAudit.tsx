@@ -48,7 +48,7 @@ interface AuditResult {
   bridgeIdUsed: string;
 }
 
-const IntegrityAudit: React.FC<{ user: User }> = ({ user }) => {
+const IntegrityAudit: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
   const [salesRecords, setSalesRecords] = useState<SalesSummaryRecord[]>([]);
   const [itemRecords, setItemRecords] = useState<ItemSalesRecord[]>([]);
   const [loading, setLoading] = useState(false);
@@ -61,7 +61,7 @@ const IntegrityAudit: React.FC<{ user: User }> = ({ user }) => {
   const runAudit = async () => {
     setLoading(true);
     try {
-      const constraints = [where('userId', '==', user.uid)];
+      const constraints = [where('userId', '==', dataOwnerId)];
       
       const [sSnap, iSnap] = await Promise.all([
         getDocs(query(collection(db, 'sales_summary'), ...constraints)),

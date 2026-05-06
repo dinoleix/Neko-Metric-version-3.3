@@ -54,7 +54,7 @@ type LookbackPeriod = '3M' | '6M' | '1Y' | 'LIFETIME' | 'SPECIFIC';
 type ModelType = 'ROYALTY' | 'PROFIT_SHARE';
 type ForgeTab = 'projections' | 'sensitivity';
 
-const PartnershipModel: React.FC<{ user: User }> = ({ user }) => {
+const PartnershipModel: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
   const [salesSnaps, setSalesSnaps] = useState<SalesMonthlySnapshot[]>([]);
   const [expenseSnaps, setExpenseSnaps] = useState<ExpenseMonthlySnapshot[]>([]);
   const [payrolls, setPayrolls] = useState<MonthlyPayroll[]>([]);
@@ -87,8 +87,8 @@ const PartnershipModel: React.FC<{ user: User }> = ({ user }) => {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const constraints = [where('userId', '==', user.uid)];
-      const settingsRef = doc(db, 'category_settings', user.uid);
+      const constraints = [where('userId', '==', dataOwnerId)];
+      const settingsRef = doc(db, 'category_settings', dataOwnerId);
 
       const [sSnap, eSnap, pSnap, pnlSnap, setSnap] = await Promise.all([
         getDocs(query(collection(db, 'sales_snapshots'), ...constraints)),

@@ -29,7 +29,7 @@ import {
   Loader2
 } from 'lucide-react';
 
-const Rentals: React.FC<{ user: User }> = ({ user }) => {
+const Rentals: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
   const [rentals, setRentals] = useState<StoreRental[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -62,7 +62,7 @@ const Rentals: React.FC<{ user: User }> = ({ user }) => {
   const fetchRentals = async () => {
     setLoading(true);
     try {
-      const q = query(collection(db, 'rentals'), where('userId', '==', user.uid));
+      const q = query(collection(db, 'rentals'), where('userId', '==', dataOwnerId));
       const snap = await getDocs(q);
       setRentals(snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as StoreRental)));
     } catch (err) {
