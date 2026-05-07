@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import type { User } from 'firebase/auth';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
@@ -71,6 +71,35 @@ const App: React.FC = () => {
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<AppTab>('exec-dashboard');
+  const [showTimeoutWarning, setShowTimeoutWarning] = useState(false);
+
+  const INACTIVE_MS = 15 * 60 * 1000;
+  const WARN_MS = 14 * 60 * 1000;
+  const warnTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const logoutTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearTimers = useCallback(() => {
+    if (warnTimer.current) clearTimeout(warnTimer.current);
+    if (logoutTimer.current) clearTimeout(logoutTimer.current);
+  }, []);
+
+  const resetTimers = useCallback(() => {
+    clearTimers();
+    setShowTimeoutWarning(false);
+    warnTimer.current = setTimeout(() => setShowTimeoutWarning(true), WARN_MS);
+    logoutTimer.current = setTimeout(() => signOut(auth), INACTIVE_MS);
+  }, [clearTimers]);
+
+  useEffect(() => {
+    if (!user) { clearTimers(); return; }
+    const events = ['mousemove', 'keydown', 'click', 'scroll', 'touchstart'];
+    events.forEach(e => window.addEventListener(e, resetTimers, { passive: true }));
+    resetTimers();
+    return () => {
+      events.forEach(e => window.removeEventListener(e, resetTimers));
+      clearTimers();
+    };
+  }, [user, resetTimers, clearTimers]);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (u) => {
@@ -210,6 +239,23 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen flex flex-col md:flex-row bg-slate-50">
+      {showTimeoutWarning && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-sm w-full mx-4 text-center space-y-4">
+            <div className="w-14 h-14 bg-amber-100 rounded-full flex items-center justify-center mx-auto">
+              <span className="text-2xl">⏱</span>
+            </div>
+            <h2 className="text-lg font-black text-slate-900 uppercase tracking-tight">Still there?</h2>
+            <p className="text-sm text-slate-500 font-medium">You'll be signed out in <span className="text-amber-600 font-black">1 minute</span> due to inactivity.</p>
+            <button
+              onClick={resetTimers}
+              className="w-full py-3 bg-slate-900 text-white rounded-xl font-black uppercase text-xs tracking-widest hover:bg-indigo-600 transition-all"
+            >
+              Keep me signed in
+            </button>
+          </div>
+        </div>
+      )}
       <aside className="w-full md:w-64 bg-slate-900 text-white flex-shrink-0 flex flex-col sticky top-0 h-screen overflow-y-auto custom-scrollbar">
         <div className="p-6 flex items-center gap-3">
           <div className="p-2 bg-indigo-50 rounded-lg shadow-lg shadow-indigo-500/20">
