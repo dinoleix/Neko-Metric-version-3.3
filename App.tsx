@@ -73,10 +73,9 @@ const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<AppTab>('exec-dashboard');
   const [showTimeoutWarning, setShowTimeoutWarning] = useState(false);
 
-  const isCrew = userProfile?.role === 'crew';
-  const INACTIVE_MS = isCrew ? 14 * 60 * 60 * 1000 : 15 * 60 * 1000;
-  const WARN_MS = isCrew ? (14 * 60 * 60 - 5 * 60) * 1000 : 14 * 60 * 1000;
-  const WARN_LABEL = isCrew ? '5 minutes' : '1 minute';
+  const INACTIVE_MS = userProfile?.role === 'crew' ? 14 * 60 * 60 * 1000 : 15 * 60 * 1000;
+  const WARN_MS = userProfile?.role === 'crew' ? (14 * 60 * 60 - 5 * 60) * 1000 : 14 * 60 * 1000;
+  const WARN_LABEL = userProfile?.role === 'crew' ? '5 minutes' : '1 minute';
   const warnTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const logoutTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 

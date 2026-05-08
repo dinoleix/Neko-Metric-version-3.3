@@ -26,6 +26,7 @@ export interface DailyCounterEntry {
   description: string;
   status: EntryStatus;
   receiptUrl?: string;
+  billNumber?: string;
   createdAt: number;
 }
 
@@ -235,15 +236,20 @@ export interface PlatformItemMapping {
 }
 
 export const MASTER_OUTLETS = [
-  { id: '40543', name: 'Deer park B6' },
-  { id: '40186', name: 'New Friends Colony' },
-  { id: '40140', name: 'Safdarjung' },
-  { id: 'GLOBAL', name: 'Global / Mixed' },
+  { id: '40543', name: 'Deer park B6',       code: 'B6'  },
+  { id: '40186', name: 'New Friends Colony',  code: 'NFC' },
+  { id: '40140', name: 'Safdarjung',          code: 'SFJ' },
+  { id: 'GLOBAL', name: 'Global / Mixed',     code: 'GBL' },
 ];
 
 export const getOutletName = (id: string) => {
   const outlet = MASTER_OUTLETS.find(o => o.id === id);
   return outlet ? outlet.name : id;
+};
+
+export const getOutletCode = (id: string) => {
+  const outlet = MASTER_OUTLETS.find(o => o.id === id);
+  return outlet?.code || id.slice(0, 4).toUpperCase();
 };
 
 // --- GLOBAL DATE CONFIGURATION ---
