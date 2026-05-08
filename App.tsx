@@ -73,8 +73,10 @@ const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<AppTab>('exec-dashboard');
   const [showTimeoutWarning, setShowTimeoutWarning] = useState(false);
 
-  const INACTIVE_MS = 15 * 60 * 1000;
-  const WARN_MS = 14 * 60 * 1000;
+  const isCrew = userProfile?.role === 'crew';
+  const INACTIVE_MS = isCrew ? 14 * 60 * 60 * 1000 : 15 * 60 * 1000;
+  const WARN_MS = isCrew ? (14 * 60 * 60 - 5 * 60) * 1000 : 14 * 60 * 1000;
+  const WARN_LABEL = isCrew ? '5 minutes' : '1 minute';
   const warnTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const logoutTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -88,7 +90,7 @@ const App: React.FC = () => {
     setShowTimeoutWarning(false);
     warnTimer.current = setTimeout(() => setShowTimeoutWarning(true), WARN_MS);
     logoutTimer.current = setTimeout(() => signOut(auth), INACTIVE_MS);
-  }, [clearTimers]);
+  }, [clearTimers, INACTIVE_MS, WARN_MS]);
 
   useEffect(() => {
     if (!user) { clearTimers(); return; }
@@ -246,7 +248,7 @@ const App: React.FC = () => {
               <span className="text-2xl">⏱</span>
             </div>
             <h2 className="text-lg font-black text-slate-900 uppercase tracking-tight">Still there?</h2>
-            <p className="text-sm text-slate-500 font-medium">You'll be signed out in <span className="text-amber-600 font-black">1 minute</span> due to inactivity.</p>
+            <p className="text-sm text-slate-500 font-medium">You'll be signed out in <span className="text-amber-600 font-black">{WARN_LABEL}</span> due to inactivity.</p>
             <button
               onClick={resetTimers}
               className="w-full py-3 bg-slate-900 text-white rounded-xl font-black uppercase text-xs tracking-widest hover:bg-indigo-600 transition-all"

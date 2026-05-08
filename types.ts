@@ -29,6 +29,20 @@ export interface DailyCounterEntry {
   createdAt: number;
 }
 
+export interface DailySalesLog {
+  id?: string;
+  userId: string;
+  outletId: string;
+  date: string; // YYYY-MM-DD
+  cash: number;
+  card: number; // net after card charges
+  upi: number;
+  totalNet: number; // cash + card + upi
+  notes: string;
+  submittedBy: string;
+  createdAt: number;
+}
+
 export interface FileMetadata {
   id?: string;
   name: string;

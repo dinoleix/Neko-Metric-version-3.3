@@ -3,14 +3,14 @@ import React, { useState, useEffect, useMemo } from 'react';
 import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, limit } from 'firebase/firestore';
 import { db } from '../firebase';
-import { SalesMonthlySnapshot, StoreRental, SkuMapping, SkuCategory, getOutletName, YEAR_OPTIONS, MONTH_NAMES } from '../types';
+import { SalesMonthlySnapshot, DailySalesLog, StoreRental, SkuMapping, SkuCategory, getOutletName, YEAR_OPTIONS, MONTH_NAMES } from '../types';
 import { 
-  TrendingUp, 
-  RefreshCw, 
-  MapPin, 
+  TrendingUp,
+  RefreshCw,
+  MapPin,
   SearchX,
   Calculator,
-  ArrowDownRight, 
+  ArrowDownRight,
   CheckCircle2,
   LineChart,
   BarChart,
@@ -38,13 +38,17 @@ import {
   Coffee,
   Trophy,
   Target,
-  CloudSun
+  CloudSun,
+  Scale,
+  Wallet,
+  CreditCard,
+  IndianRupee
 } from 'lucide-react';
 import WeatherWidget from './WeatherWidget';
 import ProjectionEngine from './ProjectionEngine';
 
 type ChartType = 'bar' | 'line' | 'dotted';
-type SalesTab = 'velocity' | 'trajectory' | 'traffic-trend' | 'projections';
+type SalesTab = 'velocity' | 'trajectory' | 'traffic-trend' | 'projections' | 'reconciliation';
 
 const OUTLET_COLORS: Record<string, string> = {
   '40543': '#6366f1', 
@@ -56,8 +60,11 @@ const OUTLET_COLORS: Record<string, string> = {
 const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
   const [snapshots, setSnapshots] = useState<SalesMonthlySnapshot[]>([]);
   const [rentals, setRentals] = useState<StoreRental[]>([]);
+  const [dailySalesLogs, setDailySalesLogs] = useState<DailySalesLog[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [reconMonth, setReconMonth] = useState(MONTH_NAMES[new Date().getMonth()]);
+  const [reconYear, setReconYear] = useState(new Date().getFullYear().toString());
   const [activeTab, setActiveTab] = useState<SalesTab>('velocity');
   
   const [startMonth, setStartMonth] = useState(MONTH_NAMES[new Date().getMonth()]);
@@ -77,9 +84,11 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
     try {
       const snapQ = query(collection(db, 'sales_snapshots'), where('userId', '==', dataOwnerId));
       const rentQ = query(collection(db, 'rentals'), where('userId', '==', dataOwnerId));
-      const [sSnap, rSnap] = await Promise.all([getDocs(snapQ), getDocs(rentQ)]);
+      const logsQ = query(collection(db, 'daily_sales_logs'), where('userId', '==', dataOwnerId));
+      const [sSnap, rSnap, lSnap] = await Promise.all([getDocs(snapQ), getDocs(rentQ), getDocs(logsQ)]);
       setSnapshots(sSnap.docs.map(d => ({ ...d.data(), id: d.id } as SalesMonthlySnapshot)));
       setRentals(rSnap.docs.map(d => ({ id: d.id, ...d.data() } as StoreRental)));
+      setDailySalesLogs(lSnap.docs.map(d => ({ id: d.id, ...d.data() } as DailySalesLog)));
     } catch (err: any) {
       setError("Failed to sync intelligence suite.");
     } finally { setLoading(false); }
@@ -238,6 +247,66 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
     };
   }, [snapshots, storeFilter, startMonth, startYear, endMonth, endYear]);
 
+  const reconData = useMemo(() => {
+    const monthIdx = MONTH_NAMES.indexOf(reconMonth);
+    const daysInMonth = new Date(parseInt(reconYear), monthIdx + 1, 0).getDate();
+
+    const crewByDay: Record<string, { cash: number; card: number; upi: number; totalNet: number }> = {};
+    dailySalesLogs
+      .filter(log => {
+        const d = new Date(log.date + 'T00:00:00');
+        const outletMatch = storeFilter === 'all' || log.outletId === storeFilter;
+        return MONTH_NAMES[d.getMonth()] === reconMonth && d.getFullYear().toString() === reconYear && outletMatch;
+      })
+      .forEach(log => {
+        if (!crewByDay[log.date]) crewByDay[log.date] = { cash: 0, card: 0, upi: 0, totalNet: 0 };
+        crewByDay[log.date].cash += Number(log.cash || 0);
+        crewByDay[log.date].card += Number(log.card || 0);
+        crewByDay[log.date].upi += Number(log.upi || 0);
+        crewByDay[log.date].totalNet += Number(log.totalNet || 0);
+      });
+
+    const csvByDay = new Array(31).fill(0);
+    snapshots
+      .filter(s => s.month === reconMonth && s.year === reconYear && (storeFilter === 'all' || s.outletId === storeFilter))
+      .forEach(s => {
+        (s.dailyTrend || []).forEach((val, idx) => {
+          if (idx < 31) csvByDay[idx] += Number(val || 0);
+        });
+      });
+
+    let totalCrewNet = 0, totalCsvGross = 0, crewCash = 0, crewCard = 0, crewUpi = 0;
+    let daysLogged = 0, daysWithCsv = 0;
+    const rows: { date: string; day: number; crewNet: number; csvGross: number; delta: number; status: 'match' | 'close' | 'gap' | 'missing' | 'empty' }[] = [];
+
+    for (let d = 1; d <= daysInMonth; d++) {
+      const dateStr = `${reconYear}-${(monthIdx + 1).toString().padStart(2, '0')}-${d.toString().padStart(2, '0')}`;
+      const crew = crewByDay[dateStr];
+      const csvGross = csvByDay[d - 1];
+      const crewNet = crew?.totalNet || 0;
+      const delta = crewNet - csvGross;
+
+      let status: 'match' | 'close' | 'gap' | 'missing' | 'empty';
+      if (csvGross === 0 && crewNet === 0) status = 'empty';
+      else if (crewNet === 0 && csvGross > 0) status = 'missing';
+      else if (csvGross === 0) status = 'close';
+      else {
+        const pct = Math.abs(delta) / csvGross;
+        if (pct <= 0.03) status = 'match';
+        else if (pct <= 0.15) status = 'close';
+        else status = 'gap';
+      }
+
+      if (crewNet > 0) { daysLogged++; crewCash += crew?.cash || 0; crewCard += crew?.card || 0; crewUpi += crew?.upi || 0; }
+      if (csvGross > 0) daysWithCsv++;
+      totalCrewNet += crewNet;
+      totalCsvGross += csvGross;
+      if (status !== 'empty') rows.push({ date: dateStr, day: d, crewNet, csvGross, delta, status });
+    }
+
+    return { rows, totalCrewNet, totalCsvGross, crewCash, crewCard, crewUpi, daysLogged, daysWithCsv, daysInMonth };
+  }, [dailySalesLogs, snapshots, reconMonth, reconYear, storeFilter]);
+
   return (
     <div className="space-y-10 animate-in fade-in duration-700 pb-20">
       <header className="flex flex-col gap-8">
@@ -365,6 +434,7 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
              <button onClick={() => setActiveTab('trajectory')} className={`px-8 py-3 rounded-2xl flex items-center gap-3 text-xs font-black uppercase tracking-widest transition-all ${activeTab === 'trajectory' ? 'bg-white text-indigo-600 shadow-lg translate-y-[-1px]' : 'text-slate-500 hover:text-slate-800'}`}><LineChart size={16} /> Trajectory</button>
              <button onClick={() => setActiveTab('traffic-trend')} className={`px-8 py-3 rounded-2xl flex items-center gap-3 text-xs font-black uppercase tracking-widest transition-all ${activeTab === 'traffic-trend' ? 'bg-white text-indigo-600 shadow-lg translate-y-[-1px]' : 'text-slate-500 hover:text-slate-800'}`}><Clock size={16} /> Traffic Trend</button>
              <button onClick={() => setActiveTab('projections')} className={`px-8 py-3 rounded-2xl flex items-center gap-3 text-xs font-black uppercase tracking-widest transition-all ${activeTab === 'projections' ? 'bg-white text-indigo-600 shadow-lg translate-y-[-1px]' : 'text-slate-500 hover:text-slate-800'}`}><Zap size={16} /> Projections</button>
+             <button onClick={() => setActiveTab('reconciliation')} className={`px-8 py-3 rounded-2xl flex items-center gap-3 text-xs font-black uppercase tracking-widest transition-all ${activeTab === 'reconciliation' ? 'bg-white text-emerald-600 shadow-lg translate-y-[-1px]' : 'text-slate-500 hover:text-slate-800'}`}><Scale size={16} /> Reconciliation</button>
           </div>
 
           <section className="animate-in slide-in-from-bottom-2 duration-500">
@@ -564,6 +634,147 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
                     <p className="text-slate-400 text-sm font-medium leading-relaxed max-w-2xl">
                       Analysis of historical snapshots identifies <span className="text-white font-black">{analytics.hourlyIntensity.indexOf(Math.max(...analytics.hourlyIntensity))}:00 hours</span> as the primary revenue velocity center.
                     </p>
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'reconciliation' && (
+              <div className="space-y-8 animate-in slide-in-from-right-4 duration-500">
+                {/* Month picker */}
+                <div className="flex flex-wrap items-center gap-4 bg-white p-5 rounded-[2rem] border border-slate-100 shadow-sm">
+                  <Scale size={18} className="text-emerald-600 shrink-0" />
+                  <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Reconcile Month</span>
+                  <div className="flex items-center gap-2 bg-slate-50 border border-slate-100 rounded-xl px-4 py-2">
+                    <select value={reconMonth} onChange={e => setReconMonth(e.target.value)} className="bg-transparent font-bold text-xs outline-none uppercase">
+                      {MONTH_NAMES.map(m => <option key={m} value={m}>{m}</option>)}
+                    </select>
+                    <select value={reconYear} onChange={e => setReconYear(e.target.value)} className="bg-transparent font-bold text-xs outline-none">
+                      {YEAR_OPTIONS.map(y => <option key={y} value={y}>{y}</option>)}
+                    </select>
+                  </div>
+                  <span className="text-[9px] font-bold text-slate-400 uppercase">Outlet filter applies from above</span>
+                </div>
+
+                {/* Summary cards */}
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                  <div className="bg-emerald-600 p-6 rounded-[2rem] text-white shadow-lg">
+                    <p className="text-[9px] font-black text-emerald-100 uppercase tracking-widest mb-1">Crew Net Total</p>
+                    <p className="text-2xl font-black tracking-tighter">₹{reconData.totalCrewNet.toLocaleString('en-IN')}</p>
+                    <p className="text-[9px] text-emerald-200 font-bold uppercase mt-2">{reconData.daysLogged} days logged</p>
+                  </div>
+                  <div className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm">
+                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">CSV Gross Total</p>
+                    <p className="text-2xl font-black text-slate-900 tracking-tighter">₹{reconData.totalCsvGross.toLocaleString('en-IN')}</p>
+                    <p className="text-[9px] text-slate-400 font-bold uppercase mt-2">{reconData.daysWithCsv} days in CSV</p>
+                  </div>
+                  <div className={`p-6 rounded-[2rem] border shadow-sm ${Math.abs(reconData.totalCrewNet - reconData.totalCsvGross) / Math.max(reconData.totalCsvGross, 1) <= 0.05 ? 'bg-emerald-50 border-emerald-100' : 'bg-amber-50 border-amber-100'}`}>
+                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Variance</p>
+                    <p className={`text-2xl font-black tracking-tighter ${reconData.totalCrewNet - reconData.totalCsvGross >= 0 ? 'text-emerald-700' : 'text-amber-700'}`}>
+                      {reconData.totalCrewNet - reconData.totalCsvGross >= 0 ? '+' : ''}₹{Math.abs(reconData.totalCrewNet - reconData.totalCsvGross).toLocaleString('en-IN')}
+                    </p>
+                    <p className="text-[9px] text-slate-400 font-bold uppercase mt-2">Crew vs CSV</p>
+                  </div>
+                  <div className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm">
+                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Coverage</p>
+                    <p className="text-2xl font-black text-slate-900 tracking-tighter">{reconData.daysLogged}<span className="text-sm text-slate-400"> / {reconData.daysWithCsv}</span></p>
+                    <p className="text-[9px] text-slate-400 font-bold uppercase mt-2">Logged vs CSV days</p>
+                  </div>
+                </div>
+
+                {/* Payment split */}
+                {reconData.daysLogged > 0 && (
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="bg-white p-5 rounded-[2rem] border border-slate-100 shadow-sm flex items-center gap-4">
+                      <div className="p-3 bg-slate-100 rounded-xl"><Wallet size={18} className="text-slate-600" /></div>
+                      <div>
+                        <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Cash</p>
+                        <p className="text-xl font-black text-slate-900 tracking-tighter">₹{reconData.crewCash.toLocaleString('en-IN')}</p>
+                      </div>
+                    </div>
+                    <div className="bg-white p-5 rounded-[2rem] border border-slate-100 shadow-sm flex items-center gap-4">
+                      <div className="p-3 bg-indigo-50 rounded-xl"><CreditCard size={18} className="text-indigo-600" /></div>
+                      <div>
+                        <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Card (Net)</p>
+                        <p className="text-xl font-black text-slate-900 tracking-tighter">₹{reconData.crewCard.toLocaleString('en-IN')}</p>
+                      </div>
+                    </div>
+                    <div className="bg-white p-5 rounded-[2rem] border border-slate-100 shadow-sm flex items-center gap-4">
+                      <div className="p-3 bg-violet-50 rounded-xl"><Smartphone size={18} className="text-violet-600" /></div>
+                      <div>
+                        <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">UPI</p>
+                        <p className="text-xl font-black text-slate-900 tracking-tighter">₹{reconData.crewUpi.toLocaleString('en-IN')}</p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Daily table */}
+                <div className="bg-white rounded-[2.5rem] border border-slate-100 shadow-sm overflow-hidden">
+                  <div className="p-8 border-b border-slate-50 flex items-center gap-3">
+                    <Calendar size={18} className="text-emerald-600" />
+                    <h3 className="text-lg font-black text-slate-900 uppercase tracking-tight">Daily Breakdown — {reconMonth} {reconYear}</h3>
+                  </div>
+                  {reconData.rows.length === 0 ? (
+                    <div className="py-20 text-center">
+                      <Scale size={40} className="mx-auto text-slate-200 mb-4" />
+                      <p className="text-slate-400 font-black uppercase text-xs tracking-widest">No data for this period</p>
+                      <p className="text-slate-300 text-xs font-medium mt-2">Upload a CSV or have crew log sales to see comparisons</p>
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full">
+                        <thead>
+                          <tr className="border-b border-slate-50">
+                            <th className="text-left px-8 py-4 text-[9px] font-black text-slate-400 uppercase tracking-widest">Date</th>
+                            <th className="text-right px-6 py-4 text-[9px] font-black text-emerald-600 uppercase tracking-widest">Crew Net</th>
+                            <th className="text-right px-6 py-4 text-[9px] font-black text-slate-400 uppercase tracking-widest">CSV Gross</th>
+                            <th className="text-right px-6 py-4 text-[9px] font-black text-slate-400 uppercase tracking-widest">Delta</th>
+                            <th className="text-center px-6 py-4 text-[9px] font-black text-slate-400 uppercase tracking-widest">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {reconData.rows.map(row => {
+                            const statusMap = {
+                              match:   { label: 'Match',   dot: 'bg-emerald-400', bg: 'bg-emerald-50',  text: 'text-emerald-700' },
+                              close:   { label: 'Close',   dot: 'bg-amber-400',   bg: 'bg-amber-50',    text: 'text-amber-700' },
+                              gap:     { label: 'Gap',     dot: 'bg-rose-400',    bg: 'bg-rose-50',     text: 'text-rose-700' },
+                              missing: { label: 'Missing', dot: 'bg-rose-600',    bg: 'bg-rose-100',    text: 'text-rose-800' },
+                              empty:   { label: '',        dot: 'bg-slate-200',   bg: 'bg-slate-50',    text: 'text-slate-400' },
+                            };
+                            const s = statusMap[row.status];
+                            const dayName = new Date(row.date + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'short' });
+                            return (
+                              <tr key={row.date} className="border-b border-slate-50 hover:bg-slate-50 transition-colors">
+                                <td className="px-8 py-4">
+                                  <p className="text-sm font-black text-slate-900">{row.day} {reconMonth.substring(0, 3)}</p>
+                                  <p className="text-[9px] font-bold text-slate-400 uppercase">{dayName}</p>
+                                </td>
+                                <td className="px-6 py-4 text-right">
+                                  {row.crewNet > 0 ? <p className="text-sm font-black text-emerald-700">₹{row.crewNet.toLocaleString('en-IN')}</p> : <p className="text-sm font-bold text-slate-300">—</p>}
+                                </td>
+                                <td className="px-6 py-4 text-right">
+                                  {row.csvGross > 0 ? <p className="text-sm font-black text-slate-700">₹{row.csvGross.toLocaleString('en-IN')}</p> : <p className="text-sm font-bold text-slate-300">—</p>}
+                                </td>
+                                <td className="px-6 py-4 text-right">
+                                  {row.status !== 'missing' && (row.crewNet > 0 || row.csvGross > 0) ? (
+                                    <p className={`text-sm font-black ${row.delta >= 0 ? 'text-emerald-600' : 'text-rose-500'}`}>
+                                      {row.delta >= 0 ? '+' : ''}₹{Math.abs(row.delta).toLocaleString('en-IN')}
+                                    </p>
+                                  ) : <p className="text-sm font-bold text-slate-300">—</p>}
+                                </td>
+                                <td className="px-6 py-4 text-center">
+                                  <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${s.bg} ${s.text}`}>
+                                    <span className={`w-1.5 h-1.5 rounded-full ${s.dot}`} />
+                                    {s.label}
+                                  </span>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
               </div>
             )}

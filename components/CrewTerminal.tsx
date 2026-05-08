@@ -4,23 +4,24 @@ import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, addDoc, doc, deleteDoc, updateDoc, orderBy } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, storage } from '../firebase';
-import { 
-  DailyCounterEntry, 
-  UserProfile, 
-  MASTER_OUTLETS, 
+import {
+  DailyCounterEntry,
+  DailySalesLog,
+  UserProfile,
+  MASTER_OUTLETS,
   getOutletName,
   DEFAULT_COGS,
   DEFAULT_OPS,
   EntryStatus,
   BankAccount
 } from '../types';
-import { 
-  Plus, 
-  ShoppingBag, 
-  Receipt, 
-  Trash2, 
-  Loader2, 
-  CheckCircle2, 
+import {
+  Plus,
+  ShoppingBag,
+  Receipt,
+  Trash2,
+  Loader2,
+  CheckCircle2,
   AlertCircle,
   Smartphone,
   Calendar,
@@ -46,7 +47,10 @@ import {
   ListFilter,
   ChevronDown,
   SearchX,
-  Wallet
+  Wallet,
+  TrendingUp,
+  CreditCard,
+  AlertTriangle
 } from 'lucide-react';
 
 const CATEGORIES = {
@@ -103,7 +107,7 @@ const compressImage = (file: File, maxWidth: number = 1200): Promise<Blob> => {
 };
 
 const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, profile }) => {
-  const [activeMode, setActiveMode] = useState<'view' | 'add' | 'edit'>('view');
+  const [activeMode, setActiveMode] = useState<'view' | 'add' | 'edit' | 'daily-sales'>('view');
   const [entryType, setEntryType] = useState<'expense' | 'purchase'>('purchase');
   const [entries, setEntries] = useState<DailyCounterEntry[]>([]);
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
@@ -135,6 +139,19 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
   const [existingReceiptUrl, setExistingReceiptUrl] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // --- Daily Sales Log State ---
+  const [dsDate, setDsDate] = useState(new Date().toISOString().split('T')[0]);
+  const [dsTotal, setDsTotal] = useState('');
+  const [dsCash, setDsCash] = useState('');
+  const [dsCard, setDsCard] = useState('');
+  const [dsUpi, setDsUpi] = useState('');
+  const [dsNotes, setDsNotes] = useState('');
+  const [dsOutletId, setDsOutletId] = useState(profile.assignedOutlet || MASTER_OUTLETS[0].id);
+  const [dsSaving, setDsSaving] = useState(false);
+  const [dsSuccess, setDsSuccess] = useState(false);
+  const [dsExistingId, setDsExistingId] = useState<string | null>(null);
+  const [dsDuplicateWarning, setDsDuplicateWarning] = useState(false);
 
   const fetchEntries = async () => {
     setLoading(true);
@@ -294,6 +311,79 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     }
   };
 
+  const resetDsForm = () => {
+    setDsDate(new Date().toISOString().split('T')[0]);
+    setDsTotal('');
+    setDsCash('');
+    setDsCard('');
+    setDsUpi('');
+    setDsNotes('');
+    setDsExistingId(null);
+    setDsDuplicateWarning(false);
+  };
+
+  const handleDailySalesSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const total = parseFloat(dsTotal) || 0;
+    const cash = parseFloat(dsCash) || 0;
+    const card = parseFloat(dsCard) || 0;
+    const upi = parseFloat(dsUpi) || 0;
+    if (total === 0) return;
+    if (Math.abs(cash + card + upi - total) > 0.5) return; // breakdown must match total
+
+    setDsSaving(true);
+    try {
+      const ownerId = profile.ownerId || user.uid;
+
+      if (!dsExistingId) {
+        const dupQ = query(
+          collection(db, 'daily_sales_logs'),
+          where('userId', '==', ownerId),
+          where('outletId', '==', dsOutletId),
+          where('date', '==', dsDate)
+        );
+        const dupSnap = await getDocs(dupQ);
+        if (!dupSnap.empty) {
+          setDsExistingId(dupSnap.docs[0].id);
+          setDsDuplicateWarning(true);
+          setDsSaving(false);
+          return;
+        }
+      }
+
+      const logData: Omit<DailySalesLog, 'id'> = {
+        userId: ownerId,
+        outletId: dsOutletId,
+        date: dsDate,
+        cash,
+        card,
+        upi,
+        totalNet: total,
+        notes: dsNotes,
+        submittedBy: user.email?.split('@')[0] || 'Unknown',
+        createdAt: Date.now(),
+      };
+
+      if (dsExistingId) {
+        await updateDoc(doc(db, 'daily_sales_logs', dsExistingId), logData as any);
+      } else {
+        await addDoc(collection(db, 'daily_sales_logs'), logData);
+      }
+
+      setDsSuccess(true);
+      setTimeout(() => {
+        setDsSuccess(false);
+        setActiveMode('view');
+        resetDsForm();
+      }, 1500);
+    } catch (err) {
+      console.error(err);
+      alert('Submission failed. Check connection.');
+    } finally {
+      setDsSaving(false);
+    }
+  };
+
   const resetForm = () => {
     setAmount('');
     setCategory('');
@@ -376,7 +466,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
       {activeMode === 'view' ? (
         <div className="space-y-6">
           <div className="grid grid-cols-2 gap-4">
-            <button 
+            <button
               onClick={() => { resetForm(); setEntryType('purchase'); setActiveMode('add'); }}
               className="bg-indigo-600 hover:bg-indigo-700 text-white rounded-[2.5rem] p-8 flex flex-col items-center justify-center gap-4 shadow-xl transition-all active:scale-95 border border-indigo-400/20"
             >
@@ -386,7 +476,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
                 <p className="text-[10px] font-bold text-indigo-200 mt-1 uppercase tracking-widest">Logged Inventory</p>
               </div>
             </button>
-            <button 
+            <button
               onClick={() => { resetForm(); setEntryType('expense'); setActiveMode('add'); }}
               className="bg-rose-500 hover:bg-rose-600 text-white rounded-[2.5rem] p-8 flex flex-col items-center justify-center gap-4 shadow-xl transition-all active:scale-95 border border-rose-400/20"
             >
@@ -397,6 +487,16 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
               </div>
             </button>
           </div>
+          <button
+            onClick={() => { resetDsForm(); setActiveMode('daily-sales'); }}
+            className="w-full bg-emerald-600 hover:bg-emerald-700 text-white rounded-[2.5rem] p-6 flex items-center justify-center gap-5 shadow-xl transition-all active:scale-95 border border-emerald-400/20"
+          >
+            <TrendingUp size={36} />
+            <div className="text-left">
+              <p className="text-xl font-black uppercase tracking-tight leading-none">Log Daily Sales</p>
+              <p className="text-[10px] font-bold text-emerald-100 mt-1 uppercase tracking-widest">Cash · Card · UPI Breakdown</p>
+            </div>
+          </button>
 
           <section className="bg-slate-800 rounded-[2.5rem] border border-slate-700 p-8 space-y-8">
             {/* SEARCH AND FILTERS HEADER */}
@@ -552,6 +652,186 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
               })}
             </div>
           </section>
+        </div>
+      ) : activeMode === 'daily-sales' ? (
+        <div className="animate-in slide-in-from-right duration-300">
+          <div className="bg-white rounded-[3rem] shadow-2xl overflow-hidden">
+            <header className="p-8 flex items-center justify-between bg-emerald-600 text-white">
+              <div className="flex items-center gap-4">
+                <button onClick={() => { setActiveMode('view'); resetDsForm(); }} className="p-3 bg-white/10 rounded-2xl hover:bg-white/20 transition-all">
+                  <ArrowLeft size={24} />
+                </button>
+                <div>
+                  <h3 className="text-2xl font-black uppercase tracking-tight leading-none">Log Daily Sales</h3>
+                  <p className="text-white/70 text-[10px] font-bold uppercase tracking-widest mt-1">Cash · Card · UPI Breakdown</p>
+                </div>
+              </div>
+              <div className="p-3 bg-white/20 rounded-2xl"><TrendingUp size={32} /></div>
+            </header>
+
+            <form onSubmit={handleDailySalesSubmit} className="p-10 space-y-8">
+              {dsDuplicateWarning && (
+                <div className="flex items-start gap-4 p-5 bg-amber-50 border border-amber-200 rounded-2xl">
+                  <AlertTriangle size={20} className="text-amber-500 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-sm font-black text-amber-800 uppercase">Entry already exists for this date</p>
+                    <p className="text-xs text-amber-600 font-medium mt-1">Submitting will update the existing entry for {dsDate} at {getOutletName(dsOutletId)}.</p>
+                  </div>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-2 block">Sales Date</label>
+                  <div className="relative">
+                    <Calendar className="absolute left-6 top-1/2 -translate-y-1/2 text-slate-300" size={20} />
+                    <input
+                      required
+                      type="date"
+                      value={dsDate}
+                      onChange={e => { setDsDate(e.target.value); setDsDuplicateWarning(false); setDsExistingId(null); }}
+                      className="w-full bg-slate-50 border-2 border-slate-100 focus:border-emerald-500 outline-none pl-14 pr-8 py-5 rounded-2xl text-sm font-bold text-slate-600 appearance-none"
+                    />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-2 block">Outlet</label>
+                  <div className="relative">
+                    <Store className="absolute left-6 top-1/2 -translate-y-1/2 text-slate-300" size={20} />
+                    <select
+                      required
+                      value={dsOutletId}
+                      onChange={e => { setDsOutletId(e.target.value); setDsDuplicateWarning(false); setDsExistingId(null); }}
+                      className="w-full bg-slate-50 border-2 border-slate-100 focus:border-emerald-500 outline-none pl-14 pr-8 py-5 rounded-2xl text-sm font-bold text-slate-600 appearance-none uppercase"
+                    >
+                      {MASTER_OUTLETS.filter(o => o.id !== 'GLOBAL').map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {/* Step 1 — Total */}
+              <div className="space-y-2">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-2 block">Total Sales Amount</label>
+                <div className="relative">
+                  <IndianRupee className="absolute left-6 top-1/2 -translate-y-1/2 text-slate-300" size={28} />
+                  <input
+                    required
+                    type="number" step="0.01" min="0"
+                    value={dsTotal}
+                    onChange={e => { setDsTotal(e.target.value); setDsCash(''); setDsCard(''); setDsUpi(''); }}
+                    className="w-full bg-slate-50 border-2 border-slate-100 focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/5 outline-none pl-16 pr-8 py-6 rounded-[2rem] text-3xl font-black text-slate-900 transition-all"
+                    placeholder="0.00"
+                    autoFocus
+                  />
+                </div>
+              </div>
+
+              {/* Step 2 — Breakdown (only shown once total is entered) */}
+              {(parseFloat(dsTotal) || 0) > 0 && (() => {
+                const total = parseFloat(dsTotal) || 0;
+                const allocated = (parseFloat(dsCash) || 0) + (parseFloat(dsCard) || 0) + (parseFloat(dsUpi) || 0);
+                const remaining = total - allocated;
+                const isMatch = Math.abs(remaining) <= 0.5;
+                const isOver = remaining < -0.5;
+                return (
+                  <div className="space-y-6 animate-in slide-in-from-top-2 duration-300">
+                    <div className="flex items-center gap-3">
+                      <div className="h-px flex-1 bg-slate-100" />
+                      <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Break it down</p>
+                      <div className="h-px flex-1 bg-slate-100" />
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+                      <div className="space-y-2">
+                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-2 block flex items-center gap-1.5">
+                          <Wallet size={11} className="text-slate-400" /> Cash
+                        </label>
+                        <div className="relative">
+                          <IndianRupee className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-300" size={20} />
+                          <input
+                            type="number" step="0.01" min="0"
+                            value={dsCash}
+                            onChange={e => setDsCash(e.target.value)}
+                            className="w-full bg-slate-50 border-2 border-slate-100 focus:border-emerald-500 outline-none pl-11 pr-4 py-4 rounded-2xl text-xl font-black text-slate-900 transition-all"
+                            placeholder="0"
+                          />
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-2 block flex items-center gap-1.5">
+                          <CreditCard size={11} className="text-slate-400" /> Card (Net)
+                        </label>
+                        <div className="relative">
+                          <IndianRupee className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-300" size={20} />
+                          <input
+                            type="number" step="0.01" min="0"
+                            value={dsCard}
+                            onChange={e => setDsCard(e.target.value)}
+                            className="w-full bg-slate-50 border-2 border-slate-100 focus:border-emerald-500 outline-none pl-11 pr-4 py-4 rounded-2xl text-xl font-black text-slate-900 transition-all"
+                            placeholder="0"
+                          />
+                        </div>
+                        <p className="text-[9px] text-slate-400 font-bold uppercase ml-2">After card charges</p>
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-2 block flex items-center gap-1.5">
+                          <Smartphone size={11} className="text-slate-400" /> UPI
+                        </label>
+                        <div className="relative">
+                          <IndianRupee className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-300" size={20} />
+                          <input
+                            type="number" step="0.01" min="0"
+                            value={dsUpi}
+                            onChange={e => setDsUpi(e.target.value)}
+                            className="w-full bg-slate-50 border-2 border-slate-100 focus:border-emerald-500 outline-none pl-11 pr-4 py-4 rounded-2xl text-xl font-black text-slate-900 transition-all"
+                            placeholder="0"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Running balance indicator */}
+                    <div className={`flex items-center justify-between px-8 py-4 rounded-2xl border-2 transition-all ${isMatch ? 'bg-emerald-50 border-emerald-300' : isOver ? 'bg-rose-50 border-rose-300' : 'bg-amber-50 border-amber-200'}`}>
+                      <p className={`text-[10px] font-black uppercase tracking-widest ${isMatch ? 'text-emerald-700' : isOver ? 'text-rose-700' : 'text-amber-700'}`}>
+                        {isMatch ? '✓ Breakdown matches total' : isOver ? 'Over-allocated' : 'Remaining to allocate'}
+                      </p>
+                      <p className={`text-2xl font-black tracking-tighter ${isMatch ? 'text-emerald-700' : isOver ? 'text-rose-700' : 'text-amber-700'}`}>
+                        {isMatch ? '₹0' : `₹${Math.abs(remaining).toLocaleString('en-IN')}`}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              <div className="space-y-2">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-2 block">Notes (Optional)</label>
+                <textarea
+                  value={dsNotes}
+                  onChange={e => setDsNotes(e.target.value)}
+                  className="w-full bg-slate-50 border-2 border-slate-100 outline-none px-8 py-5 rounded-[2rem] text-sm font-medium text-slate-600 resize-none h-20"
+                  placeholder="Any remarks for this day? (e.g. machine down, event, short staff...)"
+                />
+              </div>
+
+              <div className="pt-4">
+                <button
+                  disabled={dsSaving || dsSuccess || (parseFloat(dsTotal) || 0) === 0 || Math.abs((parseFloat(dsCash) || 0) + (parseFloat(dsCard) || 0) + (parseFloat(dsUpi) || 0) - (parseFloat(dsTotal) || 0)) > 0.5}
+                  className={`w-full py-8 rounded-[2.5rem] font-black uppercase text-xl tracking-wider shadow-2xl transition-all flex items-center justify-center gap-4 text-white disabled:opacity-40 ${dsSuccess ? 'bg-emerald-400 scale-[0.98]' : 'bg-emerald-600 hover:bg-emerald-700 hover:translate-y-[-2px]'}`}
+                >
+                  {dsSaving ? (
+                    <Loader2 size={32} className="animate-spin" />
+                  ) : dsSuccess ? (
+                    <><CheckCircle2 size={32} /> Saved!</>
+                  ) : dsDuplicateWarning ? (
+                    <><Plus size={32} /> Update Entry</>
+                  ) : (
+                    <><Plus size={32} /> Post Daily Sales</>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       ) : (
         <div className="animate-in slide-in-from-right duration-300">
