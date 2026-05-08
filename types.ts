@@ -534,6 +534,7 @@ export interface BankAccount {
   accountNumber?: string;
   bankName?: string;
   outletId?: string;
+  accountType?: 'cash' | 'digital';
   userId: string;
   updatedAt: number;
 }

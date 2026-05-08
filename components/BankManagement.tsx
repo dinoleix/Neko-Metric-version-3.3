@@ -4,21 +4,23 @@ import type { User } from 'firebase/auth';
 import { collection, query, getDocs, addDoc, doc, deleteDoc, updateDoc, where, orderBy } from 'firebase/firestore';
 import { db } from '../firebase';
 import { BankAccount, MASTER_OUTLETS, getOutletName, StoreRental } from '../types';
-import { 
-  Building2, 
-  Plus, 
-  Trash2, 
-  Edit2, 
-  Save, 
-  X, 
-  Loader2, 
+import {
+  Building2,
+  Plus,
+  Trash2,
+  Edit2,
+  Save,
+  X,
+  Loader2,
   IndianRupee,
   Wallet,
   ArrowUpRight,
   History,
   CheckCircle2,
   Store,
-  MapPin
+  MapPin,
+  Banknote,
+  Smartphone
 } from 'lucide-react';
 
 const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
@@ -35,6 +37,7 @@ const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
   const [accountNumber, setAccountNumber] = useState('');
   const [balance, setBalance] = useState('');
   const [outletId, setOutletId] = useState('');
+  const [accountType, setAccountType] = useState<'cash' | 'digital'>('digital');
 
   const fetchAccounts = async () => {
     setLoading(true);
@@ -77,6 +80,7 @@ const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
         accountNumber,
         balance: parseFloat(balance) || 0,
         outletId: outletId || null,
+        accountType,
         userId: user.uid,
         updatedAt: Date.now()
       };
@@ -104,6 +108,7 @@ const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
     setAccountNumber(acc.accountNumber || '');
     setBalance(acc.balance.toString());
     setOutletId(acc.outletId || '');
+    setAccountType(acc.accountType || 'digital');
     setIsAdding(true);
   };
 
@@ -123,6 +128,7 @@ const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
     setAccountNumber('');
     setBalance('');
     setOutletId('');
+    setAccountType('digital');
     setEditingId(null);
     setIsAdding(false);
   };
@@ -229,6 +235,26 @@ const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
                   </select>
                 </div>
               </div>
+
+              <div className="space-y-2 md:col-span-2">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">Account Type</label>
+                <div className="grid grid-cols-2 gap-3 bg-slate-100 p-1.5 rounded-2xl">
+                  <button
+                    type="button"
+                    onClick={() => setAccountType('digital')}
+                    className={`flex items-center justify-center gap-2.5 py-3.5 rounded-xl font-black uppercase text-sm tracking-widest transition-all ${accountType === 'digital' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}
+                  >
+                    <Smartphone size={18} /> Digital Account
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAccountType('cash')}
+                    className={`flex items-center justify-center gap-2.5 py-3.5 rounded-xl font-black uppercase text-sm tracking-widest transition-all ${accountType === 'cash' ? 'bg-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}
+                  >
+                    <Banknote size={18} /> Cash Account
+                  </button>
+                </div>
+              </div>
             </div>
 
             <div className="flex gap-4 pt-4">
@@ -280,7 +306,18 @@ const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
                   <Building2 size={24} />
                 </div>
                 <div>
-                  <h4 className="font-black text-slate-900 uppercase tracking-tight">{acc.name}</h4>
+                  <div className="flex items-center gap-2 mb-0.5">
+                    <h4 className="font-black text-slate-900 uppercase tracking-tight">{acc.name}</h4>
+                    {acc.accountType === 'cash' ? (
+                      <span className="flex items-center gap-1 px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded-lg text-[8px] font-black uppercase tracking-widest border border-emerald-200">
+                        <Banknote size={9} /> Cash
+                      </span>
+                    ) : (
+                      <span className="flex items-center gap-1 px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded-lg text-[8px] font-black uppercase tracking-widest border border-indigo-200">
+                        <Smartphone size={9} /> Digital
+                      </span>
+                    )}
+                  </div>
                   <div className="flex items-center gap-2">
                     <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{acc.bankName || 'Unknown Bank'}</p>
                     {acc.outletId && (
