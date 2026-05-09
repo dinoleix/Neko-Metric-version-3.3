@@ -84,11 +84,25 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
     try {
       const snapQ = query(collection(db, 'sales_snapshots'), where('userId', '==', dataOwnerId));
       const rentQ = query(collection(db, 'rentals'), where('userId', '==', dataOwnerId));
-      const logsQ = query(collection(db, 'daily_sales_logs'), where('userId', '==', dataOwnerId));
-      const [sSnap, rSnap, lSnap] = await Promise.all([getDocs(snapQ), getDocs(rentQ), getDocs(logsQ)]);
+      const [sSnap, rSnap] = await Promise.all([getDocs(snapQ), getDocs(rentQ)]);
       setSnapshots(sSnap.docs.map(d => ({ ...d.data(), id: d.id } as SalesMonthlySnapshot)));
       setRentals(rSnap.docs.map(d => ({ id: d.id, ...d.data() } as StoreRental)));
-      setDailySalesLogs(lSnap.docs.map(d => ({ id: d.id, ...d.data() } as DailySalesLog)));
+
+      // Query daily_sales_logs separately — permissions may vary until rules are deployed
+      try {
+        const logsByOwner = query(collection(db, 'daily_sales_logs'), where('ownerId', '==', dataOwnerId));
+        const logsByUser  = query(collection(db, 'daily_sales_logs'), where('userId',  '==', dataOwnerId));
+        const [ownerSnap, userSnap] = await Promise.all([getDocs(logsByOwner), getDocs(logsByUser)]);
+        const seenIds = new Set<string>();
+        const allLogs: DailySalesLog[] = [];
+        [...ownerSnap.docs, ...userSnap.docs].forEach(d => {
+          if (!seenIds.has(d.id)) { seenIds.add(d.id); allLogs.push({ id: d.id, ...d.data() } as DailySalesLog); }
+        });
+        setDailySalesLogs(allLogs);
+      } catch {
+        // daily_sales_logs may be inaccessible until updated Firestore rules are deployed
+        setDailySalesLogs([]);
+      }
     } catch (err: any) {
       setError("Failed to sync intelligence suite.");
     } finally { setLoading(false); }

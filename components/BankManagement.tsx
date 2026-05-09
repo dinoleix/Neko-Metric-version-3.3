@@ -3,7 +3,8 @@ import React, { useState, useEffect, useMemo } from 'react';
 import type { User } from 'firebase/auth';
 import { collection, query, getDocs, addDoc, doc, deleteDoc, updateDoc, where, orderBy } from 'firebase/firestore';
 import { db } from '../firebase';
-import { BankAccount, MASTER_OUTLETS, getOutletName, StoreRental } from '../types';
+import { BankAccount, SalesLedgerEntry, MASTER_OUTLETS, getOutletName, StoreRental } from '../types';
+import { Star } from 'lucide-react';
 import {
   Building2,
   Plus,
@@ -20,7 +21,12 @@ import {
   Store,
   MapPin,
   Banknote,
-  Smartphone
+  Smartphone,
+  ListOrdered,
+  ChevronDown,
+  ChevronUp,
+  ArrowDownToLine,
+  ArrowUpFromLine
 } from 'lucide-react';
 
 const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
@@ -30,6 +36,9 @@ const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
   const [saving, setSaving] = useState(false);
   const [isAdding, setIsAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [expandedAccountId, setExpandedAccountId] = useState<string | null>(null);
+  const [ledgerEntries, setLedgerEntries] = useState<SalesLedgerEntry[]>([]);
+  const [loadingLedger, setLoadingLedger] = useState(false);
 
   // Form State
   const [name, setName] = useState('');
@@ -74,7 +83,7 @@ const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
     e.preventDefault();
     setSaving(true);
     try {
-      const data = {
+      const data: any = {
         name,
         bankName,
         accountNumber,
@@ -86,8 +95,10 @@ const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
       };
 
       if (editingId) {
+        // Don't overwrite isPrimary when editing other fields
         await updateDoc(doc(db, 'bank_accounts', editingId), data);
       } else {
+        data.isPrimary = false;
         await addDoc(collection(db, 'bank_accounts'), data);
       }
 
@@ -98,6 +109,25 @@ const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
       alert("Failed to save bank account");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleSetPrimary = async (acc: BankAccount) => {
+    try {
+      // Unset any existing primary for same outlet + account type
+      const toUnset = accounts.filter((a: BankAccount) =>
+        a.id !== acc.id &&
+        a.outletId === acc.outletId &&
+        a.accountType === acc.accountType &&
+        a.isPrimary
+      );
+      await Promise.all(toUnset.map((a: BankAccount) =>
+        updateDoc(doc(db, 'bank_accounts', a.id!), { isPrimary: false })
+      ));
+      await updateDoc(doc(db, 'bank_accounts', acc.id!), { isPrimary: !acc.isPrimary });
+      fetchAccounts();
+    } catch (err) {
+      console.error("Error setting primary:", err);
     }
   };
 
@@ -131,6 +161,30 @@ const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
     setAccountType('digital');
     setEditingId(null);
     setIsAdding(false);
+  };
+
+  const toggleLedger = async (accId: string) => {
+    if (expandedAccountId === accId) {
+      setExpandedAccountId(null);
+      setLedgerEntries([]);
+      return;
+    }
+    setExpandedAccountId(accId);
+    setLoadingLedger(true);
+    try {
+      const snap = await getDocs(query(
+        collection(db, 'sales_ledger'),
+        where('bankAccountId', '==', accId)
+      ));
+      const entries = snap.docs
+        .map(d => ({ id: d.id, ...d.data() } as SalesLedgerEntry))
+        .sort((a, b) => b.createdAt - a.createdAt);
+      setLedgerEntries(entries);
+    } catch (err) {
+      console.error('Error fetching ledger:', err);
+    } finally {
+      setLoadingLedger(false);
+    }
   };
 
   const activeOutlets = useMemo(() => {
@@ -291,12 +345,12 @@ const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
           </div>
         ) : (
           accounts.map(acc => (
-            <div key={acc.id} className="bg-white rounded-[2.5rem] border border-slate-200 p-8 shadow-sm hover:shadow-xl transition-all group relative overflow-hidden">
-              <div className="absolute top-0 right-0 p-6 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                <button onClick={() => handleEdit(acc)} className="p-2 bg-indigo-50 text-indigo-600 rounded-lg hover:bg-indigo-600 hover:text-white transition-all">
+            <div key={acc.id} className={`bg-white rounded-[2.5rem] border p-8 shadow-sm hover:shadow-xl transition-all group relative ${acc.isPrimary ? 'border-amber-300 ring-2 ring-amber-100' : 'border-slate-200'}`}>
+              <div className="absolute top-0 right-0 p-5 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                <button onClick={() => handleEdit(acc)} className="p-2 bg-indigo-50 text-indigo-600 rounded-lg hover:bg-indigo-600 hover:text-white transition-all active:scale-95">
                   <Edit2 size={14} />
                 </button>
-                <button onClick={() => handleDelete(acc.id!)} className="p-2 bg-rose-50 text-rose-600 rounded-lg hover:bg-rose-600 hover:text-white transition-all">
+                <button onClick={() => handleDelete(acc.id!)} className="p-2 bg-rose-50 text-rose-600 rounded-lg hover:bg-rose-600 hover:text-white transition-all active:scale-95">
                   <Trash2 size={14} />
                 </button>
               </div>
@@ -352,7 +406,59 @@ const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
                     </span>
                   )}
                 </div>
+
+                <button
+                  onClick={() => handleSetPrimary(acc)}
+                  className={`w-full mt-2 py-3 rounded-2xl flex items-center justify-center gap-2 text-xs font-black uppercase tracking-widest transition-all active:scale-95 border ${
+                    acc.isPrimary
+                      ? 'bg-amber-50 text-amber-600 border-amber-300'
+                      : 'bg-slate-50 text-slate-400 border-slate-200 hover:border-amber-300 hover:text-amber-500 hover:bg-amber-50'
+                  }`}
+                >
+                  <Star size={13} fill={acc.isPrimary ? 'currentColor' : 'none'} />
+                  {acc.isPrimary ? 'Primary Account' : 'Set as Primary'}
+                </button>
+
+                <button
+                  onClick={() => toggleLedger(acc.id!)}
+                  className="w-full mt-2 py-3 rounded-2xl flex items-center justify-center gap-2 text-xs font-black uppercase tracking-widest transition-all active:scale-95 border bg-slate-50 text-slate-500 border-slate-200 hover:bg-slate-100"
+                >
+                  <ListOrdered size={13} />
+                  {expandedAccountId === acc.id ? 'Hide Transactions' : 'View Transactions'}
+                  {expandedAccountId === acc.id ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                </button>
               </div>
+
+              {/* Ledger panel */}
+              {expandedAccountId === acc.id && (
+                <div className="mt-6 border-t border-slate-100 pt-5">
+                  {loadingLedger ? (
+                    <div className="flex items-center justify-center py-6 gap-2 text-slate-400">
+                      <Loader2 size={16} className="animate-spin" />
+                      <span className="text-xs font-bold uppercase tracking-widest">Loading...</span>
+                    </div>
+                  ) : ledgerEntries.length === 0 ? (
+                    <p className="text-center text-xs font-bold text-slate-300 uppercase tracking-widest py-6">No transactions yet</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {ledgerEntries.map(entry => (
+                        <div key={entry.id} className="flex items-center justify-between gap-3 px-3 py-2.5 bg-slate-50 rounded-xl border border-slate-100">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <div className={`p-1.5 rounded-lg ${entry.channel === 'cash' ? 'bg-emerald-100 text-emerald-600' : 'bg-indigo-100 text-indigo-600'}`}>
+                              {entry.channel === 'cash' ? <ArrowDownToLine size={12} /> : <ArrowUpFromLine size={12} />}
+                            </div>
+                            <div className="min-w-0">
+                              <p className="text-[11px] font-black text-slate-700 truncate">{entry.description}</p>
+                              <p className="text-[10px] text-slate-400 font-medium">{entry.date}</p>
+                            </div>
+                          </div>
+                          <span className="text-sm font-black text-emerald-600 shrink-0">+₹{entry.amount.toLocaleString('en-IN')}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           ))
         )}

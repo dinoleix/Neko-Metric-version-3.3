@@ -17,13 +17,14 @@ import {
   limit
 } from 'firebase/firestore';
 import { db } from '../firebase';
-import { 
-  BankTransaction, 
+import {
+  BankTransaction,
   CategorizationRule,
   BankAccount,
   PurchaseRecord,
+  DailySalesLog,
   RECONCILIATION_CATEGORIES,
-  MONTH_NAMES, 
+  MONTH_NAMES,
   YEAR_OPTIONS,
   getOutletName
 } from '../types';
@@ -51,7 +52,11 @@ import {
   Database,
   History,
   X,
-  PackagePlus
+  PackagePlus,
+  TrendingDown,
+  TrendingUp,
+  Minus,
+  Scale
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -81,6 +86,7 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
   const [selectedBatchIds, setSelectedBatchIds] = useState<Set<string>>(new Set());
   const [isBulkUpdating, setIsBulkUpdating] = useState(false);
   const [pushingId, setPushingId] = useState<string | null>(null);
+  const [dailySalesLogs, setDailySalesLogs] = useState<DailySalesLog[]>([]);
 
   const availableCategories = useMemo(() => {
     const fromTransactions = bankTransactions
@@ -119,7 +125,21 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
       );
       const accSnap = await getDocs(bankAccQ);
       setBankAccounts(accSnap.docs.map(d => ({ id: d.id, ...d.data() } as BankAccount)));
-      
+
+      // 4. Fetch daily sales logs (dual query for backward compat)
+      try {
+        const [ownerSnap, userSnap] = await Promise.all([
+          getDocs(query(collection(db, 'daily_sales_logs'), where('ownerId', '==', dataOwnerId))),
+          getDocs(query(collection(db, 'daily_sales_logs'), where('userId',  '==', dataOwnerId))),
+        ]);
+        const seenIds = new Set<string>();
+        const logs: DailySalesLog[] = [];
+        [...ownerSnap.docs, ...userSnap.docs].forEach(d => {
+          if (!seenIds.has(d.id)) { seenIds.add(d.id); logs.push({ id: d.id, ...d.data() } as DailySalesLog); }
+        });
+        setDailySalesLogs(logs);
+      } catch { setDailySalesLogs([]); }
+
     } catch (err) {
       console.error("Reconciliation fetch error:", err);
     } finally {
@@ -179,6 +199,31 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
       })
       .sort((a, b) => b.date.localeCompare(a.date));
   }, [bankTransactions, selectedMonth, selectedYear, searchTerm, filterMode, selectedBankId, selectedType]);
+
+  const salesDelta = useMemo(() => {
+    const monthIdx = (MONTH_NAMES.indexOf(selectedMonth) + 1).toString().padStart(2, '0');
+    const datePrefix = `${selectedYear}-${monthIdx}`;
+
+    // CSV credits per day
+    const csvByDate: Record<string, number> = {};
+    bankTransactions
+      .filter(t => t.date.startsWith(datePrefix) && t.type === 'credit')
+      .forEach(t => { csvByDate[t.date] = (csvByDate[t.date] || 0) + t.amount; });
+
+    // Manual sales per day
+    const manualByDate: Record<string, number> = {};
+    dailySalesLogs
+      .filter(l => l.date.startsWith(datePrefix))
+      .forEach(l => { manualByDate[l.date] = (manualByDate[l.date] || 0) + l.totalNet; });
+
+    const allDates = Array.from(new Set([...Object.keys(csvByDate), ...Object.keys(manualByDate)])).sort().reverse();
+    return allDates.map(date => ({
+      date,
+      csv: csvByDate[date] || 0,
+      manual: manualByDate[date] || 0,
+      delta: (csvByDate[date] || 0) - (manualByDate[date] || 0),
+    }));
+  }, [bankTransactions, dailySalesLogs, selectedMonth, selectedYear]);
 
   const handleDeleteTransaction = async (id: string) => {
     if (!confirm("Delete this bank transaction?")) return;
@@ -643,15 +688,99 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
             )}
           </div>
 
-          <button 
+          <button
             onClick={() => setShowSummary(!showSummary)}
             className={`flex items-center gap-2 px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all shadow-xl ${showSummary ? 'bg-slate-900 text-white shadow-slate-200' : 'bg-white text-slate-900 border border-slate-200 shadow-slate-100'}`}
           >
-            {showSummary ? <Database size={14} /> : <PieIcon size={14} />} 
+            {showSummary ? <Database size={14} /> : <PieIcon size={14} />}
             {showSummary ? 'View Ledger' : 'View Insights'}
           </button>
         </div>
       </header>
+
+      {/* ── SALES DELTA PANEL ─────────────────────────────────── */}
+      <div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-sm overflow-hidden">
+        <div className="px-8 py-5 bg-slate-50 border-b border-slate-100 flex items-center gap-3">
+          <div className="p-2 bg-indigo-100 text-indigo-600 rounded-xl"><Scale size={18} /></div>
+          <div>
+            <h3 className="font-black text-slate-800 uppercase tracking-tight text-sm">Sales Reconciliation Delta</h3>
+            <p className="text-[10px] text-slate-400 font-medium uppercase tracking-widest mt-0.5">CSV bank credits vs manual crew entries · {selectedMonth} {selectedYear}</p>
+          </div>
+        </div>
+
+        {salesDelta.length === 0 ? (
+          <div className="py-12 text-center">
+            <p className="text-xs font-bold text-slate-300 uppercase tracking-widest">No data for this period</p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-100">
+                  <th className="text-left px-8 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Date</th>
+                  <th className="text-right px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">CSV Credits</th>
+                  <th className="text-right px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Manual Entry</th>
+                  <th className="text-right px-8 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Delta</th>
+                </tr>
+              </thead>
+              <tbody>
+                {salesDelta.map(row => (
+                  <tr key={row.date} className="border-b border-slate-50 hover:bg-slate-50 transition-colors">
+                    <td className="px-8 py-4 font-black text-slate-700 text-sm">
+                      {new Date(row.date).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}
+                    </td>
+                    <td className="px-6 py-4 text-right font-bold text-slate-600">
+                      {row.csv > 0 ? `₹${row.csv.toLocaleString('en-IN', { minimumFractionDigits: 2 })}` : <span className="text-slate-300">—</span>}
+                    </td>
+                    <td className="px-6 py-4 text-right font-bold text-slate-600">
+                      {row.manual > 0 ? `₹${row.manual.toLocaleString('en-IN', { minimumFractionDigits: 2 })}` : <span className="text-slate-300">—</span>}
+                    </td>
+                    <td className="px-8 py-4 text-right">
+                      <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-black ${
+                        Math.abs(row.delta) < 1
+                          ? 'bg-emerald-50 text-emerald-600'
+                          : row.delta > 0
+                            ? 'bg-amber-50 text-amber-600'
+                            : 'bg-rose-50 text-rose-600'
+                      }`}>
+                        {Math.abs(row.delta) < 1
+                          ? <><Minus size={11} /> Balanced</>
+                          : row.delta > 0
+                            ? <><TrendingUp size={11} /> +₹{Math.abs(row.delta).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</>
+                            : <><TrendingDown size={11} /> -₹{Math.abs(row.delta).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</>
+                        }
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr className="bg-slate-50 border-t-2 border-slate-200">
+                  <td className="px-8 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">Total</td>
+                  <td className="px-6 py-4 text-right font-black text-slate-800">
+                    ₹{salesDelta.reduce((s, r) => s + r.csv, 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                  </td>
+                  <td className="px-6 py-4 text-right font-black text-slate-800">
+                    ₹{salesDelta.reduce((s, r) => s + r.manual, 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                  </td>
+                  <td className="px-8 py-4 text-right">
+                    {(() => {
+                      const totalDelta = salesDelta.reduce((s, r) => s + r.delta, 0);
+                      return (
+                        <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-black ${
+                          Math.abs(totalDelta) < 1 ? 'bg-emerald-50 text-emerald-600' : totalDelta > 0 ? 'bg-amber-50 text-amber-600' : 'bg-rose-50 text-rose-600'
+                        }`}>
+                          {Math.abs(totalDelta) < 1 ? <><Minus size={11} /> Balanced</> : totalDelta > 0 ? <><TrendingUp size={11} /> +₹{Math.abs(totalDelta).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</> : <><TrendingDown size={11} /> -₹{Math.abs(totalDelta).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</>}
+                        </span>
+                      );
+                    })()}
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        )}
+      </div>
 
       {/* Action Bar */}
       <div className="flex flex-wrap items-center justify-between gap-6 bg-indigo-50/50 p-6 rounded-[2.5rem] border border-indigo-100">

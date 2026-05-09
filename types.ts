@@ -32,7 +32,8 @@ export interface DailyCounterEntry {
 
 export interface DailySalesLog {
   id?: string;
-  userId: string;
+  userId: string;    // the authenticated submitter's UID (for security rules)
+  ownerId: string;   // the business owner's UID (for admin queries)
   outletId: string;
   date: string; // YYYY-MM-DD
   cash: number;
@@ -535,8 +536,24 @@ export interface BankAccount {
   bankName?: string;
   outletId?: string;
   accountType?: 'cash' | 'digital';
+  isPrimary?: boolean;
   userId: string;
   updatedAt: number;
+}
+
+export interface SalesLedgerEntry {
+  id?: string;
+  bankAccountId: string;
+  bankAccountName: string;
+  outletId: string;
+  userId: string;   // submitter's UID (satisfies security rules)
+  ownerId: string;  // admin's UID (used for admin reads)
+  amount: number;
+  channel: 'cash' | 'digital';
+  sourceId: string;
+  description: string;
+  date: string;
+  createdAt: number;
 }
 
 export const SALES_TARGET_FIELDS = [

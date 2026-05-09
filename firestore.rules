@@ -16,11 +16,16 @@ service cloud.firestore {
     function canRead() {
       return isDocOwner() || isLinkedToOwner();
     }
+    function isAdmin() {
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
 
     // Users collection — any authenticated user can read profiles (needed for UserManagement)
     match /users/{userId} {
       allow read: if isAuthenticated();
-      allow write: if isAuthenticated() && request.auth.uid == userId;
+      allow write: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
     }
 
     // category_settings uses the admin's UID as the document ID (no userId field inside)
@@ -46,6 +51,34 @@ service cloud.firestore {
       allow read: if canRead();
       allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
       allow update: if canRead();
+      allow delete: if isDocOwner();
+    }
+
+    // bank_accounts — admin owns; linked crew can update balance (for sales routing)
+    match /bank_accounts/{accountId} {
+      allow read: if canRead();
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      allow update: if isDocOwner() || isLinkedToOwner();
+      allow delete: if isDocOwner();
+    }
+
+    // daily_sales_logs — crew writes with their own userId; admin reads via ownerId
+    match /daily_sales_logs/{docId} {
+      allow read: if canRead() ||
+        (isAuthenticated() && resource.data.ownerId == request.auth.uid);
+      allow create: if isAuthenticated() &&
+        request.resource.data.userId == request.auth.uid;
+      allow update: if isDocOwner() || isLinkedToOwner();
+      allow delete: if isDocOwner();
+    }
+
+    // sales_ledger — same pattern as daily_sales_logs
+    match /sales_ledger/{docId} {
+      allow read: if canRead() ||
+        (isAuthenticated() && resource.data.ownerId == request.auth.uid);
+      allow create: if isAuthenticated() &&
+        request.resource.data.userId == request.auth.uid;
+      allow update: if isDocOwner();
       allow delete: if isDocOwner();
     }
 

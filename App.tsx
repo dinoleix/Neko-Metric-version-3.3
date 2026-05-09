@@ -2,9 +2,9 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import type { User } from 'firebase/auth';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc, collection, query, where, getDocs } from 'firebase/firestore';
 import { auth, db } from './firebase';
-import { UserRole, UserProfile, getOutletName } from './types';
+import { UserRole, UserProfile, BankAccount, getOutletName } from './types';
 import Login from './components/Login';
 import Dashboard from './components/Dashboard';
 import Uploader from './components/Uploader';
@@ -72,6 +72,7 @@ const App: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<AppTab>('exec-dashboard');
   const [showTimeoutWarning, setShowTimeoutWarning] = useState(false);
+  const [primaryCashAccount, setPrimaryCashAccount] = useState<BankAccount | null>(null);
 
   const INACTIVE_MS = userProfile?.role === 'crew' ? 14 * 60 * 60 * 1000 : 15 * 60 * 1000;
   const WARN_MS = userProfile?.role === 'crew' ? (14 * 60 * 60 - 5 * 60) * 1000 : 14 * 60 * 1000;
@@ -143,6 +144,17 @@ const App: React.FC = () => {
     return () => unsubscribe();
   }, []);
 
+  useEffect(() => {
+    if (!userProfile || userProfile.role !== 'crew') return;
+    const ownerId = userProfile.ownerId || user?.uid;
+    if (!ownerId) return;
+    getDocs(query(collection(db, 'bank_accounts'), where('userId', '==', ownerId))).then(snap => {
+      const acc = snap.docs.map(d => ({ id: d.id, ...d.data() } as BankAccount))
+        .find(a => a.outletId === userProfile.assignedOutlet && a.isPrimary && a.accountType === 'cash') ?? null;
+      setPrimaryCashAccount(acc);
+    }).catch(() => {});
+  }, [userProfile]);
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-900">
@@ -172,7 +184,7 @@ const App: React.FC = () => {
                 <div className="p-2.5 bg-indigo-600 rounded-2xl shadow-lg shadow-indigo-900/40">
                     <Smartphone className="text-white" size={24} />
                 </div>
-                <h1 className="text-2xl font-black text-white tracking-tighter uppercase">Purchase & Expenses</h1>
+                <h1 className="text-2xl font-black text-white tracking-tighter uppercase">Crew Terminal</h1>
               </div>
 
               {/* Context Highlights */}
@@ -197,6 +209,18 @@ const App: React.FC = () => {
                        <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest leading-none mb-1">Duty Date</span>
                        <span className="text-sm font-black text-slate-300 leading-none uppercase">
                           {new Date().toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}
+                       </span>
+                    </div>
+                 </div>
+
+                 <div className="px-4 py-2.5 bg-emerald-500/10 border border-emerald-500/30 rounded-2xl flex items-center gap-3 shadow-inner">
+                    <div className="p-1.5 bg-emerald-600/40 rounded-lg">
+                       <Wallet size={16} className="text-emerald-400" />
+                    </div>
+                    <div className="flex flex-col">
+                       <span className="text-[9px] font-black text-emerald-500/70 uppercase tracking-widest leading-none mb-1">Cash Counter</span>
+                       <span className="text-sm font-black text-emerald-400 leading-none">
+                          {primaryCashAccount ? `₹${primaryCashAccount.balance.toLocaleString('en-IN')}` : '—'}
                        </span>
                     </div>
                  </div>
@@ -290,7 +314,7 @@ const App: React.FC = () => {
           <div className="pt-4 pb-2 px-4">
             <p className="text-[10px] font-black uppercase tracking-widest text-slate-600">Crew Terminal</p>
           </div>
-          {!isReadOnly && <NavItem tab="crew-terminal" icon={<Smartphone size={18} />} label="Purchase & Expenses" />}
+          {!isReadOnly && <NavItem tab="crew-terminal" icon={<Smartphone size={18} />} label="Crew Terminal" />}
 
           {!isReadOnly && (
             <>

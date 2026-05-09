@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import type { User } from 'firebase/auth';
 import { initializeApp, deleteApp, getApp } from 'firebase/app';
 import { getAuth, createUserWithEmailAndPassword } from 'firebase/auth';
-import { collection, getDocs, doc, setDoc, deleteDoc } from 'firebase/firestore';
+import { collection, getDocs, doc, setDoc, deleteDoc, query, where } from 'firebase/firestore';
 import { db } from '../firebase';
 // Reuse config for secondary instance
 import { auth as primaryAuth } from '../firebase';
@@ -51,6 +51,7 @@ const UserManagement: React.FC<{ user: User }> = ({ user }) => {
   const [newRole, setNewRole] = useState<UserRole>('viewer');
   const [newOutlet, setNewOutlet] = useState('');
   const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
 
   const fetchUsers = async () => {
     setLoading(true);
@@ -87,54 +88,72 @@ const UserManagement: React.FC<{ user: User }> = ({ user }) => {
 
   const handleAddUser = async (e: React.FormEvent) => {
     e.preventDefault();
+    setFormError(null);
     if (!newEmail.trim() || !newPassword.trim()) return;
     if (newPassword.length < 6) {
-      alert("Password must be at least 6 characters.");
+      setFormError("Password must be at least 6 characters.");
       return;
     }
 
     setSaving(true);
     let secondaryApp;
     try {
-      // 1. Create a secondary Firebase app instance to register the user in Auth
-      // without logging out the current admin.
+      const emailNorm = newEmail.trim().toLowerCase();
+
+      // Check if this email already has a Firestore profile
+      const existingSnap = await getDocs(query(collection(db, 'users'), where('email', '==', emailNorm)));
+      if (!existingSnap.empty) {
+        const existingProfile = existingSnap.docs[0].data() as UserProfile;
+        const confirmed = window.confirm(
+          `${emailNorm} already has a profile (role: ${existingProfile.role}).\n\nDo you want to update their role to "${newRole}"${newRole === 'crew' ? ` and assign outlet "${newOutlet}"` : ''}?`
+        );
+        if (!confirmed) { setSaving(false); return; }
+        await setDoc(doc(db, 'users', existingProfile.uid), {
+          ...existingProfile,
+          role: newRole,
+          assignedOutlet: newRole === 'crew' ? newOutlet : undefined,
+          ownerId: user.uid,
+        });
+        setIsAdding(false);
+        setNewEmail('');
+        setNewPassword('');
+        setFormError(null);
+        fetchUsers();
+        return;
+      }
+
+      // Create a secondary Firebase app instance to avoid logging out the admin
       const appName = `temp-user-creator-${Date.now()}`;
       secondaryApp = initializeApp(firebaseConfig, appName);
       const secondaryAuth = getAuth(secondaryApp);
 
-      // 2. Create entry in Firebase Authentication
-      const userCredential = await createUserWithEmailAndPassword(
-        secondaryAuth, 
-        newEmail.trim().toLowerCase(), 
-        newPassword
-      );
-      
+      const userCredential = await createUserWithEmailAndPassword(secondaryAuth, emailNorm, newPassword);
       const realUid = userCredential.user.uid;
 
-      // 3. Create entry in Firestore users collection
       const profile: UserProfile = {
         uid: realUid,
-        email: newEmail.toLowerCase().trim(),
+        email: emailNorm,
         role: newRole,
         createdAt: Date.now(),
         assignedOutlet: newRole === 'crew' ? newOutlet : undefined,
-        ownerId: user.uid // The current admin's UID
+        ownerId: user.uid,
       };
-      
       await setDoc(doc(db, 'users', realUid), profile);
 
       setIsAdding(false);
       setNewEmail('');
       setNewPassword('');
+      setFormError(null);
       fetchUsers();
-      alert(`User ${newEmail} created successfully in both Auth and Database.`);
     } catch (err: any) {
       console.error(err);
-      alert(err.message || "Failed to fully create user.");
-    } finally {
-      if (secondaryApp) {
-        await deleteApp(secondaryApp);
+      if (err.code === 'auth/email-already-in-use') {
+        setFormError(`${newEmail} is already registered in Firebase Authentication but has no profile here. Ask them to sign in once — their profile will be auto-created — then edit their role from the user list.`);
+      } else {
+        setFormError(err.message || "Failed to create user.");
       }
+    } finally {
+      if (secondaryApp) await deleteApp(secondaryApp);
       setSaving(false);
     }
   };
@@ -226,10 +245,10 @@ const UserManagement: React.FC<{ user: User }> = ({ user }) => {
                   <td className="px-8 py-6">
                     {p.role === 'crew' ? (
                       <div className="relative">
-                        <select 
-                          value={p.assignedOutlet || ''} 
+                        <select
+                          value={p.assignedOutlet || ''}
                           onChange={e => handleUpdateRole(p.uid, 'crew', e.target.value)}
-                          className="w-full px-3 py-1.5 rounded-lg border border-slate-200 bg-slate-50 text-[10px] font-bold uppercase outline-none focus:border-indigo-400"
+                          className="w-full px-3 py-1.5 rounded-lg border border-indigo-300 bg-white text-[10px] font-bold uppercase outline-none focus:border-indigo-500 cursor-pointer hover:border-indigo-400 transition-colors"
                         >
                           <option value="">-- No Outlet --</option>
                           {MASTER_OUTLETS.filter(o => o.id !== 'GLOBAL').map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
@@ -342,8 +361,14 @@ const UserManagement: React.FC<{ user: User }> = ({ user }) => {
                 </div>
              </div>
 
+             {formError && (
+               <div className="mx-8 mb-2 px-5 py-4 bg-rose-50 border border-rose-200 rounded-2xl flex items-start gap-3">
+                 <ShieldAlert size={16} className="text-rose-500 shrink-0 mt-0.5" />
+                 <p className="text-xs font-bold text-rose-700 leading-relaxed">{formError}</p>
+               </div>
+             )}
              <footer className="p-8 bg-slate-50 border-t border-slate-100 flex gap-4">
-                <button type="button" onClick={() => setIsAdding(false)} className="flex-1 py-4 bg-white border border-slate-200 rounded-2xl font-black uppercase text-xs text-slate-400">Cancel</button>
+                <button type="button" onClick={() => { setIsAdding(false); setFormError(null); }} className="flex-1 py-4 bg-white border border-slate-200 rounded-2xl font-black uppercase text-xs text-slate-400">Cancel</button>
                 <button type="submit" disabled={saving} className="flex-[2] py-4 bg-indigo-600 text-white rounded-2xl font-black uppercase text-xs flex items-center justify-center gap-2 shadow-xl shadow-indigo-100 transition-all hover:bg-indigo-700">
                    {saving ? <Loader2 size={18} className="animate-spin" /> : <ShieldAlert size={18} />} {saving ? 'Registering...' : 'Confirm Access'}
                 </button>

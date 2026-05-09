@@ -1,12 +1,13 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import type { User } from 'firebase/auth';
-import { collection, query, getDocs, where, addDoc, doc, deleteDoc, updateDoc, orderBy } from 'firebase/firestore';
+import { collection, query, getDocs, getDoc, where, addDoc, doc, deleteDoc, updateDoc, orderBy } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, storage } from '../firebase';
 import {
   DailyCounterEntry,
   DailySalesLog,
+  SalesLedgerEntry,
   UserProfile,
   MASTER_OUTLETS,
   getOutletName,
@@ -368,15 +369,18 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
       const ownerId = profile.ownerId || user.uid;
 
       if (!dsExistingId) {
+        // Query by submitter UID (security-rule safe), filter outlet+date client-side
         const dupQ = query(
           collection(db, 'daily_sales_logs'),
-          where('userId', '==', ownerId),
-          where('outletId', '==', dsOutletId),
-          where('date', '==', dsDate)
+          where('userId', '==', user.uid)
         );
         const dupSnap = await getDocs(dupQ);
-        if (!dupSnap.empty) {
-          setDsExistingId(dupSnap.docs[0].id);
+        const existing = dupSnap.docs.find(d => {
+          const data = d.data();
+          return data.outletId === dsOutletId && data.date === dsDate;
+        });
+        if (existing) {
+          setDsExistingId(existing.id);
           setDsDuplicateWarning(true);
           setDsSaving(false);
           return;
@@ -384,7 +388,8 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
       }
 
       const logData: Omit<DailySalesLog, 'id'> = {
-        userId: ownerId,
+        userId: user.uid,  // submitter's UID — satisfies security rules
+        ownerId,           // admin's UID — used by SalesHub queries
         outletId: dsOutletId,
         date: dsDate,
         cash,
@@ -397,9 +402,126 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
       };
 
       if (dsExistingId) {
+        // Fetch old values to compute deltas before overwriting
+        const oldSnap = await getDoc(doc(db, 'daily_sales_logs', dsExistingId));
+        const old = oldSnap.exists() ? oldSnap.data() : { cash: 0, card: 0, upi: 0 };
         await updateDoc(doc(db, 'daily_sales_logs', dsExistingId), logData as any);
+
+        // Apply balance deltas to primary bank accounts
+        try {
+          const bankQ = query(collection(db, 'bank_accounts'), where('userId', '==', ownerId));
+          const bankSnap = await getDocs(bankQ);
+          const primaryAccounts = bankSnap.docs
+            .map(d => ({ id: d.id, ...d.data() } as BankAccount))
+            .filter((a: BankAccount) => a.outletId === dsOutletId && a.isPrimary);
+
+          const cashAcc = primaryAccounts.find((a: BankAccount) => a.accountType === 'cash');
+          const digitalAcc = primaryAccounts.find((a: BankAccount) => a.accountType === 'digital');
+          const cashDelta = cash - (old.cash || 0);
+          const digitalDelta = (card + upi) - ((old.card || 0) + (old.upi || 0));
+          const now = Date.now();
+          const routingOps: Promise<any>[] = [];
+
+          if (cashAcc && cashDelta !== 0) {
+            routingOps.push(updateDoc(doc(db, 'bank_accounts', cashAcc.id!), {
+              balance: cashAcc.balance + cashDelta, updatedAt: now,
+            }));
+            routingOps.push(addDoc(collection(db, 'sales_ledger'), {
+              bankAccountId: cashAcc.id!, bankAccountName: cashAcc.name,
+              outletId: dsOutletId, userId: user.uid, ownerId,
+              amount: cashDelta, channel: 'cash', sourceId: dsExistingId,
+              description: `Correction: cash sales — ${dsDate}`, date: dsDate, createdAt: now,
+            } as Omit<SalesLedgerEntry, 'id'>));
+          }
+          if (digitalAcc && digitalDelta !== 0) {
+            routingOps.push(updateDoc(doc(db, 'bank_accounts', digitalAcc.id!), {
+              balance: digitalAcc.balance + digitalDelta, updatedAt: now,
+            }));
+            routingOps.push(addDoc(collection(db, 'sales_ledger'), {
+              bankAccountId: digitalAcc.id!, bankAccountName: digitalAcc.name,
+              outletId: dsOutletId, userId: user.uid, ownerId,
+              amount: digitalDelta, channel: 'digital', sourceId: dsExistingId,
+              description: `Correction: digital sales (card + UPI) — ${dsDate}`, date: dsDate, createdAt: now,
+            } as Omit<SalesLedgerEntry, 'id'>));
+          }
+          if (routingOps.length > 0) await Promise.all(routingOps);
+        } catch (routingErr) {
+          console.warn('Balance delta skipped:', routingErr);
+        }
       } else {
-        await addDoc(collection(db, 'daily_sales_logs'), logData);
+        const ref = await addDoc(collection(db, 'daily_sales_logs'), logData);
+        const savedLogId = ref.id;
+
+        // Route to primary bank accounts — runs after the log is saved.
+        // Wrapped in its own try-catch: a permissions failure here must not
+        // block the crew member's submission.
+        try {
+          const bankQ = query(
+            collection(db, 'bank_accounts'),
+            where('userId', '==', ownerId)
+          );
+          const bankSnap = await getDocs(bankQ);
+          const primaryAccounts = bankSnap.docs
+            .map(d => ({ id: d.id, ...d.data() } as BankAccount))
+            .filter((a: BankAccount) => a.outletId === dsOutletId && a.isPrimary);
+
+          const cashAcc = primaryAccounts.find((a: BankAccount) => a.accountType === 'cash');
+          const digitalAcc = primaryAccounts.find((a: BankAccount) => a.accountType === 'digital');
+          const digital = card + upi;
+          const now = Date.now();
+          const routingOps: Promise<any>[] = [];
+
+          if (cashAcc && cash > 0) {
+            routingOps.push(
+              updateDoc(doc(db, 'bank_accounts', cashAcc.id!), {
+                balance: cashAcc.balance + cash,
+                updatedAt: now,
+              })
+            );
+            const entry: Omit<SalesLedgerEntry, 'id'> = {
+              bankAccountId: cashAcc.id!,
+              bankAccountName: cashAcc.name,
+              outletId: dsOutletId,
+              userId: user.uid,
+              ownerId,
+              amount: cash,
+              channel: 'cash',
+              sourceId: savedLogId,
+              description: `Daily cash sales — ${dsDate}`,
+              date: dsDate,
+              createdAt: now,
+            };
+            routingOps.push(addDoc(collection(db, 'sales_ledger'), entry));
+          }
+
+          if (digitalAcc && digital > 0) {
+            routingOps.push(
+              updateDoc(doc(db, 'bank_accounts', digitalAcc.id!), {
+                balance: digitalAcc.balance + digital,
+                updatedAt: now,
+              })
+            );
+            const entry: Omit<SalesLedgerEntry, 'id'> = {
+              bankAccountId: digitalAcc.id!,
+              bankAccountName: digitalAcc.name,
+              outletId: dsOutletId,
+              userId: user.uid,
+              ownerId,
+              amount: digital,
+              channel: 'digital',
+              sourceId: savedLogId,
+              description: `Daily digital sales (card + UPI) — ${dsDate}`,
+              date: dsDate,
+              createdAt: now,
+            };
+            routingOps.push(addDoc(collection(db, 'sales_ledger'), entry));
+          }
+
+          if (routingOps.length > 0) await Promise.all(routingOps);
+        } catch (routingErr) {
+          // Log but don't surface — the daily sales log was saved successfully
+          console.warn('Bank routing skipped (check Firestore rules for crew write access):', routingErr);
+        }
       }
 
       setDsSuccess(true);
@@ -449,25 +571,17 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     });
   }, [entries, filterType, filterStatus, filterCategory, searchTerm]);
 
+  const primaryCashAccount = useMemo(() => {
+    const outlet = profile.assignedOutlet || dsOutletId;
+    return bankAccounts.find(a => a.outletId === outlet && a.isPrimary && a.accountType === 'cash') ?? null;
+  }, [bankAccounts, profile.assignedOutlet, dsOutletId]);
+
   return (
     <div className="animate-in fade-in duration-500 pb-24">
 
       {/* ── LANDING ─────────────────────────────────────────────── */}
       {activeMode === 'landing' ? (
         <div className="flex flex-col items-center justify-center min-h-[calc(100vh-8rem)] px-6 py-10 gap-10">
-          {/* Greeting */}
-          <div className="text-center">
-            <p className="text-[11px] font-black text-slate-600 uppercase tracking-[0.3em] mb-3">
-              {new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}
-            </p>
-            <h2 className="text-5xl font-black text-white uppercase tracking-tight leading-none">
-              {getOutletName(profile.assignedOutlet || 'GLOBAL')}
-            </h2>
-            <p className="text-slate-500 text-base font-bold uppercase tracking-[0.2em] mt-4">
-              {user.email?.split('@')[0]}
-            </p>
-          </div>
-
           {/* Action cards */}
           <div className="grid grid-cols-2 gap-5 w-full max-w-2xl">
             <button
@@ -508,8 +622,9 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
             >
               <ArrowLeft size={18} /> Home
             </button>
-            <div className="flex-1 text-center">
-              <h2 className="text-base font-black text-white uppercase tracking-widest">Purchases & Expenses</h2>
+            <div className="flex-1 flex flex-col items-center">
+              <h2 className="text-base font-black text-white uppercase tracking-widest">Log Purchase & Expenses</h2>
+              
             </div>
             <button
               onClick={() => { resetForm(); setEntryType('purchase'); setActiveMode('add'); }}
@@ -708,30 +823,15 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
                 </div>
               )}
 
-              <div className="grid grid-cols-2 gap-5">
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Sales Date</label>
-                  <div className="relative">
-                    <Calendar className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={20} />
-                    <input
-                      required type="date" value={dsDate}
-                      onChange={e => { setDsDate(e.target.value); setDsDuplicateWarning(false); setDsExistingId(null); }}
-                      className="w-full h-14 bg-slate-50 border-2 border-slate-100 focus:border-emerald-500 outline-none pl-14 pr-4 rounded-2xl text-sm font-bold text-slate-700 appearance-none"
-                    />
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Outlet</label>
-                  <div className="relative">
-                    <Store className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={20} />
-                    <select
-                      required value={dsOutletId}
-                      onChange={e => { setDsOutletId(e.target.value); setDsDuplicateWarning(false); setDsExistingId(null); }}
-                      className="w-full h-14 bg-slate-50 border-2 border-slate-100 focus:border-emerald-500 outline-none pl-14 pr-8 rounded-2xl text-sm font-bold text-slate-700 appearance-none uppercase"
-                    >
-                      {MASTER_OUTLETS.filter(o => o.id !== 'GLOBAL').map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
-                    </select>
-                  </div>
+              <div className="space-y-2">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Sales Date</label>
+                <div className="relative">
+                  <Calendar className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={20} />
+                  <input
+                    required type="date" value={dsDate}
+                    onChange={e => { setDsDate(e.target.value); setDsDuplicateWarning(false); setDsExistingId(null); }}
+                    className="w-full h-14 bg-slate-50 border-2 border-slate-100 focus:border-emerald-500 outline-none pl-14 pr-4 rounded-2xl text-sm font-bold text-slate-700 appearance-none"
+                  />
                 </div>
               </div>
 
