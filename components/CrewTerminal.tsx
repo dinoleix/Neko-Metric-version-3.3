@@ -15,7 +15,8 @@ import {
   DEFAULT_COGS,
   DEFAULT_OPS,
   EntryStatus,
-  BankAccount
+  BankAccount,
+  Vendor
 } from '../types';
 import {
   Plus,
@@ -52,7 +53,9 @@ import {
   Wallet,
   TrendingUp,
   CreditCard,
-  AlertTriangle
+  AlertTriangle,
+  ArrowRightLeft,
+  Vault
 } from 'lucide-react';
 
 const CATEGORIES = {
@@ -109,10 +112,15 @@ const compressImage = (file: File, maxWidth: number = 1200): Promise<Blob> => {
 };
 
 const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, profile }) => {
-  const [activeMode, setActiveMode] = useState<'landing' | 'view' | 'add' | 'edit' | 'daily-sales'>('landing');
+  const [activeMode, setActiveMode] = useState<'landing' | 'view' | 'add' | 'edit' | 'daily-sales' | 'transfer-10k'>('landing');
   const [entryType, setEntryType] = useState<'expense' | 'purchase'>('purchase');
   const [entries, setEntries] = useState<DailyCounterEntry[]>([]);
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
+  const [allBankAccounts, setAllBankAccounts] = useState<BankAccount[]>([]);
+  // 10K transfer state
+  const [transferAmount, setTransferAmount] = useState('');
+  const [transferring, setTransferring] = useState(false);
+  const [transferSuccess, setTransferSuccess] = useState(false);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [success, setSuccess] = useState(false);
@@ -143,6 +151,17 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const [vendors, setVendors] = useState<Vendor[]>([]);
+  const [selectedVendorId, setSelectedVendorId] = useState('');
+  const [showVendorModal, setShowVendorModal] = useState(false);
+  // Vendor form state (inside crew terminal)
+  const [vName, setVName] = useState('');
+  const [vAddress, setVAddress] = useState('');
+  const [vPhone, setVPhone] = useState('');
+  const [vGst, setVGst] = useState('');
+  const [vEmail, setVEmail] = useState('');
+  const [vSaving, setVSaving] = useState(false);
+
   // --- Daily Sales Log State ---
   const [dsDate, setDsDate] = useState(new Date().toISOString().split('T')[0]);
   const [dsTotal, setDsTotal] = useState('');
@@ -168,14 +187,20 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
         where('userId', '==', ownerId)
       );
       const bankSnap = await getDocs(bankQ);
-      const allBankAccounts = bankSnap.docs.map(d => ({ id: d.id, ...d.data() } as BankAccount));
-      
+      const fetchedAllAccounts = bankSnap.docs.map(d => ({ id: d.id, ...d.data() } as BankAccount));
+      setAllBankAccounts(fetchedAllAccounts);
+
       // Filter by assigned outlet if available
-      const filteredBankAccounts = profile.assignedOutlet 
-        ? allBankAccounts.filter(acc => acc.outletId === profile.assignedOutlet)
-        : allBankAccounts;
+      const filteredBankAccounts = profile.assignedOutlet
+        ? fetchedAllAccounts.filter(acc => acc.outletId === profile.assignedOutlet)
+        : fetchedAllAccounts;
 
       setBankAccounts(filteredBankAccounts);
+
+      // Fetch vendors
+      const vendorQ = query(collection(db, 'vendors'), where('ownerId', '==', ownerId));
+      const vendorSnap = await getDocs(vendorQ);
+      setVendors(vendorSnap.docs.map(d => ({ id: d.id, ...d.data() } as Vendor)).sort((a, b) => a.name.localeCompare(b.name)));
 
       let start: string;
       let end: string = new Date().toISOString().split('T')[0];
@@ -240,6 +265,10 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     fetchEntries();
   }, [user, datePreset, customStartDate, customEndDate]);
 
+  useEffect(() => {
+    if (activeMode === 'view') fetchEntries();
+  }, [activeMode]);
+
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
@@ -259,6 +288,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     setOutletId(entry.outletId);
     setExistingReceiptUrl(entry.receiptUrl || null);
     setReceiptPreview(entry.receiptUrl || null);
+    setSelectedVendorId(entry.vendorId || '');
     setActiveMode('edit');
   };
 
@@ -318,15 +348,70 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
         status,
         receiptUrl: finalReceiptUrl || null,
         billNumber: billNumber || null,
+        vendorId: selectedVendorId || null,
+        vendorName: vendors.find(v => v.id === selectedVendorId)?.name || null,
         createdAt: Date.now()
       };
 
+      let savedEntryId: string | null = null;
       if (activeMode === 'edit' && editingId) {
         await updateDoc(doc(db, 'crew_entries', editingId), entryData);
+        savedEntryId = editingId;
       } else {
-        await addDoc(collection(db, 'crew_entries'), entryData);
+        const ref = await addDoc(collection(db, 'crew_entries'), entryData);
+        savedEntryId = ref.id;
       }
-      
+
+      // Deduct from the correct bank account based on payment type
+      try {
+        const ownerId = profile.ownerId || user.uid;
+        const bankQ = query(collection(db, 'bank_accounts'), where('userId', '==', ownerId));
+        const bankSnap = await getDocs(bankQ);
+        const allAccounts = bankSnap.docs.map(d => ({ id: d.id, ...d.data() } as BankAccount));
+
+        const accountType = entryType === 'expense' ? 'cash' : 'digital';
+        const targetAcc = allAccounts.find(a => a.outletId === outletId && a.isPrimary && a.accountType === accountType);
+
+        if (targetAcc) {
+          const isEdit = activeMode === 'edit' && editingId;
+          const parsedAmount = parseFloat(amount);
+
+          // For edits, compute delta against old entry to avoid double-deducting
+          let deduction = 0;
+          if (isEdit) {
+            const oldEntry = entries.find(e => e.id === editingId);
+            const oldImpact = (oldEntry?.status === 'paid') ? oldEntry.amount : 0;
+            const newImpact = status === 'paid' ? parsedAmount : 0;
+            deduction = newImpact - oldImpact;
+          } else {
+            deduction = status === 'paid' ? parsedAmount : 0;
+          }
+
+          if (deduction !== 0) {
+            const now = Date.now();
+            await updateDoc(doc(db, 'bank_accounts', targetAcc.id!), {
+              balance: targetAcc.balance - deduction,
+              updatedAt: now,
+            });
+            await addDoc(collection(db, 'bank_transactions'), {
+              userId: ownerId,
+              bankAccountId: targetAcc.id!,
+              date,
+              description: `${entryType === 'expense' ? 'Cash Expense' : 'Digital Purchase'}: ${category}${description ? ` — ${description}` : ''}`,
+              amount: Math.abs(deduction),
+              type: deduction > 0 ? 'debit' : 'credit',
+              category: category.toUpperCase(),
+              referenceNo: billNumber || `AUTO-${savedEntryId}`,
+              isVerified: false,
+              isReconciled: false,
+              createdAt: now,
+            });
+          }
+        }
+      } catch (bankErr) {
+        console.warn('Bank deduction skipped:', bankErr);
+      }
+
       setSuccess(true);
       const returnTo = 'view';
       resetForm();
@@ -418,7 +503,9 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
           const cashAcc = primaryAccounts.find((a: BankAccount) => a.accountType === 'cash');
           const digitalAcc = primaryAccounts.find((a: BankAccount) => a.accountType === 'digital');
           const cashDelta = cash - (old.cash || 0);
-          const digitalDelta = (card + upi) - ((old.card || 0) + (old.upi || 0));
+          const cardDelta = card - (old.card || 0);
+          const upiDelta = upi - (old.upi || 0);
+          const digitalDelta = cardDelta + upiDelta;
           const now = Date.now();
           const routingOps: Promise<any>[] = [];
 
@@ -437,12 +524,22 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
             routingOps.push(updateDoc(doc(db, 'bank_accounts', digitalAcc.id!), {
               balance: digitalAcc.balance + digitalDelta, updatedAt: now,
             }));
-            routingOps.push(addDoc(collection(db, 'sales_ledger'), {
-              bankAccountId: digitalAcc.id!, bankAccountName: digitalAcc.name,
-              outletId: dsOutletId, userId: user.uid, ownerId,
-              amount: digitalDelta, channel: 'digital', sourceId: dsExistingId,
-              description: `Correction: digital sales (card + UPI) — ${dsDate}`, date: dsDate, createdAt: now,
-            } as Omit<SalesLedgerEntry, 'id'>));
+            if (cardDelta !== 0) {
+              routingOps.push(addDoc(collection(db, 'sales_ledger'), {
+                bankAccountId: digitalAcc.id!, bankAccountName: digitalAcc.name,
+                outletId: dsOutletId, userId: user.uid, ownerId,
+                amount: cardDelta, channel: 'card', sourceId: dsExistingId,
+                description: `Correction: card sales — ${dsDate}`, date: dsDate, createdAt: now,
+              } as Omit<SalesLedgerEntry, 'id'>));
+            }
+            if (upiDelta !== 0) {
+              routingOps.push(addDoc(collection(db, 'sales_ledger'), {
+                bankAccountId: digitalAcc.id!, bankAccountName: digitalAcc.name,
+                outletId: dsOutletId, userId: user.uid, ownerId,
+                amount: upiDelta, channel: 'upi', sourceId: dsExistingId,
+                description: `Correction: UPI sales — ${dsDate}`, date: dsDate, createdAt: now,
+              } as Omit<SalesLedgerEntry, 'id'>));
+            }
           }
           if (routingOps.length > 0) await Promise.all(routingOps);
         } catch (routingErr) {
@@ -467,7 +564,6 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
 
           const cashAcc = primaryAccounts.find((a: BankAccount) => a.accountType === 'cash');
           const digitalAcc = primaryAccounts.find((a: BankAccount) => a.accountType === 'digital');
-          const digital = card + upi;
           const now = Date.now();
           const routingOps: Promise<any>[] = [];
 
@@ -478,7 +574,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
                 updatedAt: now,
               })
             );
-            const entry: Omit<SalesLedgerEntry, 'id'> = {
+            routingOps.push(addDoc(collection(db, 'sales_ledger'), {
               bankAccountId: cashAcc.id!,
               bankAccountName: cashAcc.name,
               outletId: dsOutletId,
@@ -490,31 +586,46 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
               description: `Daily cash sales — ${dsDate}`,
               date: dsDate,
               createdAt: now,
-            };
-            routingOps.push(addDoc(collection(db, 'sales_ledger'), entry));
+            } as Omit<SalesLedgerEntry, 'id'>));
           }
 
-          if (digitalAcc && digital > 0) {
+          if (digitalAcc && (card > 0 || upi > 0)) {
             routingOps.push(
               updateDoc(doc(db, 'bank_accounts', digitalAcc.id!), {
-                balance: digitalAcc.balance + digital,
+                balance: digitalAcc.balance + card + upi,
                 updatedAt: now,
               })
             );
-            const entry: Omit<SalesLedgerEntry, 'id'> = {
-              bankAccountId: digitalAcc.id!,
-              bankAccountName: digitalAcc.name,
-              outletId: dsOutletId,
-              userId: user.uid,
-              ownerId,
-              amount: digital,
-              channel: 'digital',
-              sourceId: savedLogId,
-              description: `Daily digital sales (card + UPI) — ${dsDate}`,
-              date: dsDate,
-              createdAt: now,
-            };
-            routingOps.push(addDoc(collection(db, 'sales_ledger'), entry));
+            if (card > 0) {
+              routingOps.push(addDoc(collection(db, 'sales_ledger'), {
+                bankAccountId: digitalAcc.id!,
+                bankAccountName: digitalAcc.name,
+                outletId: dsOutletId,
+                userId: user.uid,
+                ownerId,
+                amount: card,
+                channel: 'card',
+                sourceId: savedLogId,
+                description: `Card sales — ${dsDate}`,
+                date: dsDate,
+                createdAt: now,
+              } as Omit<SalesLedgerEntry, 'id'>));
+            }
+            if (upi > 0) {
+              routingOps.push(addDoc(collection(db, 'sales_ledger'), {
+                bankAccountId: digitalAcc.id!,
+                bankAccountName: digitalAcc.name,
+                outletId: dsOutletId,
+                userId: user.uid,
+                ownerId,
+                amount: upi,
+                channel: 'upi',
+                sourceId: savedLogId,
+                description: `UPI sales — ${dsDate}`,
+                date: dsDate,
+                createdAt: now,
+              } as Omit<SalesLedgerEntry, 'id'>));
+            }
           }
 
           if (routingOps.length > 0) await Promise.all(routingOps);
@@ -547,6 +658,30 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     setReceiptPreview(null);
     setEditingId(null);
     setExistingReceiptUrl(null);
+    setSelectedVendorId('');
+  };
+
+  const resetVendorForm = () => { setVName(''); setVAddress(''); setVPhone(''); setVGst(''); setVEmail(''); };
+
+  const handleVendorSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!vName.trim()) return;
+    setVSaving(true);
+    try {
+      const ownerId = profile.ownerId || user.uid;
+      const data = {
+        userId: user.uid, ownerId,
+        name: vName.trim().toUpperCase(),
+        address: vAddress.trim(), phone: vPhone.trim(),
+        gst: vGst.trim().toUpperCase(), email: vEmail.trim().toLowerCase(),
+        createdAt: Date.now(),
+      };
+      const ref = await addDoc(collection(db, 'vendors'), data);
+      setVendors(prev => [...prev, { id: ref.id, ...data }].sort((a, b) => a.name.localeCompare(b.name)));
+      setSelectedVendorId(ref.id);
+      resetVendorForm();
+      setShowVendorModal(false);
+    } catch (err) { console.error(err); } finally { setVSaving(false); }
   };
 
   const handleDelete = async (id: string) => {
@@ -575,6 +710,67 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     const outlet = profile.assignedOutlet || dsOutletId;
     return bankAccounts.find(a => a.outletId === outlet && a.isPrimary && a.accountType === 'cash') ?? null;
   }, [bankAccounts, profile.assignedOutlet, dsOutletId]);
+
+  const tenKAccount = useMemo(() => {
+    const outlet = profile.assignedOutlet || dsOutletId;
+    return allBankAccounts.find(a => a.outletId === outlet && a.accountType === '10kcash') ?? null;
+  }, [allBankAccounts, profile.assignedOutlet, dsOutletId]);
+
+  const handleTransfer = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const amt = parseFloat(transferAmount);
+    if (!amt || amt <= 0 || !primaryCashAccount || !tenKAccount) return;
+
+    setTransferring(true);
+    try {
+      const ownerId = profile.ownerId || user.uid;
+      const now = Date.now();
+      const today = new Date().toISOString().split('T')[0];
+      const ref = `10K-${now}`;
+
+      await Promise.all([
+        updateDoc(doc(db, 'bank_accounts', primaryCashAccount.id!), {
+          balance: primaryCashAccount.balance - amt, updatedAt: now,
+        }),
+        updateDoc(doc(db, 'bank_accounts', tenKAccount.id!), {
+          balance: tenKAccount.balance + amt, updatedAt: now,
+        }),
+        addDoc(collection(db, 'bank_transactions'), {
+          userId: user.uid, ownerId, bankAccountId: primaryCashAccount.id!,
+          date: today, description: `10K Transfer — moved to safe`,
+          amount: amt, type: 'debit', referenceNo: ref,
+          category: 'TRANSFER', isVerified: false, isReconciled: false, createdAt: now,
+        }),
+        addDoc(collection(db, 'bank_transactions'), {
+          userId: user.uid, ownerId, bankAccountId: tenKAccount.id!,
+          date: today, description: `10K Transfer — received from counter`,
+          amount: amt, type: 'credit', referenceNo: ref,
+          category: 'TRANSFER', isVerified: false, isReconciled: false, createdAt: now,
+        }),
+      ]);
+
+      // Optimistically update local balances
+      const updater = (a: BankAccount) => {
+        if (a.id === primaryCashAccount.id) return { ...a, balance: a.balance - amt, updatedAt: now };
+        if (a.id === tenKAccount.id) return { ...a, balance: a.balance + amt, updatedAt: now };
+        return a;
+      };
+      setBankAccounts(prev => prev.map(updater));
+      setAllBankAccounts(prev => prev.map(updater));
+
+      setTransferSuccess(true);
+      setTimeout(() => {
+        setTransferSuccess(false);
+        setTransferAmount('');
+        setActiveMode('landing');
+      }, 2000);
+    } catch (err) {
+      console.error(err);
+      alert('Transfer failed. Check connection.');
+    } finally {
+      setTransferring(false);
+    }
+  };
 
   return (
     <div className="animate-in fade-in duration-500 pb-24">
@@ -609,6 +805,26 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
               </div>
             </button>
           </div>
+          {/* 10K Transfer */}
+          <button
+            onClick={() => setActiveMode('transfer-10k')}
+            className="w-full max-w-2xl h-28 bg-amber-500 active:scale-95 text-white rounded-[2.5rem] flex items-center justify-center gap-6 shadow-2xl shadow-amber-900/40 transition-transform border border-amber-400/20"
+          >
+            <Vault size={44} strokeWidth={1.5} />
+            <div className="text-left">
+              <p className="text-2xl font-black uppercase tracking-tight leading-tight">10K Transfer</p>
+              <p className="text-[11px] font-bold text-amber-200/80 mt-1.5 uppercase tracking-widest">Move counter cash to safe</p>
+            </div>
+          </button>
+
+          {/* Manage Vendors shortcut */}
+          <button
+            onClick={() => setShowVendorModal(true)}
+            className="flex items-center gap-3 px-6 py-4 bg-slate-800/60 border border-slate-700/50 rounded-2xl text-slate-400 text-[11px] font-black uppercase tracking-widest hover:text-white hover:border-indigo-500/50 active:scale-95 transition-all"
+          >
+            <Store size={16} className="text-indigo-400" />
+            Manage Vendors
+          </button>
         </div>
 
       /* ── ENTRIES LIST ──────────────────────────────────────────── */
@@ -926,6 +1142,113 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
           </div>
         </div>
 
+      /* ── 10K TRANSFER ────────────────────────────────────────────── */
+      ) : activeMode === 'transfer-10k' ? (
+        <div className="animate-in slide-in-from-right duration-300 px-1 pt-2">
+          <div className="bg-white rounded-[2.5rem] shadow-2xl overflow-hidden">
+            <header className="px-8 py-7 flex items-center justify-between bg-amber-500 text-white">
+              <div className="flex items-center gap-4">
+                <button
+                  onClick={() => { setTransferAmount(''); setActiveMode('landing'); }}
+                  className="p-3.5 bg-white/15 rounded-2xl active:bg-white/30 transition-all"
+                >
+                  <ArrowLeft size={22} />
+                </button>
+                <div>
+                  <h3 className="text-2xl font-black uppercase tracking-tight leading-none">10K Transfer</h3>
+                  <p className="text-amber-100/70 text-[10px] font-bold uppercase tracking-widest mt-1.5">Counter Cash → 10K Safe</p>
+                </div>
+              </div>
+              <div className="p-3.5 bg-white/20 rounded-2xl"><Vault size={30} /></div>
+            </header>
+
+            <div className="p-8 md:p-10 space-y-7">
+              {/* Account balances */}
+              {!primaryCashAccount || !tenKAccount ? (
+                <div className="py-12 flex flex-col items-center gap-4 text-center">
+                  <AlertCircle size={40} className="text-amber-400" />
+                  <p className="font-black text-slate-800 uppercase tracking-tight">
+                    {!primaryCashAccount ? 'No primary cash account found for this outlet.' : 'No 10K cash account found.'}
+                  </p>
+                  <p className="text-sm text-slate-400 font-medium leading-relaxed max-w-xs">
+                    {!primaryCashAccount
+                      ? 'Set a primary cash account for this outlet in Bank Accounts.'
+                      : 'Create a cash bank account with "10K" in its name in Bank Accounts first.'}
+                  </p>
+                </div>
+              ) : (
+                <form onSubmit={handleTransfer} className="space-y-7">
+                  {/* From / To cards */}
+                  <div className="space-y-3">
+                    <div className="bg-slate-50 border-2 border-slate-100 rounded-2xl px-6 py-5 flex items-center justify-between">
+                      <div>
+                        <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">From · Counter Cash</p>
+                        <p className="text-base font-black text-slate-800 uppercase leading-tight truncate">{primaryCashAccount.name}</p>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Balance</p>
+                        <p className="text-2xl font-black text-slate-900 tracking-tighter">₹{primaryCashAccount.balance.toLocaleString('en-IN')}</p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-center">
+                      <div className="flex items-center gap-2 px-4 py-2 bg-amber-50 border border-amber-200 rounded-full">
+                        <ArrowRightLeft size={14} className="text-amber-500" />
+                        <span className="text-[10px] font-black text-amber-600 uppercase tracking-widest">Transfer to safe</span>
+                      </div>
+                    </div>
+
+                    <div className="bg-amber-50 border-2 border-amber-200 rounded-2xl px-6 py-5 flex items-center justify-between">
+                      <div>
+                        <p className="text-[9px] font-black text-amber-500 uppercase tracking-widest mb-1">To · 10K Safe</p>
+                        <p className="text-base font-black text-slate-800 uppercase leading-tight truncate">{tenKAccount.name}</p>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <p className="text-[9px] font-black text-amber-500 uppercase tracking-widest mb-1">Balance</p>
+                        <p className="text-2xl font-black text-amber-700 tracking-tighter">₹{tenKAccount.balance.toLocaleString('en-IN')}</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Amount input */}
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Transfer Amount (₹)</label>
+                    <div className="relative">
+                      <IndianRupee className="absolute left-6 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={28} />
+                      <input
+                        required
+                        type="number"
+                        step="0.01"
+                        min="1"
+                        value={transferAmount}
+                        onChange={e => setTransferAmount(e.target.value)}
+                        className="w-full bg-slate-50 border-2 border-slate-100 focus:border-amber-400 focus:ring-4 focus:ring-amber-400/10 outline-none pl-16 pr-8 py-6 rounded-[2rem] text-4xl font-black text-slate-900 transition-all"
+                        placeholder="0.00"
+                        autoFocus
+                      />
+                    </div>
+                    {parseFloat(transferAmount) > 0 && primaryCashAccount.balance > 0 && parseFloat(transferAmount) > primaryCashAccount.balance && (
+                      <p className="text-[10px] font-black text-rose-500 uppercase tracking-widest ml-1 flex items-center gap-1.5">
+                        <AlertTriangle size={12} /> Amount exceeds counter balance
+                      </p>
+                    )}
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={transferring || transferSuccess || !parseFloat(transferAmount) || parseFloat(transferAmount) <= 0}
+                    className={`w-full py-7 rounded-[2rem] font-black uppercase text-xl tracking-wider shadow-xl transition-all active:scale-[0.98] flex items-center justify-center gap-4 text-white disabled:opacity-40 ${transferSuccess ? 'bg-emerald-500' : 'bg-amber-500'}`}
+                  >
+                    {transferring ? <Loader2 size={30} className="animate-spin" />
+                      : transferSuccess ? <><CheckCircle2 size={30} /> Transferred!</>
+                      : <><ArrowRightLeft size={30} /> Transfer ₹{parseFloat(transferAmount) > 0 ? parseFloat(transferAmount).toLocaleString('en-IN') : '—'}</>}
+                  </button>
+                </form>
+              )}
+            </div>
+          </div>
+        </div>
+
       /* ── ADD / EDIT FORM ───────────────────────────────────────── */
       ) : (
         <div className="animate-in slide-in-from-right duration-300 px-1 pt-2">
@@ -933,7 +1256,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
             <header className={`px-8 py-7 flex items-center justify-between text-white ${entryType === 'purchase' ? 'bg-indigo-600' : 'bg-rose-500'}`}>
               <div className="flex items-center gap-4">
                 <button
-                  onClick={() => { activeMode === 'edit' ? setActiveMode('view') : setActiveMode('landing'); resetForm(); }}
+                  onClick={() => { setActiveMode('view'); resetForm(); }}
                   className="p-3.5 bg-white/15 rounded-2xl active:bg-white/30 transition-all"
                 >
                   <ArrowLeft size={22} />
@@ -968,6 +1291,34 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
                   <Receipt size={20} /> By Cash
                 </button>
               </div>
+
+              {entryType === 'purchase' && (
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Vendor (Optional)</label>
+                  <div className="flex gap-3">
+                    <div className="relative flex-1">
+                      <Store className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={18} />
+                      <select
+                        value={selectedVendorId}
+                        onChange={e => setSelectedVendorId(e.target.value)}
+                        className="w-full h-14 bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none pl-12 pr-8 rounded-2xl text-sm font-bold text-slate-700 appearance-none uppercase transition-all"
+                      >
+                        <option value="">-- No Vendor Selected --</option>
+                        {vendors.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+                      </select>
+                      <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={16} />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowVendorModal(true)}
+                      className="h-14 w-14 flex items-center justify-center bg-indigo-50 text-indigo-600 rounded-2xl border-2 border-indigo-100 hover:bg-indigo-100 active:scale-95 transition-all shrink-0"
+                      title="Add New Vendor"
+                    >
+                      <Plus size={20} />
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {/* Amount + Category */}
               <div className="grid grid-cols-2 gap-5">
@@ -1014,29 +1365,15 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
                 </div>
               </div>
 
-              {/* Outlet + Date */}
-              <div className="grid grid-cols-2 gap-5">
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Outlet</label>
-                  <div className="relative">
-                    <Store className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={18} />
-                    <select
-                      required value={outletId} onChange={e => setOutletId(e.target.value)}
-                      className="w-full h-14 bg-slate-50 border-2 border-slate-100 outline-none pl-12 pr-8 rounded-2xl text-sm font-bold text-slate-700 appearance-none uppercase"
-                    >
-                      {MASTER_OUTLETS.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
-                    </select>
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Date</label>
-                  <div className="relative">
-                    <Calendar className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={18} />
-                    <input
-                      required type="date" value={date} onChange={e => setDate(e.target.value)}
-                      className="w-full h-14 bg-slate-50 border-2 border-slate-100 outline-none pl-12 pr-4 rounded-2xl text-sm font-bold text-slate-700 appearance-none"
-                    />
-                  </div>
+              {/* Date */}
+              <div className="space-y-2">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Date</label>
+                <div className="relative">
+                  <Calendar className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={18} />
+                  <input
+                    required type="date" value={date} onChange={e => setDate(e.target.value)}
+                    className="w-full h-14 bg-slate-50 border-2 border-slate-100 outline-none pl-12 pr-4 rounded-2xl text-sm font-bold text-slate-700 appearance-none"
+                  />
                 </div>
               </div>
 
@@ -1195,6 +1532,60 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
           </div>
         );
       })()}
+
+      {/* ── VENDOR QUICK-ADD MODAL ─────────────────────────────── */}
+      {showVendorModal && (
+        <div className="fixed inset-0 z-[200] flex items-end md:items-center justify-center p-4">
+          <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-md" onClick={() => { setShowVendorModal(false); resetVendorForm(); }} />
+          <div className="relative w-full max-w-lg bg-white rounded-[2.5rem] shadow-2xl overflow-hidden animate-in slide-in-from-bottom duration-300">
+            <header className="px-8 py-6 bg-indigo-600 text-white flex items-center justify-between">
+              <div>
+                <h3 className="text-xl font-black uppercase tracking-tight">New Vendor</h3>
+                <p className="text-indigo-200/70 text-[10px] font-bold uppercase tracking-widest mt-1">Add to vendor directory</p>
+              </div>
+              <button onClick={() => { setShowVendorModal(false); resetVendorForm(); }} className="p-3 bg-white/15 rounded-2xl active:bg-white/30 transition-all">
+                <X size={20} />
+              </button>
+            </header>
+            <form onSubmit={handleVendorSave} className="p-8 space-y-5">
+              <div className="space-y-2">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1 block">Vendor Name *</label>
+                <input
+                  required type="text" value={vName} onChange={e => setVName(e.target.value)}
+                  placeholder="e.g. FRESH FARMS SUPPLY"
+                  className="w-full h-14 bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none px-5 rounded-2xl text-sm font-bold text-slate-700 uppercase transition-all"
+                  autoFocus
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1 block">Phone</label>
+                  <input type="tel" value={vPhone} onChange={e => setVPhone(e.target.value)} placeholder="+91 …" className="w-full h-12 bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none px-5 rounded-2xl text-sm font-bold text-slate-700 transition-all" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1 block">GST No.</label>
+                  <input type="text" value={vGst} onChange={e => setVGst(e.target.value)} placeholder="27AAAAA0000A1Z5" className="w-full h-12 bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none px-5 rounded-2xl text-sm font-bold text-slate-700 uppercase tracking-widest transition-all" />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1 block">Email</label>
+                <input type="email" value={vEmail} onChange={e => setVEmail(e.target.value)} placeholder="vendor@example.com" className="w-full h-12 bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none px-5 rounded-2xl text-sm font-bold text-slate-700 transition-all" />
+              </div>
+              <div className="space-y-2">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1 block">Address</label>
+                <textarea value={vAddress} onChange={e => setVAddress(e.target.value)} placeholder="Full address…" rows={2} className="w-full bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none px-5 py-4 rounded-2xl text-sm font-medium text-slate-600 resize-none transition-all" />
+              </div>
+              <div className="flex gap-3 pt-2">
+                <button type="button" onClick={() => { setShowVendorModal(false); resetVendorForm(); }} className="flex-1 h-14 bg-slate-50 text-slate-400 rounded-2xl font-black uppercase text-[10px] tracking-widest border border-slate-100">Cancel</button>
+                <button type="submit" disabled={vSaving} className="flex-1 h-14 bg-indigo-600 text-white rounded-2xl font-black uppercase text-[10px] tracking-widest shadow-xl disabled:opacity-50 flex items-center justify-center gap-2">
+                  {vSaving ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
+                  Save Vendor
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* POLICY ALERT FOOTER */}
       <div className="fixed bottom-0 left-0 right-0 p-4 bg-slate-950/90 backdrop-blur-xl border-t border-white/5 z-[40]">

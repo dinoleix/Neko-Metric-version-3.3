@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import type { User } from 'firebase/auth';
-import { doc, getDoc, setDoc, collection, query, where, getDocs } from 'firebase/firestore';
+import { doc, getDoc, setDoc, collection, query, where, onSnapshot } from 'firebase/firestore';
 import { auth, db } from './firebase';
 import { UserRole, UserProfile, BankAccount, getOutletName } from './types';
 import Login from './components/Login';
@@ -27,6 +27,7 @@ import CrewTerminal from './components/CrewTerminal';
 import UserManagement from './components/UserManagement';
 import BankManagement from './components/BankManagement';
 import BankReconciliation from './components/BankReconciliation';
+import VendorManagement from './components/VendorManagement';
 import CashFlowTracker from './components/CashFlowTracker';
 import HolidayRegistry from './components/HolidayRegistry';
 import OnlineProfitCenter from './components/OnlineProfitCenter';
@@ -61,10 +62,11 @@ import {
   Calendar,
   Wallet,
   Clock3,
-  Banknote
+  Banknote,
+  Store
 } from 'lucide-react';
 
-type AppTab = 'exec-dashboard' | 'dashboard' | 'sales' | 'raw-verify' | 'items' | 'pnl' | 'cash-flow' | 'pnl-insights' | 'waste' | 'waste-v2' | 'integrity' | 'team' | 'rentals' | 'catalog' | 'upload' | 'category-settings' | 'expenses' | 'partnership' | 'crew-terminal' | 'users' | 'bank-management' | 'bank-audit' | 'holidays' | 'online-profit';
+type AppTab = 'exec-dashboard' | 'dashboard' | 'sales' | 'raw-verify' | 'items' | 'pnl' | 'cash-flow' | 'pnl-insights' | 'waste' | 'waste-v2' | 'integrity' | 'team' | 'rentals' | 'catalog' | 'upload' | 'category-settings' | 'expenses' | 'partnership' | 'crew-terminal' | 'users' | 'bank-management' | 'bank-audit' | 'holidays' | 'online-profit' | 'vendor-management';
 
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
@@ -73,6 +75,7 @@ const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<AppTab>('exec-dashboard');
   const [showTimeoutWarning, setShowTimeoutWarning] = useState(false);
   const [primaryCashAccount, setPrimaryCashAccount] = useState<BankAccount | null>(null);
+  const [primaryTenKAccount, setPrimaryTenKAccount] = useState<BankAccount | null>(null);
 
   const INACTIVE_MS = userProfile?.role === 'crew' ? 14 * 60 * 60 * 1000 : 15 * 60 * 1000;
   const WARN_MS = userProfile?.role === 'crew' ? (14 * 60 * 60 - 5 * 60) * 1000 : 14 * 60 * 1000;
@@ -148,11 +151,19 @@ const App: React.FC = () => {
     if (!userProfile || userProfile.role !== 'crew') return;
     const ownerId = userProfile.ownerId || user?.uid;
     if (!ownerId) return;
-    getDocs(query(collection(db, 'bank_accounts'), where('userId', '==', ownerId))).then(snap => {
-      const acc = snap.docs.map(d => ({ id: d.id, ...d.data() } as BankAccount))
-        .find(a => a.outletId === userProfile.assignedOutlet && a.isPrimary && a.accountType === 'cash') ?? null;
-      setPrimaryCashAccount(acc);
-    }).catch(() => {});
+    const unsubscribe = onSnapshot(
+      query(collection(db, 'bank_accounts'), where('userId', '==', ownerId)),
+      (snap) => {
+        const accounts = snap.docs.map(d => ({ id: d.id, ...d.data() } as BankAccount));
+        setPrimaryCashAccount(
+          accounts.find(a => a.outletId === userProfile.assignedOutlet && a.isPrimary && a.accountType === 'cash') ?? null
+        );
+        setPrimaryTenKAccount(
+          accounts.find(a => a.outletId === userProfile.assignedOutlet && a.accountType === '10kcash') ?? null
+        );
+      }
+    );
+    return () => unsubscribe();
   }, [userProfile]);
 
   if (loading) {
@@ -224,6 +235,20 @@ const App: React.FC = () => {
                        </span>
                     </div>
                  </div>
+
+                 {primaryTenKAccount && (
+                   <div className="px-4 py-2.5 bg-amber-500/10 border border-amber-500/30 rounded-2xl flex items-center gap-3 shadow-inner">
+                      <div className="p-1.5 bg-amber-500/40 rounded-lg">
+                         <Banknote size={16} className="text-amber-400" />
+                      </div>
+                      <div className="flex flex-col">
+                         <span className="text-[9px] font-black text-amber-500/70 uppercase tracking-widest leading-none mb-1">10K Safe</span>
+                         <span className="text-sm font-black text-amber-400 leading-none">
+                            ₹{primaryTenKAccount.balance.toLocaleString('en-IN')}
+                         </span>
+                      </div>
+                   </div>
+                 )}
               </div>
            </div>
 
@@ -332,6 +357,7 @@ const App: React.FC = () => {
               <NavItem tab="holidays" icon={<Calendar size={18} />} label="Holiday Registry" />
               <NavItem tab="bank-management" icon={<Wallet size={18} />} label="Bank Accounts" />
               <NavItem tab="bank-audit" icon={<ShieldCheck size={18} />} label="Bank Reconcile" />
+              <NavItem tab="vendor-management" icon={<Store size={18} />} label="Vendors" />
 
               <div className="pt-4 pb-2 px-4">
                 <p className="text-[10px] font-black uppercase tracking-widest text-slate-600">Inputs</p>
@@ -394,6 +420,7 @@ const App: React.FC = () => {
           {activeTab === 'holidays' && !isReadOnly && <HolidayRegistry user={user} dataOwnerId={dataOwnerId} />}
           {activeTab === 'bank-management' && !isReadOnly && <BankManagement user={user} dataOwnerId={dataOwnerId} />}
           {activeTab === 'bank-audit' && !isReadOnly && <BankReconciliation user={user} dataOwnerId={dataOwnerId} />}
+          {activeTab === 'vendor-management' && !isReadOnly && <VendorManagement user={user} dataOwnerId={dataOwnerId} />}
           {activeTab === 'upload' && !isReadOnly && <Uploader user={user} dataOwnerId={dataOwnerId} onSuccess={() => setActiveTab('exec-dashboard')} />}
           {activeTab === 'crew-terminal' && <CrewTerminal user={user} profile={userProfile} />}
           {activeTab === 'users' && isAdmin && <UserManagement user={user} />}

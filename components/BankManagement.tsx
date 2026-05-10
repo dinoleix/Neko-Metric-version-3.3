@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import type { User } from 'firebase/auth';
 import { collection, query, getDocs, addDoc, doc, deleteDoc, updateDoc, where, orderBy } from 'firebase/firestore';
 import { db } from '../firebase';
-import { BankAccount, SalesLedgerEntry, MASTER_OUTLETS, getOutletName, StoreRental } from '../types';
+import { BankAccount, SalesLedgerEntry, BankTransaction, MASTER_OUTLETS, getOutletName, StoreRental } from '../types';
 import { Star } from 'lucide-react';
 import {
   Building2,
@@ -37,7 +37,10 @@ const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
   const [isAdding, setIsAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [expandedAccountId, setExpandedAccountId] = useState<string | null>(null);
-  const [ledgerEntries, setLedgerEntries] = useState<SalesLedgerEntry[]>([]);
+  const [ledgerEntries, setLedgerEntries] = useState<Array<{
+    id: string; description: string; date: string;
+    amount: number; type: 'credit' | 'debit'; createdAt: number; channel?: string;
+  }>>([]);
   const [loadingLedger, setLoadingLedger] = useState(false);
 
   // Form State
@@ -46,7 +49,7 @@ const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
   const [accountNumber, setAccountNumber] = useState('');
   const [balance, setBalance] = useState('');
   const [outletId, setOutletId] = useState('');
-  const [accountType, setAccountType] = useState<'cash' | 'digital'>('digital');
+  const [accountType, setAccountType] = useState<'cash' | 'digital' | '10kcash'>('digital');
 
   const fetchAccounts = async () => {
     setLoading(true);
@@ -172,14 +175,34 @@ const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
     setExpandedAccountId(accId);
     setLoadingLedger(true);
     try {
-      const snap = await getDocs(query(
-        collection(db, 'sales_ledger'),
-        where('bankAccountId', '==', accId)
-      ));
-      const entries = snap.docs
-        .map(d => ({ id: d.id, ...d.data() } as SalesLedgerEntry))
-        .sort((a, b) => b.createdAt - a.createdAt);
-      setLedgerEntries(entries);
+      // Two queries for bank_transactions: admin-written (userId) and crew-written (ownerId).
+      // Deduplicate by document ID so overlapping results aren't doubled.
+      const [salesSnap, txByUser, txByOwner] = await Promise.all([
+        getDocs(query(collection(db, 'sales_ledger'), where('ownerId', '==', dataOwnerId))),
+        getDocs(query(collection(db, 'bank_transactions'), where('userId', '==', dataOwnerId))),
+        getDocs(query(collection(db, 'bank_transactions'), where('ownerId', '==', dataOwnerId))),
+      ]);
+
+      const fromSales = salesSnap.docs
+        .filter(d => d.data().bankAccountId === accId)
+        .map(d => {
+          const e = d.data() as SalesLedgerEntry;
+          return { id: d.id, description: e.description, date: e.date, amount: e.amount, type: 'credit' as const, createdAt: e.createdAt, channel: e.channel };
+        });
+
+      const txDocMap = new Map<string, any>();
+      txByUser.docs.forEach(d => txDocMap.set(d.id, d));
+      txByOwner.docs.forEach(d => txDocMap.set(d.id, d));
+
+      const fromTx = Array.from(txDocMap.values())
+        .filter(d => d.data().bankAccountId === accId && !d.data()._fileId)
+        .map(d => {
+          const e = d.data() as BankTransaction;
+          return { id: d.id, description: e.description, date: e.date, amount: e.amount, type: e.type, createdAt: e.createdAt };
+        });
+
+      const merged = [...fromSales, ...fromTx].sort((a, b) => b.createdAt - a.createdAt);
+      setLedgerEntries(merged);
     } catch (err) {
       console.error('Error fetching ledger:', err);
     } finally {
@@ -292,20 +315,27 @@ const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
 
               <div className="space-y-2 md:col-span-2">
                 <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">Account Type</label>
-                <div className="grid grid-cols-2 gap-3 bg-slate-100 p-1.5 rounded-2xl">
+                <div className="grid grid-cols-3 gap-3 bg-slate-100 p-1.5 rounded-2xl">
                   <button
                     type="button"
                     onClick={() => setAccountType('digital')}
-                    className={`flex items-center justify-center gap-2.5 py-3.5 rounded-xl font-black uppercase text-sm tracking-widest transition-all ${accountType === 'digital' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}
+                    className={`flex items-center justify-center gap-2 py-3.5 rounded-xl font-black uppercase text-xs tracking-widest transition-all ${accountType === 'digital' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}
                   >
-                    <Smartphone size={18} /> Digital Account
+                    <Smartphone size={15} /> Digital
                   </button>
                   <button
                     type="button"
                     onClick={() => setAccountType('cash')}
-                    className={`flex items-center justify-center gap-2.5 py-3.5 rounded-xl font-black uppercase text-sm tracking-widest transition-all ${accountType === 'cash' ? 'bg-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}
+                    className={`flex items-center justify-center gap-2 py-3.5 rounded-xl font-black uppercase text-xs tracking-widest transition-all ${accountType === 'cash' ? 'bg-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}
                   >
-                    <Banknote size={18} /> Cash Account
+                    <Banknote size={15} /> Cash
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAccountType('10kcash')}
+                    className={`flex items-center justify-center gap-2 py-3.5 rounded-xl font-black uppercase text-xs tracking-widest transition-all ${accountType === '10kcash' ? 'bg-amber-500 text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}
+                  >
+                    <Banknote size={15} /> 10K Cash
                   </button>
                 </div>
               </div>
@@ -365,6 +395,10 @@ const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
                     {acc.accountType === 'cash' ? (
                       <span className="flex items-center gap-1 px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded-lg text-[8px] font-black uppercase tracking-widest border border-emerald-200">
                         <Banknote size={9} /> Cash
+                      </span>
+                    ) : acc.accountType === '10kcash' ? (
+                      <span className="flex items-center gap-1 px-2 py-0.5 bg-amber-50 text-amber-700 rounded-lg text-[8px] font-black uppercase tracking-widest border border-amber-200">
+                        <Banknote size={9} /> 10K Cash
                       </span>
                     ) : (
                       <span className="flex items-center gap-1 px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded-lg text-[8px] font-black uppercase tracking-widest border border-indigo-200">
@@ -444,15 +478,28 @@ const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
                       {ledgerEntries.map(entry => (
                         <div key={entry.id} className="flex items-center justify-between gap-3 px-3 py-2.5 bg-slate-50 rounded-xl border border-slate-100">
                           <div className="flex items-center gap-2.5 min-w-0">
-                            <div className={`p-1.5 rounded-lg ${entry.channel === 'cash' ? 'bg-emerald-100 text-emerald-600' : 'bg-indigo-100 text-indigo-600'}`}>
-                              {entry.channel === 'cash' ? <ArrowDownToLine size={12} /> : <ArrowUpFromLine size={12} />}
+                            <div className={`p-1.5 rounded-lg shrink-0 ${entry.type === 'credit' ? 'bg-emerald-100 text-emerald-600' : 'bg-rose-100 text-rose-500'}`}>
+                              {entry.type === 'credit' ? <ArrowDownToLine size={12} /> : <ArrowUpFromLine size={12} />}
                             </div>
                             <div className="min-w-0">
-                              <p className="text-[11px] font-black text-slate-700 truncate">{entry.description}</p>
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <p className="text-[11px] font-black text-slate-700 truncate">{entry.description}</p>
+                                {entry.channel && entry.channel !== 'digital' && (
+                                  <span className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-widest shrink-0 ${
+                                    entry.channel === 'card' ? 'bg-indigo-50 text-indigo-600 border border-indigo-200' :
+                                    entry.channel === 'upi' ? 'bg-violet-50 text-violet-600 border border-violet-200' :
+                                    'bg-emerald-50 text-emerald-600 border border-emerald-200'
+                                  }`}>
+                                    {entry.channel.toUpperCase()}
+                                  </span>
+                                )}
+                              </div>
                               <p className="text-[10px] text-slate-400 font-medium">{entry.date}</p>
                             </div>
                           </div>
-                          <span className="text-sm font-black text-emerald-600 shrink-0">+₹{entry.amount.toLocaleString('en-IN')}</span>
+                          <span className={`text-sm font-black shrink-0 ${entry.type === 'credit' ? 'text-emerald-600' : 'text-rose-500'}`}>
+                            {entry.type === 'credit' ? '+' : '-'}₹{entry.amount.toLocaleString('en-IN')}
+                          </span>
                         </div>
                       ))}
                     </div>

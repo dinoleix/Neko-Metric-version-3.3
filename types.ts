@@ -27,6 +27,20 @@ export interface DailyCounterEntry {
   status: EntryStatus;
   receiptUrl?: string;
   billNumber?: string;
+  vendorId?: string;
+  vendorName?: string;
+  createdAt: number;
+}
+
+export interface Vendor {
+  id?: string;
+  userId: string;
+  ownerId: string;
+  name: string;
+  address?: string;
+  phone?: string;
+  gst?: string;
+  email?: string;
   createdAt: number;
 }
 
@@ -535,7 +549,7 @@ export interface BankAccount {
   accountNumber?: string;
   bankName?: string;
   outletId?: string;
-  accountType?: 'cash' | 'digital';
+  accountType?: 'cash' | 'digital' | '10kcash';
   isPrimary?: boolean;
   userId: string;
   updatedAt: number;
@@ -549,7 +563,7 @@ export interface SalesLedgerEntry {
   userId: string;   // submitter's UID (satisfies security rules)
   ownerId: string;  // admin's UID (used for admin reads)
   amount: number;
-  channel: 'cash' | 'digital';
+  channel: 'cash' | 'card' | 'upi' | 'digital';
   sourceId: string;
   description: string;
   date: string;

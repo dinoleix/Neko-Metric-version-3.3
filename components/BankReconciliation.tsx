@@ -87,6 +87,7 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
   const [isBulkUpdating, setIsBulkUpdating] = useState(false);
   const [pushingId, setPushingId] = useState<string | null>(null);
   const [dailySalesLogs, setDailySalesLogs] = useState<DailySalesLog[]>([]);
+  const [activeView, setActiveView] = useState<'mapping' | 'delta'>('mapping');
 
   const availableCategories = useMemo(() => {
     const fromTransactions = bankTransactions
@@ -698,8 +699,24 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
         </div>
       </header>
 
+      {/* Tab Switcher */}
+      <div className="flex items-center gap-2 bg-slate-200/40 p-1.5 rounded-[2rem] w-fit border border-slate-100 shadow-inner">
+        <button
+          onClick={() => setActiveView('mapping')}
+          className={`px-6 py-2.5 rounded-[1.5rem] text-[10px] font-black uppercase tracking-widest transition-all ${activeView === 'mapping' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-600'}`}
+        >
+          Transaction Mapping
+        </button>
+        <button
+          onClick={() => setActiveView('delta')}
+          className={`px-6 py-2.5 rounded-[1.5rem] text-[10px] font-black uppercase tracking-widest transition-all ${activeView === 'delta' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-600'}`}
+        >
+          Sales Reconciliation Delta
+        </button>
+      </div>
+
       {/* ── SALES DELTA PANEL ─────────────────────────────────── */}
-      <div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-sm overflow-hidden">
+      {activeView === 'delta' && <div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-sm overflow-hidden">
         <div className="px-8 py-5 bg-slate-50 border-b border-slate-100 flex items-center gap-3">
           <div className="p-2 bg-indigo-100 text-indigo-600 rounded-xl"><Scale size={18} /></div>
           <div>
@@ -780,8 +797,9 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
             </table>
           </div>
         )}
-      </div>
+      </div>}
 
+      {activeView === 'mapping' && <>
       {/* Action Bar */}
       <div className="flex flex-wrap items-center justify-between gap-6 bg-indigo-50/50 p-6 rounded-[2.5rem] border border-indigo-100">
         <div className="flex items-center gap-6">
@@ -1076,6 +1094,7 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
           </motion.div>
         )}
       </AnimatePresence>
+      </>}
 
       {/* Manual Category Modal */}
       <AnimatePresence>
