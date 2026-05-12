@@ -280,6 +280,25 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
     let str = val.toString().trim();
     if (!str) return 0;
     const isNegative = (str.startsWith('(') && str.endsWith(')')) || str.startsWith('-') || str.endsWith('-');
+    const hasComma = str.includes(',');
+    const hasPeriod = str.includes('.');
+    if (hasComma && !hasPeriod) {
+      // "6557,88" → decimal separator (1–2 digits after comma)
+      // "1,234"   → thousands separator (3 digits after comma)
+      if (/,\d{1,2}$/.test(str) && !/,\d{3}/.test(str)) {
+        str = str.replace(',', '.');
+      } else {
+        str = str.replace(/,/g, '');
+      }
+    } else if (hasComma && hasPeriod) {
+      if (str.lastIndexOf(',') > str.lastIndexOf('.')) {
+        // European: 1.234,56 → period=thousands, comma=decimal
+        str = str.replace(/\./g, '').replace(',', '.');
+      } else {
+        // Standard: 1,234.56 → comma=thousands
+        str = str.replace(/,/g, '');
+      }
+    }
     let cleaned = str.replace(/[^\d.]/g, '');
     let num = parseFloat(cleaned);
     if (isNaN(num)) return 0;
@@ -291,30 +310,32 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
     const clean = val.toString().trim();
     if (!clean) return "";
 
-    // Try parsing common formats
-    let d = new Date(clean);
-    
-    // If invalid, try manual split for common DD/MM/YYYY or DD-MM-YYYY
-    if (isNaN(d.getTime())) {
-      const parts = clean.split(/[/-]/);
-      if (parts.length === 3) {
-        // Assume DD MM YYYY
-        if (parts[2].length === 4) {
-          d = new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
-        } else if (parts[0].length === 4) {
-          // Assume YYYY MM DD
-          d = new Date(`${parts[0]}-${parts[1]}-${parts[2]}`);
-        }
+    // Strip time portion if present (e.g. "01-05-2026 10:30:00" → "01-05-2026")
+    const datePart = clean.split(' ')[0];
+    const parts = datePart.split(/[\/\-]/);
+
+    let d: Date;
+    if (parts.length === 3) {
+      const [a, b, c] = parts;
+      const cYear = c.split(':')[0]; // guard against residual time in c
+      if (a.length === 4) {
+        // YYYY-MM-DD
+        d = new Date(`${a}-${b.padStart(2,'0')}-${cYear.padStart(2,'0')}`);
+      } else if (cYear.length === 4) {
+        // DD-MM-YYYY — Indian / Axis Bank standard; treat all ambiguous cases as DD-MM
+        d = new Date(`${cYear}-${b.padStart(2,'0')}-${a.padStart(2,'0')}`);
+      } else if (cYear.length === 2) {
+        // DD-MM-YY
+        const fullYear = parseInt(cYear) >= 50 ? `19${cYear}` : `20${cYear}`;
+        d = new Date(`${fullYear}-${b.padStart(2,'0')}-${a.padStart(2,'0')}`);
+      } else {
+        d = new Date(clean);
       }
+    } else {
+      d = new Date(clean);
     }
 
-    if (isNaN(d.getTime())) return clean; // Fallback to raw if still invalid
-
-    const hasTime = d.getHours() !== 0 || d.getMinutes() !== 0;
-    if (hasTime) {
-      // Return ISO string if it has time components
-      return d.toISOString();
-    }
+    if (isNaN(d.getTime())) return clean;
     return d.toISOString().split('T')[0];
   };
 
@@ -531,7 +552,7 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
         'purchase': 'purchases',
         'online_order': 'online_order_details',
         'customer_mapping': 'customer_name_mappings',
-        'bank_statement': 'bank_transactions'
+        'bank_statement': 'bank_statement_imports'
       };
       const targetColl = collectionNameMap[fileType];
 
@@ -735,7 +756,8 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
           const dateStr = (row[mapping['orderDate']] || '').toString().trim();
           const statusRaw = (row[mapping['orderStatus']] || '').toString().trim();
           const customerId = (row[mapping['customerId']] || '').toString().trim();
-          const parsedDate = new Date(dateStr);
+          const normalizedDateStr = normalizeDate(dateStr);
+          const parsedDate = new Date(normalizedDateStr);
           if (!dateStr || isNaN(parsedDate.getTime()) || /total|summary/i.test(orderId)) return;
 
           const itemTotal = cleanNumber(row[mapping['itemTotal']]);

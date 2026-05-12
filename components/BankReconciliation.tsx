@@ -105,7 +105,7 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
     try {
       // 1. Fetch Transactions
       const bankQ = query(
-        collection(db, 'bank_transactions'),
+        collection(db, 'bank_statement_imports'),
         where('userId', '==', dataOwnerId)
       );
       const bSnap = await getDocs(bankQ);
@@ -151,6 +151,10 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
   useEffect(() => {
     fetchReconciliationData();
   }, [user]);
+
+  useEffect(() => {
+    setMarkedCreditIds(new Set());
+  }, [selectedMonth, selectedYear]);
 
   // Derived suggestions from history
   useEffect(() => {
@@ -201,35 +205,53 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
       .sort((a, b) => b.date.localeCompare(a.date));
   }, [bankTransactions, selectedMonth, selectedYear, searchTerm, filterMode, selectedBankId, selectedType]);
 
-  const salesDelta = useMemo(() => {
+  const [markedCreditIds, setMarkedCreditIds] = useState<Set<string>>(new Set());
+
+  const deltaCredits = useMemo(() => {
     const monthIdx = (MONTH_NAMES.indexOf(selectedMonth) + 1).toString().padStart(2, '0');
     const datePrefix = `${selectedYear}-${monthIdx}`;
-
-    // CSV credits per day
-    const csvByDate: Record<string, number> = {};
-    bankTransactions
+    return bankTransactions
       .filter(t => t.date.startsWith(datePrefix) && t.type === 'credit')
-      .forEach(t => { csvByDate[t.date] = (csvByDate[t.date] || 0) + t.amount; });
+      .sort((a, b) => b.date.localeCompare(a.date));
+  }, [bankTransactions, selectedMonth, selectedYear]);
 
-    // Manual sales per day
-    const manualByDate: Record<string, number> = {};
+  const deltaManualByDate = useMemo(() => {
+    const monthIdx = (MONTH_NAMES.indexOf(selectedMonth) + 1).toString().padStart(2, '0');
+    const datePrefix = `${selectedYear}-${monthIdx}`;
+    const map: Record<string, number> = {};
     dailySalesLogs
       .filter(l => l.date.startsWith(datePrefix))
-      .forEach(l => { manualByDate[l.date] = (manualByDate[l.date] || 0) + l.totalNet; });
+      .forEach(l => { map[l.date] = (map[l.date] || 0) + (l.card || 0) + (l.upi || 0); });
+    return map;
+  }, [dailySalesLogs, selectedMonth, selectedYear]);
 
-    const allDates = Array.from(new Set([...Object.keys(csvByDate), ...Object.keys(manualByDate)])).sort().reverse();
-    return allDates.map(date => ({
-      date,
-      csv: csvByDate[date] || 0,
-      manual: manualByDate[date] || 0,
-      delta: (csvByDate[date] || 0) - (manualByDate[date] || 0),
-    }));
-  }, [bankTransactions, dailySalesLogs, selectedMonth, selectedYear]);
+  const deltaDates = useMemo(() => {
+    const creditDates = deltaCredits.map(t => t.date);
+    const manualDates = Object.keys(deltaManualByDate);
+    return Array.from(new Set([...creditDates, ...manualDates])).sort().reverse();
+  }, [deltaCredits, deltaManualByDate]);
+
+  const toggleMark = (id: string) => {
+    setMarkedCreditIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const toggleAllForDate = (date: string, ids: string[]) => {
+    const allMarked = ids.every(id => markedCreditIds.has(id));
+    setMarkedCreditIds(prev => {
+      const next = new Set(prev);
+      ids.forEach(id => allMarked ? next.delete(id) : next.add(id));
+      return next;
+    });
+  };
 
   const handleDeleteTransaction = async (id: string) => {
     if (!confirm("Delete this bank transaction?")) return;
     try {
-      await deleteDoc(doc(db, 'bank_transactions', id));
+      await deleteDoc(doc(db, 'bank_statement_imports', id));
       setBankTransactions(prev => prev.filter(t => t.id !== id));
     } catch (err) {
       console.error(err);
@@ -269,7 +291,7 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
       // Firestore batch limit is 500
       for (const id of idsArray) {
         if (typeof id !== 'string') continue;
-        batch.update(doc(db, 'bank_transactions', id), {
+        batch.update(doc(db, 'bank_statement_imports', id), {
           category: normalizedCategory,
           isVerified: false, // Keep as unverified for user review or set to true if preferred
           isReconciled: true
@@ -317,7 +339,7 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
       const batch = writeBatch(db);
       
       // 1. Update the bank transaction
-      const btRef = doc(db, 'bank_transactions', btId);
+      const btRef = doc(db, 'bank_statement_imports', btId);
       batch.update(btRef, {
         category: normalizedCategory,
         isVerified,
@@ -380,7 +402,7 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
 
       const purchaseRef = await addDoc(collection(db, 'purchases'), purchase);
 
-      await updateDoc(doc(db, 'bank_transactions', bt.id), {
+      await updateDoc(doc(db, 'bank_statement_imports', bt.id), {
         matchedPurchaseId: purchaseRef.id,
         pushedToPurchases: true,
         isVerified: true,
@@ -416,7 +438,7 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
       
       const suggested = suggestCategory(bt.description);
       if (suggested && suggested !== bt.category) {
-        batch.update(doc(db, 'bank_transactions', bt.id!), {
+        batch.update(doc(db, 'bank_statement_imports', bt.id!), {
           category: suggested,
           isVerified: false, // Keep as unverified so user can review/confirm
           isReconciled: true
@@ -716,88 +738,163 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
       </div>
 
       {/* ── SALES DELTA PANEL ─────────────────────────────────── */}
-      {activeView === 'delta' && <div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-sm overflow-hidden">
-        <div className="px-8 py-5 bg-slate-50 border-b border-slate-100 flex items-center gap-3">
-          <div className="p-2 bg-indigo-100 text-indigo-600 rounded-xl"><Scale size={18} /></div>
-          <div>
-            <h3 className="font-black text-slate-800 uppercase tracking-tight text-sm">Sales Reconciliation Delta</h3>
-            <p className="text-[10px] text-slate-400 font-medium uppercase tracking-widest mt-0.5">CSV bank credits vs manual crew entries · {selectedMonth} {selectedYear}</p>
-          </div>
-        </div>
+      {activeView === 'delta' && (() => {
+        const markedTotal = deltaCredits.filter(t => markedCreditIds.has(t.id!)).reduce((s, t) => s + t.amount, 0);
+        const crewTotal = Object.values(deltaManualByDate).reduce((s, v) => s + v, 0);
+        const netDelta = markedTotal - crewTotal;
+        return (
+          <div className="space-y-6">
+            {/* Summary strip */}
+            <div className="grid grid-cols-3 gap-4">
+              {[
+                { label: 'Marked Credits', value: markedTotal, color: 'indigo' },
+                { label: 'Crew Digital (Card + UPI)', value: crewTotal, color: 'slate' },
+                { label: 'Net Delta', value: netDelta, color: Math.abs(netDelta) < 1 ? 'emerald' : netDelta > 0 ? 'amber' : 'rose' },
+              ].map(({ label, value, color }) => (
+                <div key={label} className={`bg-white border border-slate-100 rounded-[2rem] px-7 py-5 shadow-sm`}>
+                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">{label}</p>
+                  <p className={`text-2xl font-black tracking-tighter text-${color}-600`}>
+                    {value >= 0 ? '' : '-'}₹{Math.abs(value).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                  </p>
+                </div>
+              ))}
+            </div>
 
-        {salesDelta.length === 0 ? (
-          <div className="py-12 text-center">
-            <p className="text-xs font-bold text-slate-300 uppercase tracking-widest">No data for this period</p>
+            {/* Per-date groups */}
+            <div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-sm overflow-hidden">
+              <div className="px-8 py-5 bg-slate-50 border-b border-slate-100 flex items-center gap-3">
+                <div className="p-2 bg-indigo-100 text-indigo-600 rounded-xl"><Scale size={18} /></div>
+                <div>
+                  <h3 className="font-black text-slate-800 uppercase tracking-tight text-sm">Sales Reconciliation Delta</h3>
+                  <p className="text-[10px] text-slate-400 font-medium uppercase tracking-widest mt-0.5">Tick the bank credits that represent actual sales settlements · {selectedMonth} {selectedYear}</p>
+                </div>
+              </div>
+
+              {deltaDates.length === 0 ? (
+                <div className="py-12 text-center">
+                  <p className="text-xs font-bold text-slate-300 uppercase tracking-widest">No data for this period</p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-slate-100">
+                        <th className="px-6 py-4 w-10"></th>
+                        <th className="text-left px-4 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Date</th>
+                        <th className="text-left px-4 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Narration</th>
+                        <th className="text-right px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Amount</th>
+                        <th className="text-right px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Crew Digital</th>
+                        <th className="text-right px-8 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Delta</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {deltaDates.map(date => {
+                        const dayCredits = deltaCredits.filter(t => t.date === date);
+                        const crewDigital = deltaManualByDate[date] || 0;
+                        const dayMarkedTotal = dayCredits.filter(t => markedCreditIds.has(t.id!)).reduce((s, t) => s + t.amount, 0);
+                        const dayDelta = dayMarkedTotal - crewDigital;
+                        const allMarked = dayCredits.length > 0 && dayCredits.every(t => markedCreditIds.has(t.id!));
+                        const someMarked = dayCredits.some(t => markedCreditIds.has(t.id!));
+                        const dateLabel = new Date(date + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' });
+
+                        return (
+                          <>
+                            {/* Date group header */}
+                            <tr key={`hdr-${date}`} className="bg-slate-50 border-t border-slate-100">
+                              <td className="px-6 py-3">
+                                {dayCredits.length > 0 && (
+                                  <div
+                                    onClick={() => toggleAllForDate(date, dayCredits.map(t => t.id!))}
+                                    className={`w-5 h-5 rounded-md border-2 flex items-center justify-center cursor-pointer transition-all ${allMarked ? 'bg-indigo-600 border-indigo-600' : someMarked ? 'bg-indigo-200 border-indigo-400' : 'bg-white border-slate-300 hover:border-indigo-400'}`}
+                                  >
+                                    {allMarked && <Check size={12} className="text-white" />}
+                                    {someMarked && !allMarked && <Minus size={10} className="text-indigo-600" />}
+                                  </div>
+                                )}
+                              </td>
+                              <td colSpan={2} className="px-4 py-3">
+                                <span className="text-xs font-black text-slate-600 uppercase tracking-widest">{dateLabel}</span>
+                                {dayCredits.length === 0 && <span className="ml-3 text-[10px] text-slate-300 font-bold uppercase">No bank credits</span>}
+                              </td>
+                              <td className="px-6 py-3 text-right">
+                                {dayMarkedTotal > 0 && (
+                                  <span className="text-xs font-black text-indigo-600">₹{dayMarkedTotal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                                )}
+                              </td>
+                              <td className="px-6 py-3 text-right">
+                                {crewDigital > 0
+                                  ? <span className="text-xs font-black text-slate-700">₹{crewDigital.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                                  : <span className="text-slate-300 text-xs font-bold">—</span>}
+                              </td>
+                              <td className="px-8 py-3 text-right">
+                                {(dayMarkedTotal > 0 || crewDigital > 0) && (
+                                  <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-black ${Math.abs(dayDelta) < 1 ? 'bg-emerald-50 text-emerald-600' : dayDelta > 0 ? 'bg-amber-50 text-amber-600' : 'bg-rose-50 text-rose-600'}`}>
+                                    {Math.abs(dayDelta) < 1 ? <><Minus size={10} /> Balanced</> : dayDelta > 0 ? <><TrendingUp size={10} /> +₹{Math.abs(dayDelta).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</> : <><TrendingDown size={10} /> -₹{Math.abs(dayDelta).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</>}
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+
+                            {/* Individual credit rows */}
+                            {dayCredits.map(t => {
+                              const marked = markedCreditIds.has(t.id!);
+                              return (
+                                <tr
+                                  key={t.id}
+                                  onClick={() => toggleMark(t.id!)}
+                                  className={`border-b border-slate-50 cursor-pointer transition-colors ${marked ? 'bg-indigo-50/60 hover:bg-indigo-50' : 'hover:bg-slate-50'}`}
+                                >
+                                  <td className="px-6 py-4">
+                                    <div className={`w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all ${marked ? 'bg-indigo-600 border-indigo-600' : 'bg-white border-slate-200'}`}>
+                                      {marked && <Check size={12} className="text-white" />}
+                                    </div>
+                                  </td>
+                                  <td className="px-4 py-4 text-xs text-slate-400 font-bold whitespace-nowrap"></td>
+                                  <td className="px-4 py-4 max-w-[320px]">
+                                    <p className="text-xs font-bold text-slate-700 uppercase leading-snug break-words line-clamp-2">{t.description}</p>
+                                    {t.referenceNo && !t.referenceNo.startsWith('AUTO-') && (
+                                      <span className="text-[9px] font-black text-slate-400 uppercase tracking-tighter">UTR: {t.referenceNo}</span>
+                                    )}
+                                  </td>
+                                  <td className="px-6 py-4 text-right">
+                                    <span className={`text-sm font-black ${marked ? 'text-indigo-600' : 'text-emerald-600'}`}>
+                                      ₹{t.amount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                                    </span>
+                                  </td>
+                                  <td className="px-6 py-4"></td>
+                                  <td className="px-8 py-4"></td>
+                                </tr>
+                              );
+                            })}
+                          </>
+                        );
+                      })}
+                    </tbody>
+                    <tfoot>
+                      <tr className="bg-slate-50 border-t-2 border-slate-200">
+                        <td colSpan={3} className="px-8 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">
+                          Period Total · {markedCreditIds.size} transaction{markedCreditIds.size !== 1 ? 's' : ''} marked
+                        </td>
+                        <td className="px-6 py-4 text-right font-black text-indigo-700">
+                          ₹{markedTotal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                        </td>
+                        <td className="px-6 py-4 text-right font-black text-slate-800">
+                          ₹{crewTotal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                        </td>
+                        <td className="px-8 py-4 text-right">
+                          <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-black ${Math.abs(netDelta) < 1 ? 'bg-emerald-50 text-emerald-600' : netDelta > 0 ? 'bg-amber-50 text-amber-600' : 'bg-rose-50 text-rose-600'}`}>
+                            {Math.abs(netDelta) < 1 ? <><Minus size={11} /> Balanced</> : netDelta > 0 ? <><TrendingUp size={11} /> +₹{Math.abs(netDelta).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</> : <><TrendingDown size={11} /> -₹{Math.abs(netDelta).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</>}
+                          </span>
+                        </td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              )}
+            </div>
           </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-slate-100">
-                  <th className="text-left px-8 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Date</th>
-                  <th className="text-right px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">CSV Credits</th>
-                  <th className="text-right px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Manual Entry</th>
-                  <th className="text-right px-8 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Delta</th>
-                </tr>
-              </thead>
-              <tbody>
-                {salesDelta.map(row => (
-                  <tr key={row.date} className="border-b border-slate-50 hover:bg-slate-50 transition-colors">
-                    <td className="px-8 py-4 font-black text-slate-700 text-sm">
-                      {new Date(row.date).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}
-                    </td>
-                    <td className="px-6 py-4 text-right font-bold text-slate-600">
-                      {row.csv > 0 ? `₹${row.csv.toLocaleString('en-IN', { minimumFractionDigits: 2 })}` : <span className="text-slate-300">—</span>}
-                    </td>
-                    <td className="px-6 py-4 text-right font-bold text-slate-600">
-                      {row.manual > 0 ? `₹${row.manual.toLocaleString('en-IN', { minimumFractionDigits: 2 })}` : <span className="text-slate-300">—</span>}
-                    </td>
-                    <td className="px-8 py-4 text-right">
-                      <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-black ${
-                        Math.abs(row.delta) < 1
-                          ? 'bg-emerald-50 text-emerald-600'
-                          : row.delta > 0
-                            ? 'bg-amber-50 text-amber-600'
-                            : 'bg-rose-50 text-rose-600'
-                      }`}>
-                        {Math.abs(row.delta) < 1
-                          ? <><Minus size={11} /> Balanced</>
-                          : row.delta > 0
-                            ? <><TrendingUp size={11} /> +₹{Math.abs(row.delta).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</>
-                            : <><TrendingDown size={11} /> -₹{Math.abs(row.delta).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</>
-                        }
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-              <tfoot>
-                <tr className="bg-slate-50 border-t-2 border-slate-200">
-                  <td className="px-8 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">Total</td>
-                  <td className="px-6 py-4 text-right font-black text-slate-800">
-                    ₹{salesDelta.reduce((s, r) => s + r.csv, 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                  </td>
-                  <td className="px-6 py-4 text-right font-black text-slate-800">
-                    ₹{salesDelta.reduce((s, r) => s + r.manual, 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                  </td>
-                  <td className="px-8 py-4 text-right">
-                    {(() => {
-                      const totalDelta = salesDelta.reduce((s, r) => s + r.delta, 0);
-                      return (
-                        <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-black ${
-                          Math.abs(totalDelta) < 1 ? 'bg-emerald-50 text-emerald-600' : totalDelta > 0 ? 'bg-amber-50 text-amber-600' : 'bg-rose-50 text-rose-600'
-                        }`}>
-                          {Math.abs(totalDelta) < 1 ? <><Minus size={11} /> Balanced</> : totalDelta > 0 ? <><TrendingUp size={11} /> +₹{Math.abs(totalDelta).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</> : <><TrendingDown size={11} /> -₹{Math.abs(totalDelta).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</>}
-                        </span>
-                      );
-                    })()}
-                  </td>
-                </tr>
-              </tfoot>
-            </table>
-          </div>
-        )}
-      </div>}
+        );
+      })()}
 
       {activeView === 'mapping' && <>
       {/* Action Bar */}
@@ -967,8 +1064,8 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
                              <span className="text-[9px] font-bold text-slate-400 uppercase">{new Date(bt.date).getFullYear()}</span>
                            </div>
                         </td>
-                        <td className="px-8 py-6">
-                           <p className="text-xs font-bold text-slate-700 uppercase leading-snug max-w-[350px]">{bt.description}</p>
+                        <td className="px-8 py-6 max-w-[280px] w-[280px]">
+                           <p className="text-xs font-bold text-slate-700 uppercase leading-snug break-words line-clamp-3" title={bt.description}>{bt.description}</p>
                            {bt.referenceNo && !bt.referenceNo.startsWith('AUTO-') && (
                              <span className="text-[9px] font-black text-slate-400 uppercase tracking-tighter">UTR: {bt.referenceNo}</span>
                            )}

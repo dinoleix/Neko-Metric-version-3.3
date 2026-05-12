@@ -67,7 +67,7 @@ const FILE_RECORD_COLLECTIONS: Partial<Record<FileType, string>> = {
   purchase: 'purchases',
   online_order: 'online_order_details',
   customer_mapping: 'customer_name_mappings',
-  bank_statement: 'bank_transactions'
+  bank_statement: 'bank_statement_imports'
 };
 
 const Dashboard: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {

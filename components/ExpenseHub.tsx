@@ -116,7 +116,7 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
         getDocs(query(collection(db, 'employees'), where('userId', '==', dataOwnerId))),
         getDocs(query(collection(db, 'monthly_payrolls'), where('userId', '==', dataOwnerId))),
         getDocs(query(collection(db, 'cogs_adjustments'), where('userId', '==', dataOwnerId))),
-        getDocs(query(collection(db, 'bank_transactions'), where('userId', '==', dataOwnerId), where('isVerified', '==', true))),
+        getDocs(query(collection(db, 'bank_statement_imports'), where('userId', '==', dataOwnerId), where('isVerified', '==', true))),
         getDoc(settingsRef)
       ]);
       

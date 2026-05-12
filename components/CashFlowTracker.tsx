@@ -74,7 +74,7 @@ const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
 
       // 3. Fetch bank transactions for this period
       const bankQuery = query(
-        collection(db, 'bank_transactions'),
+        collection(db, 'bank_statement_imports'),
         where('userId', '==', dataOwnerId),
         where('category', 'in', ['LOAN_EMI', 'INTEREST_ONLY', 'CAPEX_REPAYMENT'])
       );

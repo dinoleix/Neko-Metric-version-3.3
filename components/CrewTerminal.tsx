@@ -318,6 +318,15 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     e.preventDefault();
     if (!amount || !category) return;
 
+    // Prevent cash expense if it would overdraw the cash account
+    if (entryType === 'expense' && status === 'paid' && primaryCashAccount) {
+      const parsedAmt = parseFloat(amount) || 0;
+      const oldImpact = (activeMode === 'edit' && editingId)
+        ? (entries.find((en: DailyCounterEntry) => en.id === editingId)?.status === 'paid' ? entries.find((en: DailyCounterEntry) => en.id === editingId)?.amount || 0 : 0)
+        : 0;
+      if (parsedAmt - oldImpact > primaryCashAccount.balance) return;
+    }
+
     setSaving(true);
     try {
       let finalReceiptUrl = existingReceiptUrl;
@@ -720,6 +729,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     e.preventDefault();
     const amt = parseFloat(transferAmount);
     if (!amt || amt <= 0 || !primaryCashAccount || !tenKAccount) return;
+    if (amt > primaryCashAccount.balance) return;
 
     setTransferring(true);
     try {
@@ -1227,7 +1237,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
                         autoFocus
                       />
                     </div>
-                    {parseFloat(transferAmount) > 0 && primaryCashAccount.balance > 0 && parseFloat(transferAmount) > primaryCashAccount.balance && (
+                    {parseFloat(transferAmount) > 0 && parseFloat(transferAmount) > primaryCashAccount.balance && (
                       <p className="text-[10px] font-black text-rose-500 uppercase tracking-widest ml-1 flex items-center gap-1.5">
                         <AlertTriangle size={12} /> Amount exceeds counter balance
                       </p>
@@ -1236,7 +1246,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
 
                   <button
                     type="submit"
-                    disabled={transferring || transferSuccess || !parseFloat(transferAmount) || parseFloat(transferAmount) <= 0}
+                    disabled={transferring || transferSuccess || !parseFloat(transferAmount) || parseFloat(transferAmount) <= 0 || (!!primaryCashAccount && parseFloat(transferAmount) > primaryCashAccount.balance)}
                     className={`w-full py-7 rounded-[2rem] font-black uppercase text-xl tracking-wider shadow-xl transition-all active:scale-[0.98] flex items-center justify-center gap-4 text-white disabled:opacity-40 ${transferSuccess ? 'bg-emerald-500' : 'bg-amber-500'}`}
                   >
                     {transferring ? <Loader2 size={30} className="animate-spin" />
@@ -1346,6 +1356,12 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
                 </div>
               </div>
 
+              {entryType === 'expense' && status === 'paid' && parseFloat(amount) > 0 && primaryCashAccount && parseFloat(amount) - (activeMode === 'edit' && editingId ? (entries.find((en: DailyCounterEntry) => en.id === editingId)?.status === 'paid' ? entries.find((en: DailyCounterEntry) => en.id === editingId)?.amount || 0 : 0) : 0) > primaryCashAccount.balance && (
+                <p className="text-[10px] font-black text-rose-500 uppercase tracking-widest flex items-center gap-1.5 -mt-1">
+                  <AlertTriangle size={12} /> Amount exceeds cash balance (₹{primaryCashAccount.balance.toLocaleString('en-IN')})
+                </p>
+              )}
+
               {/* Status */}
               <div className="space-y-2">
                 <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Payment Status</label>
@@ -1417,7 +1433,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
               </div>
 
               <button
-                disabled={saving || success}
+                disabled={saving || success || (entryType === 'expense' && status === 'paid' && !!primaryCashAccount && parseFloat(amount) - (activeMode === 'edit' && editingId ? (entries.find((en: DailyCounterEntry) => en.id === editingId)?.status === 'paid' ? entries.find((en: DailyCounterEntry) => en.id === editingId)?.amount || 0 : 0) : 0) > primaryCashAccount.balance)}
                 className={`w-full py-7 rounded-[2rem] font-black uppercase text-xl tracking-wider shadow-xl transition-all active:scale-[0.98] flex items-center justify-center gap-4 text-white ${
                   success ? 'bg-emerald-500' : entryType === 'purchase' ? 'bg-indigo-600' : 'bg-rose-500'
                 }`}
