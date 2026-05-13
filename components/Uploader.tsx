@@ -310,32 +310,65 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
     const clean = val.toString().trim();
     if (!clean) return "";
 
-    // Strip time portion if present (e.g. "01-05-2026 10:30:00" → "01-05-2026")
-    const datePart = clean.split(' ')[0];
-    const parts = datePart.split(/[\/\-]/);
+    const MONTH_MAP: Record<string, string> = {
+      jan:'01',feb:'02',mar:'03',apr:'04',may:'05',jun:'06',
+      jul:'07',aug:'08',sep:'09',oct:'10',nov:'11',dec:'12',
+    };
 
-    let d: Date;
+    // Build a UTC-safe YYYY-MM-DD string from parts, never relying on local time.
+    const toISO = (yyyy: string, mm: string, dd: string): Date =>
+      new Date(`${yyyy}-${mm.padStart(2,'0')}-${dd.padStart(2,'0')}`);
+
+    // Resolve a token that might be a month name ("May", "MAY", "5") to "MM"
+    const resolveMonth = (token: string): string | null => {
+      const n = parseInt(token);
+      if (!isNaN(n)) return String(n).padStart(2, '0');
+      return MONTH_MAP[token.toLowerCase().slice(0, 3)] || null;
+    };
+
+    // Strip time and timezone suffixes, split on delimiters including spaces
+    const stripped = clean.split(/T|\s+/)[0]; // take date portion before T or whitespace
+    const parts = stripped.split(/[\/\-\.]/);
+
+    let d: Date | null = null;
+
     if (parts.length === 3) {
       const [a, b, c] = parts;
-      const cYear = c.split(':')[0]; // guard against residual time in c
+      const cYear = c.split(':')[0];
+
       if (a.length === 4) {
-        // YYYY-MM-DD
-        d = new Date(`${a}-${b.padStart(2,'0')}-${cYear.padStart(2,'0')}`);
+        // YYYY-MM-DD or YYYY-Mon-DD
+        const mm = resolveMonth(b);
+        if (mm) d = toISO(a, mm, cYear);
       } else if (cYear.length === 4) {
-        // DD-MM-YYYY — Indian / Axis Bank standard; treat all ambiguous cases as DD-MM
-        d = new Date(`${cYear}-${b.padStart(2,'0')}-${a.padStart(2,'0')}`);
+        // DD-MM-YYYY or DD-Mon-YYYY — Indian standard
+        const mm = resolveMonth(b);
+        if (mm) d = toISO(cYear, mm, a);
       } else if (cYear.length === 2) {
         // DD-MM-YY
+        const mm = resolveMonth(b);
         const fullYear = parseInt(cYear) >= 50 ? `19${cYear}` : `20${cYear}`;
-        d = new Date(`${fullYear}-${b.padStart(2,'0')}-${a.padStart(2,'0')}`);
-      } else {
-        d = new Date(clean);
+        if (mm) d = toISO(fullYear, mm, a);
       }
-    } else {
-      d = new Date(clean);
     }
 
-    if (isNaN(d.getTime())) return clean;
+    // Space-separated formats: "07 May 2026", "May 07 2026", "7 May 26"
+    if (!d) {
+      const spaceParts = clean.split(/[\s,]+/).filter(Boolean);
+      if (spaceParts.length >= 3) {
+        const tryParse = (dd: string, mon: string, yyyy: string): Date | null => {
+          const mm = resolveMonth(mon);
+          const year = yyyy.length === 2 ? (parseInt(yyyy) >= 50 ? `19${yyyy}` : `20${yyyy}`) : yyyy;
+          return (mm && year.length === 4) ? toISO(year, mm, dd) : null;
+        };
+        // "07 May 2026" or "07 MAY 2026"
+        d = tryParse(spaceParts[0], spaceParts[1], spaceParts[2]);
+        // "May 07, 2026" or "May 7 2026"
+        if (!d) d = tryParse(spaceParts[1], spaceParts[0], spaceParts[2]);
+      }
+    }
+
+    if (!d || isNaN(d.getTime())) return clean;
     return d.toISOString().split('T')[0];
   };
 
@@ -597,11 +630,11 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
         if (fileType === 'bank_statement') {
           const debit = recordData.debit_amount || 0;
           const credit = recordData.credit_amount || 0;
-          if (credit > 0) {
-            recordData.amount = credit;
+          if (debit > 0) {
+            recordData.amount = debit;
             recordData.type = 'credit';
           } else {
-            recordData.amount = debit;
+            recordData.amount = credit;
             recordData.type = 'debit';
           }
           recordData.isReconciled = false;

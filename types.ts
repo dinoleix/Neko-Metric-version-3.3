@@ -674,6 +674,7 @@ export interface BankTransaction {
   category?: string;
   isVerified?: boolean;
   pushedToPurchases?: boolean; // True when this transaction was used to create a new purchase record
+  comment?: string;
   createdAt: number;
 }
 

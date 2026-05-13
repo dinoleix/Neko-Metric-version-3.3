@@ -8,13 +8,14 @@ import {
   orderBy, 
   getDoc,
   doc, 
-  updateDoc, 
+  updateDoc,
   addDoc,
   writeBatch,
   setDoc,
   deleteDoc,
   increment,
-  limit
+  limit,
+  deleteField
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import {
@@ -26,6 +27,7 @@ import {
   RECONCILIATION_CATEGORIES,
   MONTH_NAMES,
   YEAR_OPTIONS,
+  MASTER_OUTLETS,
   getOutletName
 } from '../types';
 import { 
@@ -56,7 +58,8 @@ import {
   TrendingDown,
   TrendingUp,
   Minus,
-  Scale
+  Scale,
+  MessageSquare
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -88,6 +91,9 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
   const [pushingId, setPushingId] = useState<string | null>(null);
   const [dailySalesLogs, setDailySalesLogs] = useState<DailySalesLog[]>([]);
   const [activeView, setActiveView] = useState<'mapping' | 'delta'>('mapping');
+  const [deltaOutletFilter, setDeltaOutletFilter] = useState<string>('all');
+  const [commentingId, setCommentingId] = useState<string | null>(null);
+  const [commentDraft, setCommentDraft] = useState<string>('');
 
   const availableCategories = useMemo(() => {
     const fromTransactions = bankTransactions
@@ -215,21 +221,31 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
       .sort((a, b) => b.date.localeCompare(a.date));
   }, [bankTransactions, selectedMonth, selectedYear]);
 
-  const deltaManualByDate = useMemo(() => {
+  const deltaCardByDate = useMemo(() => {
     const monthIdx = (MONTH_NAMES.indexOf(selectedMonth) + 1).toString().padStart(2, '0');
     const datePrefix = `${selectedYear}-${monthIdx}`;
     const map: Record<string, number> = {};
     dailySalesLogs
-      .filter(l => l.date.startsWith(datePrefix))
-      .forEach(l => { map[l.date] = (map[l.date] || 0) + (l.card || 0) + (l.upi || 0); });
+      .filter(l => l.date.startsWith(datePrefix) && (deltaOutletFilter === 'all' || l.outletId === deltaOutletFilter))
+      .forEach(l => { map[l.date] = (map[l.date] || 0) + (l.card || 0); });
     return map;
-  }, [dailySalesLogs, selectedMonth, selectedYear]);
+  }, [dailySalesLogs, selectedMonth, selectedYear, deltaOutletFilter]);
+
+  const deltaUpiByDate = useMemo(() => {
+    const monthIdx = (MONTH_NAMES.indexOf(selectedMonth) + 1).toString().padStart(2, '0');
+    const datePrefix = `${selectedYear}-${monthIdx}`;
+    const map: Record<string, number> = {};
+    dailySalesLogs
+      .filter(l => l.date.startsWith(datePrefix) && (deltaOutletFilter === 'all' || l.outletId === deltaOutletFilter))
+      .forEach(l => { map[l.date] = (map[l.date] || 0) + (l.upi || 0); });
+    return map;
+  }, [dailySalesLogs, selectedMonth, selectedYear, deltaOutletFilter]);
 
   const deltaDates = useMemo(() => {
     const creditDates = deltaCredits.map(t => t.date);
-    const manualDates = Object.keys(deltaManualByDate);
-    return Array.from(new Set([...creditDates, ...manualDates])).sort().reverse();
-  }, [deltaCredits, deltaManualByDate]);
+    const crewDates = Array.from(new Set([...Object.keys(deltaCardByDate), ...Object.keys(deltaUpiByDate)]));
+    return Array.from(new Set([...creditDates, ...crewDates])).sort().reverse();
+  }, [deltaCredits, deltaCardByDate, deltaUpiByDate]);
 
   const toggleMark = (id: string) => {
     setMarkedCreditIds(prev => {
@@ -498,6 +514,21 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
     setIsAddingCategory(false);
   };
 
+  const handleSaveComment = async (btId: string, value: string) => {
+    const trimmed = value.trim();
+    try {
+      await updateDoc(doc(db, 'bank_statement_imports', btId), {
+        comment: trimmed || deleteField(),
+      });
+      setBankTransactions((prev: BankTransaction[]) =>
+        prev.map((t: BankTransaction) => t.id === btId ? { ...t, comment: trimmed || undefined } : t)
+      );
+    } catch (err) {
+      console.error('Failed to save comment:', err);
+    }
+    setCommentingId(null);
+  };
+
   const findMatchingPurchases = async (txn: BankTransaction, daysOffset: number) => {
     setIsSearchingDiscovery(true);
     setDiscoveryDateRange(daysOffset);
@@ -739,16 +770,19 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
 
       {/* ── SALES DELTA PANEL ─────────────────────────────────── */}
       {activeView === 'delta' && (() => {
-        const markedTotal = deltaCredits.filter(t => markedCreditIds.has(t.id!)).reduce((s, t) => s + t.amount, 0);
-        const crewTotal = Object.values(deltaManualByDate).reduce((s, v) => s + v, 0);
+        const markedTotal: number = deltaCredits.filter(t => markedCreditIds.has(t.id!)).reduce((s: number, t: BankTransaction) => s + t.amount, 0);
+        const crewCardTotal: number = (Object.values(deltaCardByDate) as number[]).reduce((s: number, v: number) => s + v, 0);
+        const crewUpiTotal: number = (Object.values(deltaUpiByDate) as number[]).reduce((s: number, v: number) => s + v, 0);
+        const crewTotal = crewCardTotal + crewUpiTotal;
         const netDelta = markedTotal - crewTotal;
         return (
           <div className="space-y-6">
             {/* Summary strip */}
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-4 gap-4">
               {[
                 { label: 'Marked Credits', value: markedTotal, color: 'indigo' },
-                { label: 'Crew Digital (Card + UPI)', value: crewTotal, color: 'slate' },
+                { label: 'Crew Card', value: crewCardTotal, color: 'violet' },
+                { label: 'Crew UPI', value: crewUpiTotal, color: 'slate' },
                 { label: 'Net Delta', value: netDelta, color: Math.abs(netDelta) < 1 ? 'emerald' : netDelta > 0 ? 'amber' : 'rose' },
               ].map(({ label, value, color }) => (
                 <div key={label} className={`bg-white border border-slate-100 rounded-[2rem] px-7 py-5 shadow-sm`}>
@@ -762,12 +796,24 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
 
             {/* Per-date groups */}
             <div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-sm overflow-hidden">
-              <div className="px-8 py-5 bg-slate-50 border-b border-slate-100 flex items-center gap-3">
-                <div className="p-2 bg-indigo-100 text-indigo-600 rounded-xl"><Scale size={18} /></div>
-                <div>
-                  <h3 className="font-black text-slate-800 uppercase tracking-tight text-sm">Sales Reconciliation Delta</h3>
-                  <p className="text-[10px] text-slate-400 font-medium uppercase tracking-widest mt-0.5">Tick the bank credits that represent actual sales settlements · {selectedMonth} {selectedYear}</p>
+              <div className="px-8 py-5 bg-slate-50 border-b border-slate-100 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-indigo-100 text-indigo-600 rounded-xl"><Scale size={18} /></div>
+                  <div>
+                    <h3 className="font-black text-slate-800 uppercase tracking-tight text-sm">Sales Reconciliation Delta</h3>
+                    <p className="text-[10px] text-slate-400 font-medium uppercase tracking-widest mt-0.5">Tick the bank credits that represent actual sales settlements · {selectedMonth} {selectedYear}</p>
+                  </div>
                 </div>
+                <select
+                  value={deltaOutletFilter}
+                  onChange={e => setDeltaOutletFilter(e.target.value)}
+                  className="text-[9px] font-black uppercase tracking-widest bg-white border border-slate-200 text-slate-500 rounded-xl px-3 py-2 cursor-pointer transition-colors hover:border-indigo-300"
+                >
+                  <option value="all">All Stores</option>
+                  {MASTER_OUTLETS.map(o => (
+                    <option key={o.id} value={o.id}>{o.name}</option>
+                  ))}
+                </select>
               </div>
 
               {deltaDates.length === 0 ? (
@@ -783,14 +829,17 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
                         <th className="text-left px-4 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Date</th>
                         <th className="text-left px-4 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Narration</th>
                         <th className="text-right px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Amount</th>
-                        <th className="text-right px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Crew Digital</th>
+                        <th className="text-right px-6 py-4 text-[10px] font-black text-violet-400 uppercase tracking-widest">Crew Card</th>
+                        <th className="text-right px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Crew UPI</th>
                         <th className="text-right px-8 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Delta</th>
                       </tr>
                     </thead>
                     <tbody>
                       {deltaDates.map(date => {
                         const dayCredits = deltaCredits.filter(t => t.date === date);
-                        const crewDigital = deltaManualByDate[date] || 0;
+                        const crewCard = deltaCardByDate[date] || 0;
+                        const crewUpi = deltaUpiByDate[date] || 0;
+                        const crewDigital = crewCard + crewUpi;
                         const dayMarkedTotal = dayCredits.filter(t => markedCreditIds.has(t.id!)).reduce((s, t) => s + t.amount, 0);
                         const dayDelta = dayMarkedTotal - crewDigital;
                         const allMarked = dayCredits.length > 0 && dayCredits.every(t => markedCreditIds.has(t.id!));
@@ -822,8 +871,13 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
                                 )}
                               </td>
                               <td className="px-6 py-3 text-right">
-                                {crewDigital > 0
-                                  ? <span className="text-xs font-black text-slate-700">₹{crewDigital.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                                {crewCard > 0
+                                  ? <span className="text-xs font-black text-violet-600">₹{crewCard.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                                  : <span className="text-slate-300 text-xs font-bold">—</span>}
+                              </td>
+                              <td className="px-6 py-3 text-right">
+                                {crewUpi > 0
+                                  ? <span className="text-xs font-black text-slate-700">₹{crewUpi.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
                                   : <span className="text-slate-300 text-xs font-bold">—</span>}
                               </td>
                               <td className="px-8 py-3 text-right">
@@ -862,6 +916,7 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
                                     </span>
                                   </td>
                                   <td className="px-6 py-4"></td>
+                                  <td className="px-6 py-4"></td>
                                   <td className="px-8 py-4"></td>
                                 </tr>
                               );
@@ -878,8 +933,11 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
                         <td className="px-6 py-4 text-right font-black text-indigo-700">
                           ₹{markedTotal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                         </td>
+                        <td className="px-6 py-4 text-right font-black text-violet-700">
+                          ₹{crewCardTotal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                        </td>
                         <td className="px-6 py-4 text-right font-black text-slate-800">
-                          ₹{crewTotal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                          ₹{crewUpiTotal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                         </td>
                         <td className="px-8 py-4 text-right">
                           <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-black ${Math.abs(netDelta) < 1 ? 'bg-emerald-50 text-emerald-600' : netDelta > 0 ? 'bg-amber-50 text-amber-600' : 'bg-rose-50 text-rose-600'}`}>
@@ -1069,6 +1127,32 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
                            {bt.referenceNo && !bt.referenceNo.startsWith('AUTO-') && (
                              <span className="text-[9px] font-black text-slate-400 uppercase tracking-tighter">UTR: {bt.referenceNo}</span>
                            )}
+                           {commentingId === bt.id ? (
+                             <div className="mt-2" onClick={e => e.stopPropagation()}>
+                               <textarea
+                                 autoFocus
+                                 rows={2}
+                                 value={commentDraft}
+                                 onChange={e => setCommentDraft(e.target.value)}
+                                 onBlur={() => handleSaveComment(bt.id!, commentDraft)}
+                                 onKeyDown={e => {
+                                   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSaveComment(bt.id!, commentDraft); }
+                                   if (e.key === 'Escape') { setCommentingId(null); setCommentDraft(''); }
+                                 }}
+                                 placeholder="Add a note…"
+                                 className="w-full mt-1 px-2 py-1.5 text-[10px] font-medium text-slate-600 bg-amber-50 border border-amber-200 rounded-lg resize-none outline-none focus:border-amber-400 placeholder:text-slate-300"
+                               />
+                               <p className="text-[8px] text-slate-300 font-bold uppercase mt-0.5">Enter to save · Esc to cancel</p>
+                             </div>
+                           ) : bt.comment ? (
+                             <p
+                               onClick={() => { setCommentingId(bt.id!); setCommentDraft(bt.comment!); }}
+                               className="mt-1.5 text-[10px] font-medium text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-2 py-1 cursor-pointer hover:bg-amber-100 transition-colors leading-snug"
+                               title="Click to edit"
+                             >
+                               {bt.comment}
+                             </p>
+                           ) : null}
                         </td>
                         <td className="px-8 py-6">
                           <div className={`flex items-baseline gap-1 ${bt.type === 'credit' ? 'text-emerald-600' : 'text-slate-900'}`}>
@@ -1117,6 +1201,16 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
                         </td>
                         <td className="px-8 py-6 text-right">
                            <div className="flex items-center justify-end gap-3">
+                              <button
+                                onClick={() => {
+                                  if (commentingId === bt.id) { setCommentingId(null); setCommentDraft(''); }
+                                  else { setCommentingId(bt.id!); setCommentDraft(bt.comment || ''); }
+                                }}
+                                className={`p-3 rounded-2xl transition-all border ${bt.comment ? 'bg-amber-50 text-amber-500 border-amber-100 hover:bg-amber-100' : 'text-slate-300 border-transparent hover:text-amber-500 hover:bg-amber-50 hover:border-amber-100'}`}
+                                title={bt.comment ? 'Edit note' : 'Add note'}
+                              >
+                                <MessageSquare size={18} />
+                              </button>
                               <button
                                 onClick={() => handleDeleteTransaction(bt.id!)}
                                 className="p-3 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-2xl transition-all"
