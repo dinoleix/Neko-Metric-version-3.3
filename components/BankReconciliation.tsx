@@ -90,7 +90,7 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
   const [isBulkUpdating, setIsBulkUpdating] = useState(false);
   const [pushingId, setPushingId] = useState<string | null>(null);
   const [dailySalesLogs, setDailySalesLogs] = useState<DailySalesLog[]>([]);
-  const [activeView, setActiveView] = useState<'mapping' | 'delta'>('mapping');
+  const [activeView, setActiveView] = useState<'mapping' | 'delta' | 'analytics'>('mapping');
   const [deltaOutletFilter, setDeltaOutletFilter] = useState<string>('all');
   const [commentingId, setCommentingId] = useState<string | null>(null);
   const [commentDraft, setCommentDraft] = useState<string>('');
@@ -766,6 +766,12 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
         >
           Sales Reconciliation Delta
         </button>
+        <button
+          onClick={() => setActiveView('analytics')}
+          className={`px-6 py-2.5 rounded-[1.5rem] text-[10px] font-black uppercase tracking-widest transition-all ${activeView === 'analytics' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-600'}`}
+        >
+          Category Analytics
+        </button>
       </div>
 
       {/* ── SALES DELTA PANEL ─────────────────────────────────── */}
@@ -1286,6 +1292,140 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
         )}
       </AnimatePresence>
       </>}
+
+      {/* ── CATEGORY ANALYTICS PANEL ─────────────────────────────── */}
+      {activeView === 'analytics' && (() => {
+        const monthIdx = (MONTH_NAMES.indexOf(selectedMonth) + 1).toString().padStart(2, '0');
+        const datePrefix = `${selectedYear}-${monthIdx}`;
+        const periodBT: BankTransaction[] = bankTransactions
+          .filter((t: BankTransaction) => t.date.startsWith(datePrefix))
+          .filter((t: BankTransaction) => {
+            if (selectedBankId !== 'all' && t.bankAccountId !== selectedBankId) return false;
+            if (selectedType !== 'all' && t.type !== selectedType) return false;
+            return true;
+          });
+
+        const catMap: Record<string, { debit: number; debitVerified: number; credit: number; creditVerified: number; count: number }> = {};
+        let grandDebit = 0, grandCredit = 0;
+
+        periodBT.forEach((t: BankTransaction) => {
+          const cat = t.category?.toUpperCase() || 'UNMAPPED';
+          if (!catMap[cat]) catMap[cat] = { debit: 0, debitVerified: 0, credit: 0, creditVerified: 0, count: 0 };
+          const amt = Number(t.amount) || 0;
+          catMap[cat].count++;
+          if (t.type === 'debit') {
+            catMap[cat].debit += amt;
+            if (t.isVerified) catMap[cat].debitVerified += amt;
+            grandDebit += amt;
+          } else {
+            catMap[cat].credit += amt;
+            if (t.isVerified) catMap[cat].creditVerified += amt;
+            grandCredit += amt;
+          }
+        });
+
+        const catEntries = Object.entries(catMap).sort((a, b) => (b[1].debit + b[1].credit) - (a[1].debit + a[1].credit));
+        const mappedDebit = catEntries.filter(([c]) => c !== 'UNMAPPED').reduce((s, [, v]) => s + v.debit, 0);
+        const verifiedDebit = Object.values(catMap).reduce((s, v) => s + v.debitVerified, 0);
+        const mappedPct = grandDebit > 0 ? Math.round((mappedDebit / grandDebit) * 100) : 0;
+        const verifiedPct = grandDebit > 0 ? Math.round((verifiedDebit / grandDebit) * 100) : 0;
+
+        return (
+          <div className="space-y-8">
+            {/* Summary strip */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+              {[
+                { label: 'Total Outflow', value: grandDebit, sub: `${periodBT.filter((t: BankTransaction) => t.type === 'debit').length} debit transactions`, color: 'slate', sign: '' },
+                { label: 'Total Inflow', value: grandCredit, sub: `${periodBT.filter((t: BankTransaction) => t.type === 'credit').length} credit transactions`, color: 'emerald', sign: '+' },
+                { label: 'Mapped Spend', value: mappedDebit, sub: `${mappedPct}% of outflows categorised`, color: 'indigo', sign: '' },
+                { label: 'Verified Spend', value: verifiedDebit, sub: `${verifiedPct}% of outflows confirmed`, color: 'violet', sign: '' },
+              ].map(({ label, value, sub, color, sign }) => (
+                <div key={label} className="bg-white rounded-[2rem] border border-slate-100 shadow-sm px-7 py-6">
+                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-3">{label}</p>
+                  <p className={`text-2xl font-black tracking-tighter text-${color}-600`}>{sign}₹{value.toLocaleString('en-IN')}</p>
+                  <p className="text-[9px] font-bold text-slate-400 mt-1.5">{sub}</p>
+                </div>
+              ))}
+            </div>
+
+            {/* Category breakdown */}
+            <div className="bg-white rounded-[3rem] border border-slate-100 shadow-sm overflow-hidden">
+              <div className="px-10 py-7 border-b border-slate-50 flex items-center gap-4">
+                <div className="p-3 bg-indigo-50 text-indigo-600 rounded-2xl"><BarChart3 size={20} /></div>
+                <div>
+                  <h3 className="text-sm font-black text-slate-900 uppercase tracking-tight">Category Breakdown</h3>
+                  <p className="text-[10px] text-slate-400 font-medium mt-0.5">{selectedMonth} {selectedYear} · grouped by functional category</p>
+                </div>
+              </div>
+
+              {catEntries.length === 0 ? (
+                <div className="py-24 text-center">
+                  <p className="text-xs font-black text-slate-300 uppercase">No transactions for this period</p>
+                </div>
+              ) : (
+                <div className="divide-y divide-slate-50">
+                  {catEntries.map(([cat, s]) => {
+                    const total = s.debit + s.credit;
+                    const pendingDebit = s.debit - s.debitVerified;
+                    const verifiedFrac = s.debit > 0 ? s.debitVerified / s.debit : 0;
+                    const isUnmapped = cat === 'UNMAPPED';
+                    return (
+                      <div key={cat} className={`px-10 py-7 transition-colors ${isUnmapped ? 'bg-rose-50/40' : 'hover:bg-slate-50/60'}`}>
+                        <div className="flex items-start justify-between gap-6 mb-4">
+                          <div className="flex items-center gap-3">
+                            <span className={`text-[11px] font-black uppercase tracking-widest ${isUnmapped ? 'text-rose-400' : 'text-slate-600'}`}>{cat}</span>
+                            <span className="text-[9px] font-black bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">{s.count} txn{s.count !== 1 ? 's' : ''}</span>
+                          </div>
+                          <p className={`text-xl font-black tracking-tighter ${isUnmapped ? 'text-rose-500' : 'text-slate-900'}`}>
+                            ₹{total.toLocaleString('en-IN')}
+                          </p>
+                        </div>
+
+                        {s.debit > 0 && (
+                          <>
+                            <div className="h-2 bg-slate-100 rounded-full overflow-hidden mb-3">
+                              <div className="h-full flex">
+                                <div className="h-full bg-emerald-400 transition-all duration-700" style={{ width: `${verifiedFrac * 100}%` }} />
+                                <div className="h-full bg-rose-300 transition-all duration-700" style={{ width: `${(1 - verifiedFrac) * 100}%` }} />
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-6 flex-wrap">
+                              <div className="flex items-center gap-1.5">
+                                <div className="w-2 h-2 rounded-full bg-emerald-400 flex-shrink-0" />
+                                <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Verified</span>
+                                <span className="text-[10px] font-black text-slate-700 ml-1">₹{s.debitVerified.toLocaleString('en-IN')}</span>
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                <div className="w-2 h-2 rounded-full bg-rose-300 flex-shrink-0" />
+                                <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Pending</span>
+                                <span className="text-[10px] font-black text-slate-700 ml-1">₹{pendingDebit.toLocaleString('en-IN')}</span>
+                              </div>
+                              {s.credit > 0 && (
+                                <div className="flex items-center gap-1.5 ml-auto">
+                                  <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Inflow</span>
+                                  <span className="text-[10px] font-black text-emerald-600 ml-1">+₹{s.credit.toLocaleString('en-IN')}</span>
+                                </div>
+                              )}
+                            </div>
+                          </>
+                        )}
+
+                        {s.debit === 0 && s.credit > 0 && (
+                          <div className="flex items-center gap-1.5">
+                            <div className="w-2 h-2 rounded-full bg-emerald-400 flex-shrink-0" />
+                            <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Inflow</span>
+                            <span className="text-[10px] font-black text-emerald-600 ml-1">+₹{s.credit.toLocaleString('en-IN')}</span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Manual Category Modal */}
       <AnimatePresence>
