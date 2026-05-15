@@ -54,9 +54,9 @@ service cloud.firestore {
       allow delete: if isDocOwner();
     }
 
-    // bank_accounts — admin owns; linked crew can update balance (for sales routing)
+    // bank_accounts — any authenticated user can read; writes restricted to owner/crew
     match /bank_accounts/{accountId} {
-      allow read: if canRead();
+      allow read: if isAuthenticated();
       allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
       allow update: if isDocOwner() || isLinkedToOwner();
       allow delete: if isDocOwner();
@@ -79,7 +79,41 @@ service cloud.firestore {
       allow create: if isAuthenticated() &&
         request.resource.data.userId == request.auth.uid;
       allow update: if isDocOwner();
-      allow delete: if isDocOwner();
+      allow delete: if isDocOwner() ||
+        (isAuthenticated() && resource.data.ownerId == request.auth.uid);
+    }
+
+    // bank_transactions — admin queries by userId; crew-written entries (10K transfer etc.)
+    // store ownerId so the admin can also query by ownerId
+    match /bank_transactions/{docId} {
+      allow read: if canRead() ||
+        (isAuthenticated() && resource.data.ownerId == request.auth.uid);
+      allow create: if isAuthenticated() && (
+        request.resource.data.userId == request.auth.uid ||
+        request.resource.data.ownerId == request.auth.uid
+      );
+      allow update: if isDocOwner() || isLinkedToOwner();
+      allow delete: if isDocOwner() ||
+        (isAuthenticated() && resource.data.ownerId == request.auth.uid);
+    }
+
+    // vendors — any authenticated user can read; writes restricted to owner
+    match /vendors/{docId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      allow update: if isDocOwner() || isLinkedToOwner() || (isAuthenticated() && resource.data.ownerId == request.auth.uid);
+      allow delete: if isDocOwner() || (isAuthenticated() && resource.data.ownerId == request.auth.uid);
+    }
+
+    // products — any authenticated user can read; writes restricted to owner
+    match /products/{docId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && (
+        request.resource.data.userId == request.auth.uid ||
+        request.resource.data.ownerId == request.auth.uid
+      );
+      allow update: if isDocOwner() || isLinkedToOwner() || (isAuthenticated() && resource.data.ownerId == request.auth.uid);
+      allow delete: if isDocOwner() || (isAuthenticated() && resource.data.ownerId == request.auth.uid);
     }
 
     // Default rule for all other collections

@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import type { User } from 'firebase/auth';
 import { initializeApp, deleteApp, getApp } from 'firebase/app';
 import { getAuth, createUserWithEmailAndPassword } from 'firebase/auth';
-import { collection, getDocs, doc, setDoc, deleteDoc, query, where } from 'firebase/firestore';
+import { collection, getDocs, getDoc, doc, setDoc, deleteDoc, query, where } from 'firebase/firestore';
 import { db } from '../firebase';
 // Reuse config for secondary instance
 import { auth as primaryAuth } from '../firebase';
@@ -17,19 +17,20 @@ const firebaseConfig = {
 };
 
 import { UserProfile, UserRole, MASTER_OUTLETS, getOutletName } from '../types';
-import { 
-  ShieldCheck, 
-  Trash2, 
-  Loader2, 
-  UserPlus, 
-  Search, 
-  Mail, 
+import {
+  ShieldCheck,
+  Trash2,
+  Loader2,
+  UserPlus,
+  Search,
+  Mail,
   Lock,
   ShieldAlert,
   X,
   Plus,
   Eye,
-  EyeOff
+  EyeOff,
+  Package
 } from 'lucide-react';
 
 const ROLE_COLORS: Record<UserRole, string> = {
@@ -52,6 +53,28 @@ const UserManagement: React.FC<{ user: User }> = ({ user }) => {
   const [newOutlet, setNewOutlet] = useState('');
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+
+  const [productCatalogEnabled, setProductCatalogEnabled] = useState<boolean | null>(null);
+  const [togglingCatalog, setTogglingCatalog] = useState(false);
+
+  useEffect(() => {
+    getDoc(doc(db, 'category_settings', user.uid))
+      .then(snap => setProductCatalogEnabled(snap.exists() ? snap.data().productCatalogEnabled === true : false))
+      .catch(() => setProductCatalogEnabled(false));
+  }, []);
+
+  const handleToggleCatalog = async () => {
+    const newVal = !productCatalogEnabled;
+    setTogglingCatalog(true);
+    try {
+      await setDoc(doc(db, 'category_settings', user.uid), { productCatalogEnabled: newVal }, { merge: true });
+      setProductCatalogEnabled(newVal);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setTogglingCatalog(false);
+    }
+  };
 
   const fetchUsers = async () => {
     setLoading(true);
@@ -274,6 +297,30 @@ const UserManagement: React.FC<{ user: User }> = ({ user }) => {
               ))}
             </tbody>
           </table>
+        </div>
+      </section>
+
+      {/* CREW FEATURES */}
+      <section className="bg-white rounded-[3rem] p-10 border border-slate-100 shadow-sm">
+        <h3 className="text-xl font-black text-slate-900 uppercase tracking-tight mb-1">Crew Features</h3>
+        <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-8">Control which features are available to crew members</p>
+        <div className="flex items-center justify-between p-6 bg-slate-50 rounded-2xl border border-slate-100">
+          <div className="flex items-center gap-4">
+            <div className="p-3 bg-indigo-50 rounded-2xl">
+              <Package size={20} className="text-indigo-600" />
+            </div>
+            <div>
+              <p className="text-sm font-black text-slate-900 uppercase">Product Catalog</p>
+              <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">Allow crew to browse and use the product catalog when logging entries</p>
+            </div>
+          </div>
+          <button
+            onClick={handleToggleCatalog}
+            disabled={productCatalogEnabled === null || togglingCatalog}
+            className={`relative inline-flex h-7 w-14 shrink-0 items-center rounded-full transition-colors duration-200 focus:outline-none disabled:opacity-50 ${productCatalogEnabled ? 'bg-indigo-600' : 'bg-slate-200'}`}
+          >
+            <span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform duration-200 ${productCatalogEnabled ? 'translate-x-8' : 'translate-x-1'}`} />
+          </button>
         </div>
       </section>
 

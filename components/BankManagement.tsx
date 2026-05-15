@@ -1,5 +1,6 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import type { User } from 'firebase/auth';
 import { collection, query, getDocs, addDoc, doc, deleteDoc, updateDoc, where, orderBy } from 'firebase/firestore';
 import { db } from '../firebase';
@@ -40,8 +41,11 @@ const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
   const [ledgerEntries, setLedgerEntries] = useState<Array<{
     id: string; description: string; date: string;
     amount: number; type: 'credit' | 'debit'; createdAt: number; channel?: string;
+    source: 'sales_ledger' | 'bank_transactions';
   }>>([]);
   const [loadingLedger, setLoadingLedger] = useState(false);
+  const [deletingEntryId, setDeletingEntryId] = useState<string | null>(null);
+  const [selectedAccount, setSelectedAccount] = useState<BankAccount | null>(null);
 
   // Form State
   const [name, setName] = useState('');
@@ -187,7 +191,7 @@ const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
         .filter(d => d.data().bankAccountId === accId)
         .map(d => {
           const e = d.data() as SalesLedgerEntry;
-          return { id: d.id, description: e.description, date: e.date, amount: e.amount, type: 'credit' as const, createdAt: e.createdAt, channel: e.channel };
+          return { id: d.id, description: e.description, date: e.date, amount: e.amount, type: 'credit' as const, createdAt: e.createdAt, channel: e.channel, source: 'sales_ledger' as const };
         });
 
       const txDocMap = new Map<string, any>();
@@ -198,13 +202,58 @@ const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
         .filter(d => d.data().bankAccountId === accId && !d.data()._fileId)
         .map(d => {
           const e = d.data() as BankTransaction;
-          return { id: d.id, description: e.description, date: e.date, amount: e.amount, type: e.type, createdAt: e.createdAt };
+          return { id: d.id, description: e.description, date: e.date, amount: e.amount, type: e.type, createdAt: e.createdAt, source: 'bank_transactions' as const };
         });
 
       const merged = [...fromSales, ...fromTx].sort((a, b) => b.createdAt - a.createdAt);
       setLedgerEntries(merged);
     } catch (err) {
       console.error('Error fetching ledger:', err);
+    } finally {
+      setLoadingLedger(false);
+    }
+  };
+
+  const handleDeleteLedgerEntry = async (entryId: string, source: 'sales_ledger' | 'bank_transactions') => {
+    setDeletingEntryId(entryId);
+    try {
+      await deleteDoc(doc(db, source, entryId));
+      setLedgerEntries(prev => prev.filter(e => e.id !== entryId));
+    } catch (err) {
+      console.error('Error deleting entry:', err);
+    } finally {
+      setDeletingEntryId(null);
+    }
+  };
+
+  const openAccountModal = async (acc: BankAccount) => {
+    setSelectedAccount(acc);
+    setLedgerEntries([]);
+    setLoadingLedger(true);
+    try {
+      const [salesSnap, txByUser, txByOwner] = await Promise.all([
+        getDocs(query(collection(db, 'sales_ledger'), where('ownerId', '==', dataOwnerId))),
+        getDocs(query(collection(db, 'bank_transactions'), where('userId', '==', dataOwnerId))),
+        getDocs(query(collection(db, 'bank_transactions'), where('ownerId', '==', dataOwnerId))),
+      ]);
+      const fromSales = salesSnap.docs
+        .filter(d => d.data().bankAccountId === acc.id)
+        .map(d => {
+          const e = d.data() as SalesLedgerEntry;
+          return { id: d.id, description: e.description, date: e.date, amount: e.amount, type: 'credit' as const, createdAt: e.createdAt, channel: e.channel, source: 'sales_ledger' as const };
+        });
+      const txDocMap = new Map<string, any>();
+      txByUser.docs.forEach(d => txDocMap.set(d.id, d));
+      txByOwner.docs.forEach(d => txDocMap.set(d.id, d));
+      const fromTx = Array.from(txDocMap.values())
+        .filter(d => d.data().bankAccountId === acc.id && !d.data()._fileId)
+        .map(d => {
+          const e = d.data() as BankTransaction;
+          return { id: d.id, description: e.description, date: e.date, amount: e.amount, type: e.type, createdAt: e.createdAt, source: 'bank_transactions' as const };
+        });
+      setLedgerEntries([...fromSales, ...fromTx].sort((a, b) => b.createdAt - a.createdAt));
+    } catch (err) {
+      console.error('Error loading account modal:', err);
     } finally {
       setLoadingLedger(false);
     }
@@ -375,12 +424,12 @@ const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
           </div>
         ) : (
           accounts.map(acc => (
-            <div key={acc.id} className={`bg-white rounded-[2.5rem] border p-8 shadow-sm hover:shadow-xl transition-all group relative ${acc.isPrimary ? 'border-amber-300 ring-2 ring-amber-100' : 'border-slate-200'}`}>
+            <div key={acc.id} onClick={() => openAccountModal(acc)} className={`bg-white rounded-[2.5rem] border p-8 shadow-sm hover:shadow-xl transition-all group relative cursor-pointer ${acc.isPrimary ? 'border-amber-300 ring-2 ring-amber-100' : 'border-slate-200'}`}>
               <div className="absolute top-0 right-0 p-5 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                <button onClick={() => handleEdit(acc)} className="p-2 bg-indigo-50 text-indigo-600 rounded-lg hover:bg-indigo-600 hover:text-white transition-all active:scale-95">
+                <button onClick={e => { e.stopPropagation(); handleEdit(acc); }} className="p-2 bg-indigo-50 text-indigo-600 rounded-lg hover:bg-indigo-600 hover:text-white transition-all active:scale-95">
                   <Edit2 size={14} />
                 </button>
-                <button onClick={() => handleDelete(acc.id!)} className="p-2 bg-rose-50 text-rose-600 rounded-lg hover:bg-rose-600 hover:text-white transition-all active:scale-95">
+                <button onClick={e => { e.stopPropagation(); handleDelete(acc.id!); }} className="p-2 bg-rose-50 text-rose-600 rounded-lg hover:bg-rose-600 hover:text-white transition-all active:scale-95">
                   <Trash2 size={14} />
                 </button>
               </div>
@@ -442,7 +491,7 @@ const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
                 </div>
 
                 <button
-                  onClick={() => handleSetPrimary(acc)}
+                  onClick={e => { e.stopPropagation(); handleSetPrimary(acc); }}
                   className={`w-full mt-2 py-3 rounded-2xl flex items-center justify-center gap-2 text-xs font-black uppercase tracking-widest transition-all active:scale-95 border ${
                     acc.isPrimary
                       ? 'bg-amber-50 text-amber-600 border-amber-300'
@@ -454,7 +503,7 @@ const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
                 </button>
 
                 <button
-                  onClick={() => toggleLedger(acc.id!)}
+                  onClick={e => { e.stopPropagation(); toggleLedger(acc.id!); }}
                   className="w-full mt-2 py-3 rounded-2xl flex items-center justify-center gap-2 text-xs font-black uppercase tracking-widest transition-all active:scale-95 border bg-slate-50 text-slate-500 border-slate-200 hover:bg-slate-100"
                 >
                   <ListOrdered size={13} />
@@ -497,9 +546,19 @@ const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
                               <p className="text-[10px] text-slate-400 font-medium">{entry.date}</p>
                             </div>
                           </div>
-                          <span className={`text-sm font-black shrink-0 ${entry.type === 'credit' ? 'text-emerald-600' : 'text-rose-500'}`}>
-                            {entry.type === 'credit' ? '+' : '-'}₹{entry.amount.toLocaleString('en-IN')}
-                          </span>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span className={`text-sm font-black ${entry.type === 'credit' ? 'text-emerald-600' : 'text-rose-500'}`}>
+                              {entry.type === 'credit' ? '+' : '-'}₹{entry.amount.toLocaleString('en-IN')}
+                            </span>
+                            <button
+                              onClick={() => handleDeleteLedgerEntry(entry.id, entry.source)}
+                              disabled={deletingEntryId === entry.id}
+                              className="p-1.5 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-all disabled:opacity-50"
+                              title="Delete transaction"
+                            >
+                              {deletingEntryId === entry.id ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                            </button>
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -510,6 +569,142 @@ const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
           ))
         )}
       </div>
+
+      {/* Account Detail Modal */}
+      <AnimatePresence>
+        {selectedAccount && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setSelectedAccount(null)}
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-6"
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+              onClick={e => e.stopPropagation()}
+              className="bg-white rounded-[3rem] w-full max-w-2xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden border border-slate-100"
+            >
+              {/* Modal header */}
+              <div className="bg-slate-900 px-10 py-8 flex items-start justify-between gap-4 shrink-0">
+                <div className="flex items-center gap-5">
+                  <div className="p-4 bg-white/10 text-white rounded-2xl">
+                    <Building2 size={28} />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <h2 className="text-xl font-black text-white uppercase tracking-tight">{selectedAccount.name}</h2>
+                      {selectedAccount.isPrimary && (
+                        <span className="flex items-center gap-1 px-2 py-0.5 bg-amber-400/20 text-amber-300 rounded-lg text-[8px] font-black uppercase tracking-widest border border-amber-400/30">
+                          <Star size={8} fill="currentColor" /> Primary
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{selectedAccount.bankName || 'Unknown Bank'}</span>
+                      {selectedAccount.outletId && (
+                        <div className="flex items-center gap-1 px-1.5 py-0.5 bg-white/10 text-slate-300 rounded-md text-[8px] font-black uppercase tracking-tighter">
+                          <MapPin size={8} /> {getOutletName(selectedAccount.outletId)}
+                        </div>
+                      )}
+                      {selectedAccount.accountType === 'cash' ? (
+                        <span className="flex items-center gap-1 px-2 py-0.5 bg-emerald-400/20 text-emerald-300 rounded-lg text-[8px] font-black uppercase tracking-widest border border-emerald-400/30"><Banknote size={8} /> Cash</span>
+                      ) : selectedAccount.accountType === '10kcash' ? (
+                        <span className="flex items-center gap-1 px-2 py-0.5 bg-amber-400/20 text-amber-300 rounded-lg text-[8px] font-black uppercase tracking-widest border border-amber-400/30"><Banknote size={8} /> 10K Cash</span>
+                      ) : (
+                        <span className="flex items-center gap-1 px-2 py-0.5 bg-indigo-400/20 text-indigo-300 rounded-lg text-[8px] font-black uppercase tracking-widest border border-indigo-400/30"><Smartphone size={8} /> Digital</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <button onClick={() => setSelectedAccount(null)} className="p-2 text-slate-400 hover:text-white hover:bg-white/10 rounded-xl transition-all shrink-0">
+                  <X size={20} />
+                </button>
+              </div>
+
+              {/* Balance strip */}
+              <div className="px-10 py-6 bg-slate-50 border-b border-slate-100 flex items-center justify-between gap-4 shrink-0">
+                <div>
+                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Available Balance</p>
+                  <div className="flex items-baseline gap-1">
+                    <span className="text-sm font-black text-slate-400">₹</span>
+                    <span className="text-4xl font-black text-slate-900 tracking-tighter">{selectedAccount.balance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                  </div>
+                </div>
+                <div className="text-right">
+                  {selectedAccount.accountNumber && (
+                    <p className="text-[10px] font-black text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded-xl border border-indigo-100">
+                      {selectedAccount.accountNumber.slice(-4).padStart(selectedAccount.accountNumber.length, '*')}
+                    </p>
+                  )}
+                  <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-2">
+                    Updated {new Date(selectedAccount.updatedAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                  </p>
+                </div>
+              </div>
+
+              {/* Transactions */}
+              <div className="flex-1 overflow-y-auto px-10 py-6">
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">
+                  Transaction History
+                </p>
+                {loadingLedger ? (
+                  <div className="flex items-center justify-center py-16 gap-3 text-slate-400">
+                    <Loader2 size={20} className="animate-spin" />
+                    <span className="text-xs font-bold uppercase tracking-widest">Loading...</span>
+                  </div>
+                ) : ledgerEntries.length === 0 ? (
+                  <div className="py-16 text-center">
+                    <ListOrdered size={32} className="mx-auto text-slate-200 mb-3" />
+                    <p className="text-xs font-black text-slate-300 uppercase tracking-widest">No transactions yet</p>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {ledgerEntries.map(entry => (
+                      <div key={entry.id} className="flex items-center justify-between gap-4 px-5 py-4 bg-slate-50 rounded-2xl border border-slate-100 hover:bg-slate-100/60 transition-colors group">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className={`p-2 rounded-xl shrink-0 ${entry.type === 'credit' ? 'bg-emerald-100 text-emerald-600' : 'bg-rose-100 text-rose-500'}`}>
+                            {entry.type === 'credit' ? <ArrowDownToLine size={14} /> : <ArrowUpFromLine size={14} />}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <p className="text-xs font-black text-slate-800 truncate">{entry.description}</p>
+                              {entry.channel && entry.channel !== 'digital' && (
+                                <span className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-widest shrink-0 ${
+                                  entry.channel === 'card' ? 'bg-indigo-50 text-indigo-600 border border-indigo-200' :
+                                  entry.channel === 'upi' ? 'bg-violet-50 text-violet-600 border border-violet-200' :
+                                  'bg-emerald-50 text-emerald-600 border border-emerald-200'
+                                }`}>{entry.channel.toUpperCase()}</span>
+                              )}
+                            </div>
+                            <p className="text-[10px] text-slate-400 font-medium mt-0.5">{entry.date}</p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-3 shrink-0">
+                          <span className={`text-base font-black ${entry.type === 'credit' ? 'text-emerald-600' : 'text-rose-500'}`}>
+                            {entry.type === 'credit' ? '+' : '-'}₹{entry.amount.toLocaleString('en-IN')}
+                          </span>
+                          <button
+                            onClick={() => handleDeleteLedgerEntry(entry.id, entry.source)}
+                            disabled={deletingEntryId === entry.id}
+                            className="p-2 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-xl transition-all disabled:opacity-50 opacity-0 group-hover:opacity-100"
+                            title="Delete transaction"
+                          >
+                            {deletingEntryId === entry.id ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };

@@ -59,9 +59,13 @@ import {
   TrendingUp,
   Minus,
   Scale,
-  MessageSquare
+  MessageSquare,
+  AlignJustify,
+  BarChart2,
+  List
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, PieChart, Pie, Cell, Legend } from 'recharts';
 
 const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
   const [selectedMonth, setSelectedMonth] = useState(MONTH_NAMES[new Date().getMonth()]);
@@ -91,6 +95,7 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
   const [pushingId, setPushingId] = useState<string | null>(null);
   const [dailySalesLogs, setDailySalesLogs] = useState<DailySalesLog[]>([]);
   const [activeView, setActiveView] = useState<'mapping' | 'delta' | 'analytics'>('mapping');
+  const [analyticsView, setAnalyticsView] = useState<'list' | 'hbar' | 'vbar' | 'donut'>('hbar');
   const [deltaOutletFilter, setDeltaOutletFilter] = useState<string>('all');
   const [commentingId, setCommentingId] = useState<string | null>(null);
   const [commentDraft, setCommentDraft] = useState<string>('');
@@ -1349,80 +1354,177 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
             </div>
 
             {/* Category breakdown */}
-            <div className="bg-white rounded-[3rem] border border-slate-100 shadow-sm overflow-hidden">
-              <div className="px-10 py-7 border-b border-slate-50 flex items-center gap-4">
-                <div className="p-3 bg-indigo-50 text-indigo-600 rounded-2xl"><BarChart3 size={20} /></div>
-                <div>
-                  <h3 className="text-sm font-black text-slate-900 uppercase tracking-tight">Category Breakdown</h3>
-                  <p className="text-[10px] text-slate-400 font-medium mt-0.5">{selectedMonth} {selectedYear} · grouped by functional category</p>
-                </div>
-              </div>
+            {(() => {
+              const PALETTE = ['#6366f1','#8b5cf6','#ec4899','#f59e0b','#10b981','#3b82f6','#ef4444','#14b8a6','#f97316','#84cc16','#06b6d4','#a855f7'];
+              const maxTotal = Math.max(...catEntries.map(([, s]) => s.debit + s.credit), 1);
+              const vbarData = catEntries.map(([cat, s]) => ({ cat: cat.length > 8 ? cat.slice(0, 7) + '…' : cat, verified: s.debitVerified, pending: s.debit - s.debitVerified, total: s.debit + s.credit }));
+              const donutData = catEntries.map(([cat, s]) => ({ name: cat, value: s.debit + s.credit }));
 
-              {catEntries.length === 0 ? (
-                <div className="py-24 text-center">
-                  <p className="text-xs font-black text-slate-300 uppercase">No transactions for this period</p>
-                </div>
-              ) : (
-                <div className="divide-y divide-slate-50">
-                  {catEntries.map(([cat, s]) => {
-                    const total = s.debit + s.credit;
-                    const pendingDebit = s.debit - s.debitVerified;
-                    const verifiedFrac = s.debit > 0 ? s.debitVerified / s.debit : 0;
-                    const isUnmapped = cat === 'UNMAPPED';
-                    return (
-                      <div key={cat} className={`px-10 py-7 transition-colors ${isUnmapped ? 'bg-rose-50/40' : 'hover:bg-slate-50/60'}`}>
-                        <div className="flex items-start justify-between gap-6 mb-4">
-                          <div className="flex items-center gap-3">
-                            <span className={`text-[11px] font-black uppercase tracking-widest ${isUnmapped ? 'text-rose-400' : 'text-slate-600'}`}>{cat}</span>
-                            <span className="text-[9px] font-black bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">{s.count} txn{s.count !== 1 ? 's' : ''}</span>
-                          </div>
-                          <p className={`text-xl font-black tracking-tighter ${isUnmapped ? 'text-rose-500' : 'text-slate-900'}`}>
-                            ₹{total.toLocaleString('en-IN')}
-                          </p>
-                        </div>
-
-                        {s.debit > 0 && (
-                          <>
-                            <div className="h-2 bg-slate-100 rounded-full overflow-hidden mb-3">
-                              <div className="h-full flex">
-                                <div className="h-full bg-emerald-400 transition-all duration-700" style={{ width: `${verifiedFrac * 100}%` }} />
-                                <div className="h-full bg-rose-300 transition-all duration-700" style={{ width: `${(1 - verifiedFrac) * 100}%` }} />
-                              </div>
-                            </div>
-                            <div className="flex items-center gap-6 flex-wrap">
-                              <div className="flex items-center gap-1.5">
-                                <div className="w-2 h-2 rounded-full bg-emerald-400 flex-shrink-0" />
-                                <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Verified</span>
-                                <span className="text-[10px] font-black text-slate-700 ml-1">₹{s.debitVerified.toLocaleString('en-IN')}</span>
-                              </div>
-                              <div className="flex items-center gap-1.5">
-                                <div className="w-2 h-2 rounded-full bg-rose-300 flex-shrink-0" />
-                                <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Pending</span>
-                                <span className="text-[10px] font-black text-slate-700 ml-1">₹{pendingDebit.toLocaleString('en-IN')}</span>
-                              </div>
-                              {s.credit > 0 && (
-                                <div className="flex items-center gap-1.5 ml-auto">
-                                  <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Inflow</span>
-                                  <span className="text-[10px] font-black text-emerald-600 ml-1">+₹{s.credit.toLocaleString('en-IN')}</span>
-                                </div>
-                              )}
-                            </div>
-                          </>
-                        )}
-
-                        {s.debit === 0 && s.credit > 0 && (
-                          <div className="flex items-center gap-1.5">
-                            <div className="w-2 h-2 rounded-full bg-emerald-400 flex-shrink-0" />
-                            <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Inflow</span>
-                            <span className="text-[10px] font-black text-emerald-600 ml-1">+₹{s.credit.toLocaleString('en-IN')}</span>
-                          </div>
-                        )}
+              return (
+                <div className="bg-white rounded-[3rem] border border-slate-100 shadow-sm overflow-hidden">
+                  {/* Header with view toggle */}
+                  <div className="px-10 py-6 border-b border-slate-50 flex items-center justify-between gap-4 flex-wrap">
+                    <div className="flex items-center gap-4">
+                      <div className="p-3 bg-indigo-50 text-indigo-600 rounded-2xl"><BarChart3 size={20} /></div>
+                      <div>
+                        <h3 className="text-sm font-black text-slate-900 uppercase tracking-tight">Category Breakdown</h3>
+                        <p className="text-[10px] text-slate-400 font-medium mt-0.5">{selectedMonth} {selectedYear} · {catEntries.length} categories</p>
                       </div>
-                    );
-                  })}
+                    </div>
+                    <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-2xl">
+                      {([
+                        { id: 'list',  icon: <List size={13} />,         label: 'List'     },
+                        { id: 'hbar',  icon: <AlignJustify size={13} />, label: 'H-Bars'   },
+                        { id: 'vbar',  icon: <BarChart3 size={13} />,    label: 'Columns'  },
+                        { id: 'donut', icon: <PieIcon size={13} />,      label: 'Donut'    },
+                      ] as { id: 'list'|'hbar'|'vbar'|'donut'; icon: React.ReactNode; label: string }[]).map(v => (
+                        <button
+                          key={v.id}
+                          onClick={() => setAnalyticsView(v.id)}
+                          title={v.label}
+                          className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${analyticsView === v.id ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+                        >
+                          {v.icon}<span className="hidden sm:inline">{v.label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {catEntries.length === 0 ? (
+                    <div className="py-24 text-center">
+                      <p className="text-xs font-black text-slate-300 uppercase">No transactions for this period</p>
+                    </div>
+                  ) : (
+                    <AnimatePresence mode="wait">
+                      <motion.div key={analyticsView} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.18 }}>
+
+                        {/* ── LIST view ── */}
+                        {analyticsView === 'list' && (
+                          <div className="divide-y divide-slate-50">
+                            {catEntries.map(([cat, s]) => {
+                              const total = s.debit + s.credit;
+                              const pendingDebit = s.debit - s.debitVerified;
+                              const verifiedFrac = s.debit > 0 ? s.debitVerified / s.debit : 0;
+                              const isUnmapped = cat === 'UNMAPPED';
+                              return (
+                                <div key={cat} className={`px-10 py-6 transition-colors ${isUnmapped ? 'bg-rose-50/40' : 'hover:bg-slate-50/60'}`}>
+                                  <div className="flex items-start justify-between gap-4 mb-3">
+                                    <div className="flex items-center gap-2">
+                                      <span className={`text-[11px] font-black uppercase tracking-widest ${isUnmapped ? 'text-rose-400' : 'text-slate-600'}`}>{cat}</span>
+                                      <span className="text-[9px] font-black bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">{s.count} txn{s.count !== 1 ? 's' : ''}</span>
+                                    </div>
+                                    <p className={`text-lg font-black tracking-tighter ${isUnmapped ? 'text-rose-500' : 'text-slate-900'}`}>₹{total.toLocaleString('en-IN')}</p>
+                                  </div>
+                                  {s.debit > 0 && (
+                                    <>
+                                      <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden mb-2">
+                                        <div className="h-full flex">
+                                          <div className="h-full bg-emerald-400" style={{ width: `${verifiedFrac * 100}%` }} />
+                                          <div className="h-full bg-rose-300" style={{ width: `${(1 - verifiedFrac) * 100}%` }} />
+                                        </div>
+                                      </div>
+                                      <div className="flex items-center gap-4 flex-wrap">
+                                        <span className="flex items-center gap-1 text-[9px] font-black text-slate-400 uppercase"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block" /> Verified ₹{s.debitVerified.toLocaleString('en-IN')}</span>
+                                        <span className="flex items-center gap-1 text-[9px] font-black text-slate-400 uppercase"><span className="w-1.5 h-1.5 rounded-full bg-rose-300 inline-block" /> Pending ₹{pendingDebit.toLocaleString('en-IN')}</span>
+                                        {s.credit > 0 && <span className="ml-auto text-[9px] font-black text-emerald-600">+₹{s.credit.toLocaleString('en-IN')} inflow</span>}
+                                      </div>
+                                    </>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+
+                        {/* ── HORIZONTAL BARS view ── */}
+                        {analyticsView === 'hbar' && (
+                          <div className="px-10 py-6 space-y-4">
+                            {catEntries.map(([cat, s], i) => {
+                              const total = s.debit + s.credit;
+                              const widthPct = (total / maxTotal) * 100;
+                              const verifiedPct = total > 0 ? (s.debitVerified / total) * 100 : 0;
+                              const pendingPct = total > 0 ? ((s.debit - s.debitVerified) / total) * 100 : 0;
+                              const isUnmapped = cat === 'UNMAPPED';
+                              return (
+                                <div key={cat} className="grid items-center gap-3" style={{ gridTemplateColumns: '9rem 1fr 7rem' }}>
+                                  <div className="flex items-center gap-2 min-w-0">
+                                    <span className={`text-[9px] font-black uppercase tracking-widest truncate ${isUnmapped ? 'text-rose-400' : 'text-slate-500'}`}>{cat}</span>
+                                  </div>
+                                  <div className="relative h-7 bg-slate-100 rounded-xl overflow-hidden">
+                                    <div className="absolute inset-y-0 left-0 flex h-full rounded-xl overflow-hidden transition-all duration-700" style={{ width: `${widthPct}%` }}>
+                                      <div className="h-full bg-emerald-400" style={{ width: `${verifiedPct}%` }} />
+                                      <div className={`h-full ${isUnmapped ? 'bg-rose-400' : 'bg-indigo-400'}`} style={{ width: `${pendingPct}%` }} />
+                                    </div>
+                                  </div>
+                                  <p className={`text-xs font-black tracking-tighter text-right ${isUnmapped ? 'text-rose-500' : 'text-slate-800'}`}>₹{total.toLocaleString('en-IN')}</p>
+                                </div>
+                              );
+                            })}
+                            <div className="flex items-center gap-4 pt-2 border-t border-slate-100 mt-2">
+                              <span className="flex items-center gap-1.5 text-[9px] font-black text-slate-400 uppercase"><span className="w-2 h-2 rounded-sm bg-emerald-400 inline-block" /> Verified</span>
+                              <span className="flex items-center gap-1.5 text-[9px] font-black text-slate-400 uppercase"><span className="w-2 h-2 rounded-sm bg-indigo-400 inline-block" /> Pending / Mapped</span>
+                              <span className="flex items-center gap-1.5 text-[9px] font-black text-slate-400 uppercase"><span className="w-2 h-2 rounded-sm bg-rose-400 inline-block" /> Unmapped</span>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* ── VERTICAL BAR CHART view ── */}
+                        {analyticsView === 'vbar' && (
+                          <div className="px-6 pt-6 pb-4">
+                            <ResponsiveContainer width="100%" height={320}>
+                              <BarChart data={vbarData} margin={{ top: 10, right: 10, bottom: 50, left: 10 }} barSize={28}>
+                                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                                <XAxis dataKey="cat" tick={{ fontSize: 9, fontWeight: 800, fill: '#94a3b8', textTransform: 'uppercase' }} angle={-35} textAnchor="end" interval={0} />
+                                <YAxis tick={{ fontSize: 9, fill: '#94a3b8' }} tickFormatter={(v: number) => v >= 100000 ? `₹${(v/100000).toFixed(1)}L` : v >= 1000 ? `₹${(v/1000).toFixed(0)}K` : `₹${v}`} axisLine={false} tickLine={false} />
+                                <Tooltip
+                                  formatter={(value: number, name: string) => [`₹${value.toLocaleString('en-IN')}`, name === 'verified' ? 'Verified' : 'Pending']}
+                                  contentStyle={{ borderRadius: '1rem', border: '1px solid #e2e8f0', fontSize: 11, fontWeight: 800 }}
+                                  cursor={{ fill: '#f8fafc' }}
+                                />
+                                <Bar dataKey="verified" stackId="a" fill="#34d399" name="Verified" />
+                                <Bar dataKey="pending" stackId="a" fill="#818cf8" name="Pending" radius={[6, 6, 0, 0]} />
+                              </BarChart>
+                            </ResponsiveContainer>
+                            <div className="flex items-center justify-center gap-6 mt-1">
+                              <span className="flex items-center gap-1.5 text-[9px] font-black text-slate-400 uppercase"><span className="w-3 h-3 rounded-sm bg-emerald-400 inline-block" /> Verified</span>
+                              <span className="flex items-center gap-1.5 text-[9px] font-black text-slate-400 uppercase"><span className="w-3 h-3 rounded-sm bg-indigo-400 inline-block" /> Pending</span>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* ── DONUT view ── */}
+                        {analyticsView === 'donut' && (
+                          <div className="px-6 pt-6 pb-4">
+                            <ResponsiveContainer width="100%" height={320}>
+                              <PieChart>
+                                <Pie data={donutData} cx="50%" cy="50%" innerRadius={75} outerRadius={130} paddingAngle={2} dataKey="value" nameKey="name">
+                                  {donutData.map((_, i) => (
+                                    <Cell key={i} fill={PALETTE[i % PALETTE.length]} stroke="white" strokeWidth={2} />
+                                  ))}
+                                </Pie>
+                                <Tooltip
+                                  formatter={(value: number, name: string) => [`₹${value.toLocaleString('en-IN')}`, name]}
+                                  contentStyle={{ borderRadius: '1rem', border: '1px solid #e2e8f0', fontSize: 11, fontWeight: 800 }}
+                                />
+                              </PieChart>
+                            </ResponsiveContainer>
+                            <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2 mt-2 px-4">
+                              {donutData.map((d, i) => (
+                                <span key={d.name} className="flex items-center gap-1.5 text-[9px] font-black text-slate-500 uppercase tracking-widest">
+                                  <span className="w-2.5 h-2.5 rounded-full inline-block flex-shrink-0" style={{ backgroundColor: PALETTE[i % PALETTE.length] }} />
+                                  {d.name}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                      </motion.div>
+                    </AnimatePresence>
+                  )}
                 </div>
-              )}
-            </div>
+              );
+            })()}
           </div>
         );
       })()}

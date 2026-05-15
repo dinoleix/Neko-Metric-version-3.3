@@ -12,12 +12,14 @@ import {
   MASTER_OUTLETS,
   getOutletName,
   getOutletCode,
-  DEFAULT_COGS,
-  DEFAULT_OPS,
+  CREW_PURCHASE_CATEGORIES,
+  CREW_EXPENSE_CATEGORIES,
   EntryStatus,
   BankAccount,
-  Vendor
+  Vendor,
+  Product
 } from '../types';
+import ProductCatalog from './ProductCatalog';
 import {
   Plus,
   ShoppingBag,
@@ -55,15 +57,20 @@ import {
   CreditCard,
   AlertTriangle,
   ArrowRightLeft,
-  Vault
+  Vault,
+  Package
 } from 'lucide-react';
 
+const ALL_CREW_CATEGORIES = Array.from(
+  new Set([...CREW_PURCHASE_CATEGORIES, ...CREW_EXPENSE_CATEGORIES])
+).sort();
+
 const CATEGORIES = {
-  expense: [...DEFAULT_OPS, 'OTHER EXPENSE'].sort(),
-  purchase: [...DEFAULT_COGS, 'OTHER PURCHASE'].sort()
+  purchase: ALL_CREW_CATEGORIES,
+  expense: ALL_CREW_CATEGORIES,
 };
 
-const ALL_CATEGORIES = Array.from(new Set([...CATEGORIES.expense, ...CATEGORIES.purchase])).sort();
+const ALL_CATEGORIES = ALL_CREW_CATEGORIES;
 
 const STATUS_CONFIG: Record<EntryStatus, { label: string, color: string, bg: string, icon: any }> = {
   paid: { label: 'Paid', color: 'text-emerald-500', bg: 'bg-emerald-500/10', icon: CheckCircle2 },
@@ -140,6 +147,8 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
   // Form State
   const [editingId, setEditingId] = useState<string | null>(null);
   const [amount, setAmount] = useState('');
+  const [quantity, setQuantity] = useState('');
+  const [pricePerUnit, setPricePerUnit] = useState('');
   const [category, setCategory] = useState('');
   const [description, setDescription] = useState('');
   const [status, setStatus] = useState<EntryStatus>('paid');
@@ -151,9 +160,18 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const [showProductCatalog, setShowProductCatalog] = useState(false);
+  const [productCatalogEnabled, setProductCatalogEnabled] = useState(false);
+  const [catalogProducts, setCatalogProducts] = useState<Product[]>([]);
+  const [selectedProductId, setSelectedProductId] = useState('');
+
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [selectedVendorId, setSelectedVendorId] = useState('');
   const [showVendorModal, setShowVendorModal] = useState(false);
+  const [showVendorForm, setShowVendorForm] = useState(false);
+  const [editingVendorId, setEditingVendorId] = useState<string | null>(null);
+  const [deletingVendorId, setDeletingVendorId] = useState<string | null>(null);
+  const [vendorSearch, setVendorSearch] = useState('');
   // Vendor form state (inside crew terminal)
   const [vName, setVName] = useState('');
   const [vAddress, setVAddress] = useState('');
@@ -181,13 +199,11 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
       // Use ownerId if available (for crew), otherwise fallback to current user.uid (for admin)
       const ownerId = profile.ownerId || user.uid;
 
-      // Fetch Bank Accounts
-      const bankQ = query(
-        collection(db, 'bank_accounts'),
-        where('userId', '==', ownerId)
-      );
-      const bankSnap = await getDocs(bankQ);
-      const fetchedAllAccounts = bankSnap.docs.map(d => ({ id: d.id, ...d.data() } as BankAccount));
+      // Fetch Bank Accounts — no where filter (rules use get() calls that break collection queries)
+      const bankSnap = await getDocs(collection(db, 'bank_accounts'));
+      const fetchedAllAccounts = bankSnap.docs
+        .map(d => ({ id: d.id, ...d.data() } as BankAccount))
+        .filter(a => a.userId === ownerId);
       setAllBankAccounts(fetchedAllAccounts);
 
       // Filter by assigned outlet if available
@@ -198,8 +214,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
       setBankAccounts(filteredBankAccounts);
 
       // Fetch vendors
-      const vendorQ = query(collection(db, 'vendors'), where('ownerId', '==', ownerId));
-      const vendorSnap = await getDocs(vendorQ);
+      const vendorSnap = await getDocs(collection(db, 'vendors'));
       setVendors(vendorSnap.docs.map(d => ({ id: d.id, ...d.data() } as Vendor)).sort((a, b) => a.name.localeCompare(b.name)));
 
       let start: string;
@@ -262,12 +277,50 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
   };
 
   useEffect(() => {
+    const ownerId = profile.ownerId || user.uid;
+    getDoc(doc(db, 'category_settings', ownerId))
+      .then(snap => { if (snap.exists()) setProductCatalogEnabled(snap.data().productCatalogEnabled === true); })
+      .catch(() => {});
+  }, []);
+
+  const loadCatalogProducts = async () => {
+    try {
+      const snap = await getDocs(collection(db, 'products'));
+      setCatalogProducts(
+        snap.docs.map(d => ({ id: d.id, ...d.data() } as Product))
+          .sort((a, b) => a.name.localeCompare(b.name))
+      );
+    } catch (err) {
+      console.error('[Products] failed to load:', err);
+    }
+  };
+
+  useEffect(() => { loadCatalogProducts(); }, []);
+
+  useEffect(() => {
     fetchEntries();
   }, [user, datePreset, customStartDate, customEndDate]);
 
   useEffect(() => {
     if (activeMode === 'view') fetchEntries();
   }, [activeMode]);
+
+  useEffect(() => {
+    const q = parseFloat(quantity);
+    const p = parseFloat(pricePerUnit);
+    if (q > 0 && p > 0) setAmount((q * p).toFixed(2));
+  }, [quantity, pricePerUnit]);
+
+  useEffect(() => { setSelectedProductId(''); }, [category]);
+
+  useEffect(() => {
+    if (!selectedProductId) return;
+    const product = catalogProducts.find(p => p.id === selectedProductId);
+    if (!product) return;
+    setDescription(product.name);
+    if (product.pricePerUnit != null) setPricePerUnit(product.pricePerUnit.toString());
+    if (product.quantity != null) setQuantity(product.quantity.toString());
+  }, [selectedProductId]);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -281,6 +334,8 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     setEditingId(entry.id!);
     setEntryType(entry.type);
     setAmount(entry.amount.toString());
+    setQuantity(entry.quantity ? entry.quantity.toString() : '');
+    setPricePerUnit(entry.pricePerUnit ? entry.pricePerUnit.toString() : '');
     setCategory(entry.category);
     setDescription(entry.description);
     setStatus(entry.status || 'paid');
@@ -289,6 +344,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     setExistingReceiptUrl(entry.receiptUrl || null);
     setReceiptPreview(entry.receiptUrl || null);
     setSelectedVendorId(entry.vendorId || '');
+    setSelectedProductId('');
     setActiveMode('edit');
   };
 
@@ -351,6 +407,8 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
         outletId,
         type: entryType,
         amount: parseFloat(amount),
+        quantity: quantity ? parseFloat(quantity) : null,
+        pricePerUnit: pricePerUnit ? parseFloat(pricePerUnit) : null,
         date,
         category,
         description,
@@ -374,12 +432,8 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
       // Deduct from the correct bank account based on payment type
       try {
         const ownerId = profile.ownerId || user.uid;
-        const bankQ = query(collection(db, 'bank_accounts'), where('userId', '==', ownerId));
-        const bankSnap = await getDocs(bankQ);
-        const allAccounts = bankSnap.docs.map(d => ({ id: d.id, ...d.data() } as BankAccount));
-
         const accountType = entryType === 'expense' ? 'cash' : 'digital';
-        const targetAcc = allAccounts.find(a => a.outletId === outletId && a.isPrimary && a.accountType === accountType);
+        const targetAcc = allBankAccounts.find(a => a.outletId === outletId && a.isPrimary && a.accountType === accountType);
 
         if (targetAcc) {
           const isEdit = activeMode === 'edit' && editingId;
@@ -404,6 +458,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
             });
             await addDoc(collection(db, 'bank_transactions'), {
               userId: ownerId,
+              ownerId,
               bankAccountId: targetAcc.id!,
               date,
               description: `${entryType === 'expense' ? 'Cash Expense' : 'Digital Purchase'}: ${category}${description ? ` — ${description}` : ''}`,
@@ -660,6 +715,8 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
 
   const resetForm = () => {
     setAmount('');
+    setQuantity('');
+    setPricePerUnit('');
     setCategory('');
     setDescription('');
     setStatus('paid');
@@ -668,9 +725,20 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     setEditingId(null);
     setExistingReceiptUrl(null);
     setSelectedVendorId('');
+    setSelectedProductId('');
   };
 
-  const resetVendorForm = () => { setVName(''); setVAddress(''); setVPhone(''); setVGst(''); setVEmail(''); };
+  const handleProductSelect = (product: Product) => {
+    setDescription(product.name);
+    setCategory(product.category);
+    if (product.pricePerUnit != null) setPricePerUnit(product.pricePerUnit.toString());
+    setShowProductCatalog(false);
+  };
+
+  const resetVendorForm = () => {
+    setVName(''); setVAddress(''); setVPhone(''); setVGst(''); setVEmail('');
+    setEditingVendorId(null); setShowVendorForm(false);
+  };
 
   const handleVendorSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -685,12 +753,34 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
         gst: vGst.trim().toUpperCase(), email: vEmail.trim().toLowerCase(),
         createdAt: Date.now(),
       };
-      const ref = await addDoc(collection(db, 'vendors'), data);
-      setVendors(prev => [...prev, { id: ref.id, ...data }].sort((a, b) => a.name.localeCompare(b.name)));
-      setSelectedVendorId(ref.id);
+      if (editingVendorId) {
+        await updateDoc(doc(db, 'vendors', editingVendorId), data as any);
+        setVendors(prev =>
+          prev.map(v => v.id === editingVendorId ? { ...data, id: editingVendorId } as Vendor : v)
+            .sort((a, b) => a.name.localeCompare(b.name))
+        );
+      } else {
+        const ref = await addDoc(collection(db, 'vendors'), data);
+        setVendors(prev => [...prev, { id: ref.id, ...data }].sort((a, b) => a.name.localeCompare(b.name)));
+        setSelectedVendorId(ref.id);
+      }
       resetVendorForm();
-      setShowVendorModal(false);
     } catch (err) { console.error(err); } finally { setVSaving(false); }
+  };
+
+  const handleVendorEdit = (v: Vendor) => {
+    setEditingVendorId(v.id!);
+    setVName(v.name); setVAddress(v.address || ''); setVPhone(v.phone || '');
+    setVGst(v.gst || ''); setVEmail(v.email || '');
+    setShowVendorForm(true);
+  };
+
+  const handleVendorDelete = async (id: string) => {
+    setDeletingVendorId(id);
+    try {
+      await deleteDoc(doc(db, 'vendors', id));
+      setVendors(prev => prev.filter(v => v.id !== id));
+    } catch (err) { console.error(err); } finally { setDeletingVendorId(null); }
   };
 
   const handleDelete = async (id: string) => {
@@ -714,6 +804,12 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
       return matchesType && matchesStatus && matchesCategory && matchesSearch;
     });
   }, [entries, filterType, filterStatus, filterCategory, searchTerm]);
+
+  const entrySummary = useMemo(() => {
+    const paid = filteredEntries.filter(e => e.status === 'paid').reduce((s, e) => s + e.amount, 0);
+    const pending = filteredEntries.filter(e => e.status === 'pending').reduce((s, e) => s + e.amount, 0);
+    return { paid, pending, total: paid + pending };
+  }, [filteredEntries]);
 
   const primaryCashAccount = useMemo(() => {
     const outlet = profile.assignedOutlet || dsOutletId;
@@ -827,14 +923,25 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
             </div>
           </button>
 
-          {/* Manage Vendors shortcut */}
-          <button
-            onClick={() => setShowVendorModal(true)}
-            className="flex items-center gap-3 px-6 py-4 bg-slate-800/60 border border-slate-700/50 rounded-2xl text-slate-400 text-[11px] font-black uppercase tracking-widest hover:text-white hover:border-indigo-500/50 active:scale-95 transition-all"
-          >
-            <Store size={16} className="text-indigo-400" />
-            Manage Vendors
-          </button>
+          {/* Shortcuts row */}
+          <div className="flex flex-wrap items-center justify-center gap-3">
+            <button
+              onClick={() => setShowVendorModal(true)}
+              className="flex items-center gap-3 px-6 py-4 bg-slate-800/60 border border-slate-700/50 rounded-2xl text-slate-400 text-[11px] font-black uppercase tracking-widest hover:text-white hover:border-indigo-500/50 active:scale-95 transition-all"
+            >
+              <Store size={16} className="text-indigo-400" />
+              Manage Vendors
+            </button>
+            {(profile.role === 'admin' || productCatalogEnabled) && (
+              <button
+                onClick={() => setShowProductCatalog(true)}
+                className="flex items-center gap-3 px-6 py-4 bg-slate-800/60 border border-slate-700/50 rounded-2xl text-slate-400 text-[11px] font-black uppercase tracking-widest hover:text-white hover:border-indigo-500/50 active:scale-95 transition-all"
+              >
+                <Package size={16} className="text-indigo-400" />
+                Products
+              </button>
+            )}
+          </div>
         </div>
 
       /* ── ENTRIES LIST ──────────────────────────────────────────── */
@@ -954,6 +1061,24 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
             </div>
           </div>
 
+          {/* Summary strip */}
+          {!loading && filteredEntries.length > 0 && (
+            <div className="grid grid-cols-3 gap-2 mb-1">
+              <div className="bg-slate-800/60 border border-slate-700/40 rounded-2xl px-4 py-3 text-center">
+                <p className="text-[8px] font-black text-emerald-500 uppercase tracking-widest mb-1">Paid</p>
+                <p className="text-sm font-black text-white tracking-tight">₹{entrySummary.paid.toLocaleString('en-IN')}</p>
+              </div>
+              <div className="bg-slate-800/60 border border-slate-700/40 rounded-2xl px-4 py-3 text-center">
+                <p className="text-[8px] font-black text-amber-500 uppercase tracking-widest mb-1">Pending</p>
+                <p className="text-sm font-black text-white tracking-tight">₹{entrySummary.pending.toLocaleString('en-IN')}</p>
+              </div>
+              <div className="bg-slate-800/60 border border-slate-700/40 rounded-2xl px-4 py-3 text-center">
+                <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-1">Total</p>
+                <p className="text-sm font-black text-white tracking-tight">₹{entrySummary.total.toLocaleString('en-IN')}</p>
+              </div>
+            </div>
+          )}
+
           {/* Entries */}
           <div className="space-y-2.5">
             {loading ? (
@@ -989,6 +1114,9 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
                       )}
                       {entry.description && (
                         <p className="text-[10px] text-slate-600 uppercase truncate">{entry.description}</p>
+                      )}
+                      {entry.vendorName && (
+                        <p className="text-[10px] font-bold text-indigo-400/80 uppercase truncate mt-0.5">{entry.vendorName}</p>
                       )}
                     </div>
                     <div className="text-right shrink-0 pr-2">
@@ -1330,15 +1458,43 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
                 </div>
               )}
 
+              {/* Qty + Price per unit */}
+              <div className="grid grid-cols-2 gap-5">
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Quantity</label>
+                  <input
+                    type="number" step="0.01" min="0"
+                    value={quantity} onChange={e => setQuantity(e.target.value)}
+                    className="w-full bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none px-5 py-5 rounded-2xl text-xl font-black text-slate-900 transition-all"
+                    placeholder="0"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Price / Unit (₹)</label>
+                  <div className="relative">
+                    <IndianRupee className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={18} />
+                    <input
+                      type="number" step="0.01" min="0"
+                      value={pricePerUnit} onChange={e => setPricePerUnit(e.target.value)}
+                      className="w-full bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none pl-10 pr-5 py-5 rounded-2xl text-xl font-black text-slate-900 transition-all"
+                      placeholder="0.00"
+                    />
+                  </div>
+                </div>
+              </div>
+
               {/* Amount + Category */}
               <div className="grid grid-cols-2 gap-5">
                 <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Amount (₹)</label>
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">
+                    Total (₹)
+                    {quantity && pricePerUnit && <span className="ml-2 text-indigo-400 normal-case font-bold tracking-normal">auto-calculated</span>}
+                  </label>
                   <div className="relative">
                     <IndianRupee className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={26} />
                     <input
                       required type="number" step="0.01"
-                      value={amount} onChange={e => setAmount(e.target.value)}
+                      value={amount} onChange={e => { setAmount(e.target.value); }}
                       className="w-full bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none pl-14 pr-5 py-5 rounded-2xl text-3xl font-black text-slate-900 transition-all"
                       placeholder="0.00" autoFocus
                     />
@@ -1355,6 +1511,41 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
                   </select>
                 </div>
               </div>
+
+              {/* Product picker — always visible once a category is selected */}
+              {category && (
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">
+                    Product <span className="normal-case font-medium tracking-normal text-slate-300">— auto-fills description &amp; price</span>
+                  </label>
+                  <div className="relative">
+                    <Package className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={18} />
+                    {(() => {
+                      const catProducts = catalogProducts.filter(p => p.category === category);
+                      return (
+                        <select
+                          value={selectedProductId}
+                          onChange={e => setSelectedProductId(e.target.value)}
+                          className="w-full h-14 bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none pl-12 pr-8 rounded-2xl text-sm font-bold text-slate-700 appearance-none uppercase transition-all"
+                        >
+                          {catProducts.length === 0
+                            ? <option value="">No products defined for this category</option>
+                            : <>
+                                <option value="">-- Select Product (optional) --</option>
+                                {catProducts.map(p => (
+                                  <option key={p.id} value={p.id!}>
+                                    {p.name}{p.pricePerUnit != null ? ` — ₹${p.pricePerUnit}${p.unit ? `/${p.unit}` : ''}` : ''}
+                                  </option>
+                                ))}
+                              </>
+                          }
+                        </select>
+                      );
+                    })()}
+                    <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={16} />
+                  </div>
+                </div>
+              )}
 
               {entryType === 'expense' && status === 'paid' && parseFloat(amount) > 0 && primaryCashAccount && parseFloat(amount) - (activeMode === 'edit' && editingId ? (entries.find((en: DailyCounterEntry) => en.id === editingId)?.status === 'paid' ? entries.find((en: DailyCounterEntry) => en.id === editingId)?.amount || 0 : 0) : 0) > primaryCashAccount.balance && (
                 <p className="text-[10px] font-black text-rose-500 uppercase tracking-widest flex items-center gap-1.5 -mt-1">
@@ -1549,56 +1740,139 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
         );
       })()}
 
-      {/* ── VENDOR QUICK-ADD MODAL ─────────────────────────────── */}
+      {/* ── PRODUCT CATALOG MODAL ─────────────────────────────── */}
+      {showProductCatalog && (
+        <ProductCatalog
+          user={user}
+          ownerId={profile.ownerId || user.uid}
+          onSelect={handleProductSelect}
+          onClose={() => { setShowProductCatalog(false); loadCatalogProducts(); }}
+        />
+      )}
+
+      {/* ── VENDOR DIRECTORY MODAL ─────────────────────────────── */}
       {showVendorModal && (
-        <div className="fixed inset-0 z-[200] flex items-end md:items-center justify-center p-4">
-          <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-md" onClick={() => { setShowVendorModal(false); resetVendorForm(); }} />
-          <div className="relative w-full max-w-lg bg-white rounded-[2.5rem] shadow-2xl overflow-hidden animate-in slide-in-from-bottom duration-300">
-            <header className="px-8 py-6 bg-indigo-600 text-white flex items-center justify-between">
-              <div>
-                <h3 className="text-xl font-black uppercase tracking-tight">New Vendor</h3>
-                <p className="text-indigo-200/70 text-[10px] font-bold uppercase tracking-widest mt-1">Add to vendor directory</p>
+        <div className="fixed inset-0 z-[200] flex items-end sm:items-center justify-center">
+          <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-md" onClick={() => { setShowVendorModal(false); resetVendorForm(); setVendorSearch(''); }} />
+          <div className="relative w-full max-w-lg max-h-[90vh] bg-white rounded-t-[3rem] sm:rounded-[3rem] shadow-2xl flex flex-col overflow-hidden animate-in slide-in-from-bottom duration-300">
+
+            {/* Header */}
+            <div className="bg-slate-900 px-8 pt-8 pb-6 flex items-center justify-between shrink-0">
+              <div className="flex items-center gap-4">
+                <div className="p-3 bg-white/10 rounded-2xl">
+                  <Store size={20} className="text-white" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-white uppercase tracking-tight">Vendor Directory</h3>
+                  <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">
+                    {vendors.length} vendor{vendors.length !== 1 ? 's' : ''} defined
+                  </p>
+                </div>
               </div>
-              <button onClick={() => { setShowVendorModal(false); resetVendorForm(); }} className="p-3 bg-white/15 rounded-2xl active:bg-white/30 transition-all">
-                <X size={20} />
+              <button onClick={() => { setShowVendorModal(false); resetVendorForm(); setVendorSearch(''); }} className="p-2.5 bg-white/10 text-white rounded-2xl hover:bg-white/20 transition-all">
+                <X size={18} />
               </button>
-            </header>
-            <form onSubmit={handleVendorSave} className="p-8 space-y-5">
-              <div className="space-y-2">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1 block">Vendor Name *</label>
+            </div>
+
+            {/* Search + Add */}
+            <div className="px-6 pt-5 pb-3 flex items-center gap-3 shrink-0">
+              <div className="relative flex-1">
+                <Search size={14} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
                 <input
-                  required type="text" value={vName} onChange={e => setVName(e.target.value)}
-                  placeholder="e.g. FRESH FARMS SUPPLY"
-                  className="w-full h-14 bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none px-5 rounded-2xl text-sm font-bold text-slate-700 uppercase transition-all"
-                  autoFocus
+                  value={vendorSearch}
+                  onChange={e => setVendorSearch(e.target.value)}
+                  placeholder="Search vendors…"
+                  className="w-full pl-10 pr-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-2xl text-sm font-medium text-slate-700 outline-none focus:border-indigo-400 transition-all"
                 />
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1 block">Phone</label>
-                  <input type="tel" value={vPhone} onChange={e => setVPhone(e.target.value)} placeholder="+91 …" className="w-full h-12 bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none px-5 rounded-2xl text-sm font-bold text-slate-700 transition-all" />
+              <button
+                onClick={() => { resetVendorForm(); setShowVendorForm(true); }}
+                className="flex items-center gap-2 px-5 py-3 bg-indigo-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-lg shadow-indigo-100 active:scale-95 transition-all shrink-0"
+              >
+                <Plus size={14} /> Add
+              </button>
+            </div>
+
+            {/* Inline Add/Edit Form */}
+            {showVendorForm && (
+              <form onSubmit={handleVendorSave} className="mx-6 mb-3 bg-indigo-50 rounded-[2rem] p-5 border-2 border-indigo-100 shrink-0 space-y-3">
+                <p className="text-[9px] font-black text-indigo-500 uppercase tracking-widest">
+                  {editingVendorId ? 'Edit Vendor' : 'New Vendor'}
+                </p>
+                <input
+                  required type="text" value={vName} onChange={e => setVName(e.target.value)}
+                  placeholder="Vendor name *"
+                  className="w-full px-4 py-3 bg-white border-2 border-indigo-100 rounded-2xl text-sm font-black text-slate-900 outline-none focus:border-indigo-400 uppercase placeholder:normal-case placeholder:font-medium"
+                  autoFocus
+                />
+                <div className="grid grid-cols-2 gap-3">
+                  <input type="tel" value={vPhone} onChange={e => setVPhone(e.target.value)} placeholder="Phone" className="w-full px-4 py-3 bg-white border-2 border-indigo-100 rounded-2xl text-sm font-medium text-slate-700 outline-none focus:border-indigo-400" />
+                  <input type="text" value={vGst} onChange={e => setVGst(e.target.value)} placeholder="GST No." className="w-full px-4 py-3 bg-white border-2 border-indigo-100 rounded-2xl text-sm font-medium text-slate-700 outline-none focus:border-indigo-400 uppercase" />
                 </div>
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1 block">GST No.</label>
-                  <input type="text" value={vGst} onChange={e => setVGst(e.target.value)} placeholder="27AAAAA0000A1Z5" className="w-full h-12 bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none px-5 rounded-2xl text-sm font-bold text-slate-700 uppercase tracking-widest transition-all" />
+                <input type="email" value={vEmail} onChange={e => setVEmail(e.target.value)} placeholder="Email" className="w-full px-4 py-3 bg-white border-2 border-indigo-100 rounded-2xl text-sm font-medium text-slate-700 outline-none focus:border-indigo-400" />
+                <textarea value={vAddress} onChange={e => setVAddress(e.target.value)} placeholder="Address" rows={2} className="w-full px-4 py-3 bg-white border-2 border-indigo-100 rounded-2xl text-sm font-medium text-slate-700 outline-none focus:border-indigo-400 resize-none" />
+                <div className="flex gap-3">
+                  <button type="button" onClick={resetVendorForm} className="flex-1 py-3 bg-white text-slate-400 rounded-2xl text-[10px] font-black uppercase tracking-widest border-2 border-slate-100">
+                    Cancel
+                  </button>
+                  <button type="submit" disabled={vSaving || !vName.trim()} className="flex-1 py-3 bg-indigo-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest disabled:opacity-50 flex items-center justify-center gap-2 active:scale-95 transition-all">
+                    {vSaving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+                    {editingVendorId ? 'Update' : 'Save'}
+                  </button>
                 </div>
-              </div>
-              <div className="space-y-2">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1 block">Email</label>
-                <input type="email" value={vEmail} onChange={e => setVEmail(e.target.value)} placeholder="vendor@example.com" className="w-full h-12 bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none px-5 rounded-2xl text-sm font-bold text-slate-700 transition-all" />
-              </div>
-              <div className="space-y-2">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1 block">Address</label>
-                <textarea value={vAddress} onChange={e => setVAddress(e.target.value)} placeholder="Full address…" rows={2} className="w-full bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none px-5 py-4 rounded-2xl text-sm font-medium text-slate-600 resize-none transition-all" />
-              </div>
-              <div className="flex gap-3 pt-2">
-                <button type="button" onClick={() => { setShowVendorModal(false); resetVendorForm(); }} className="flex-1 h-14 bg-slate-50 text-slate-400 rounded-2xl font-black uppercase text-[10px] tracking-widest border border-slate-100">Cancel</button>
-                <button type="submit" disabled={vSaving} className="flex-1 h-14 bg-indigo-600 text-white rounded-2xl font-black uppercase text-[10px] tracking-widest shadow-xl disabled:opacity-50 flex items-center justify-center gap-2">
-                  {vSaving ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
-                  Save Vendor
-                </button>
-              </div>
-            </form>
+              </form>
+            )}
+
+            {/* Vendor List */}
+            <div className="flex-1 overflow-y-auto px-6 pb-8">
+              {vendors.length === 0 ? (
+                <div className="py-16 text-center">
+                  <Store size={40} className="mx-auto text-slate-200 mb-3" />
+                  <p className="text-xs font-black text-slate-300 uppercase tracking-widest">No vendors yet — add one above</p>
+                </div>
+              ) : (
+                <div className="space-y-2 pt-2">
+                  {vendors
+                    .filter(v =>
+                      !vendorSearch ||
+                      v.name.toLowerCase().includes(vendorSearch.toLowerCase()) ||
+                      (v.phone || '').includes(vendorSearch) ||
+                      (v.gst || '').toLowerCase().includes(vendorSearch.toLowerCase())
+                    )
+                    .map(v => (
+                      <div key={v.id} className="flex items-center justify-between gap-3 bg-slate-50 rounded-2xl px-4 py-3.5 border border-slate-100">
+                        <div className="min-w-0">
+                          <p className="text-sm font-black text-slate-900 uppercase truncate">{v.name}</p>
+                          <div className="flex items-center gap-3 mt-0.5 flex-wrap">
+                            {v.phone && <span className="text-[10px] font-bold text-slate-400">{v.phone}</span>}
+                            {v.gst && <span className="text-[10px] font-bold text-indigo-400 uppercase">{v.gst}</span>}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            onClick={() => handleVendorEdit(v)}
+                            className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all"
+                            title="Edit"
+                          >
+                            <Edit2 size={13} />
+                          </button>
+                          <button
+                            onClick={() => v.id && handleVendorDelete(v.id)}
+                            disabled={deletingVendorId === v.id}
+                            className="p-2 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-xl transition-all disabled:opacity-50"
+                            title="Delete"
+                          >
+                            {deletingVendorId === v.id
+                              ? <Loader2 size={13} className="animate-spin" />
+                              : <Trash2 size={13} />}
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  }
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}

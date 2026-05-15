@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
 import type { User } from 'firebase/auth';
-import { collection, query, getDocs, addDoc, doc, deleteDoc, updateDoc, where } from 'firebase/firestore';
+import { collection, getDocs, addDoc, doc, deleteDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { Vendor } from '../types';
 import {
@@ -27,8 +27,7 @@ const VendorManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
   const fetchVendors = async () => {
     setLoading(true);
     try {
-      const q = query(collection(db, 'vendors'), where('ownerId', '==', dataOwnerId));
-      const snap = await getDocs(q);
+      const snap = await getDocs(collection(db, 'vendors'));
       setVendors(snap.docs.map(d => ({ id: d.id, ...d.data() } as Vendor)).sort((a, b) => a.name.localeCompare(b.name)));
     } catch (err) { console.error(err); } finally { setLoading(false); }
   };

@@ -21,6 +21,8 @@ export interface DailyCounterEntry {
   outletId: string;
   type: 'expense' | 'purchase';
   amount: number;
+  quantity?: number;
+  pricePerUnit?: number;
   date: string;
   category: string;
   description: string;
@@ -289,14 +291,52 @@ export const DEFAULT_OPS = [
   'MISC', 'ELECTRICITY', 'WATER', 'TRANSPORTATION & TRAVEL EXPENSE', 'PRINTING AND STATIONERY', 'OFFICE'
 ];
 
+// --- CREW TERMINAL CATEGORIES (separate, curated list) ---
+export const CREW_PURCHASE_CATEGORIES = [
+  'BAKERY',
+  'INGREDIENTS FOR DRINKS',
+  'INGREDIENTS FOR FOOD',
+  'SERVING FOR DRINKS',
+  'SERVING FOR FOOD',
+  'IROHA',
+].sort();
+
+export const CREW_EXPENSE_CATEGORIES = [
+  'EMPLOYEE ADVANCE',
+  'INTERNET & PHONE BILLS',
+  'OPERATIONS - REPAIR & MAINTENANCE',
+  'OPERATIONS - MARKETING',
+  'OPERATIONS - GAS CYLINDER',
+  'OPERATIONS - ELECTRICITY',
+  'FIXED - RENTALS',
+  'STAFF MEALS',
+  'OPERATION- STORE EQUIPMENT',
+  'OPERATIONS -TRANSPORTATION & TRAVEL EXPENSE',
+  'WATER',
+  'OPERATION - EMERGENCY MEDICINE',
+].sort();
+
 export type CogsBucket = 'FOOD' | 'DRINKS' | 'FOOD SERVINGS' | 'DRINKS SERVINGS' | 'UNCATEGORIZED';
 
 export interface CategorySettings {
   cogsKeywords: string[];
   labourKeywords: string[];
   opsKeywords: string[];
-  menuSegments?: string[]; 
+  menuSegments?: string[];
   cogsBucketMapping?: Record<string, CogsBucket>;
+  productCatalogEnabled?: boolean;
+}
+
+export interface Product {
+  id?: string;
+  name: string;
+  category: string;
+  pricePerUnit?: number;
+  quantity?: number;
+  unit?: string;
+  ownerId: string;
+  userId: string;
+  createdAt: number;
 }
 
 export interface SalesAnalytics {
