@@ -1,25 +1,25 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { User } from 'firebase/auth';
-import { 
-  collection, 
-  query, 
-  where, 
-  getDocs, 
-  doc, 
+import {
+  collection,
+  query,
+  where,
+  getDocs,
+  getDoc,
+  doc,
   setDoc,
   deleteDoc,
-  addDoc,
-  orderBy
+  addDoc
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { CashFlowSnapshot, PnLMonthlySnapshot, MONTH_NAMES, BankTransaction, LoanProfile } from '../types';
-import { 
-  Banknote, 
-  Save, 
-  TrendingUp, 
-  TrendingDown, 
-  ShieldCheck, 
-  Calculator, 
+import {
+  Banknote,
+  Save,
+  TrendingUp,
+  TrendingDown,
+  ShieldCheck,
+  Calculator,
   ArrowRightLeft,
   Calendar,
   AlertCircle,
@@ -28,7 +28,8 @@ import {
   Trash2,
   Edit2,
   CheckCircle2,
-  Layers
+  Layers,
+  BarChart2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -43,6 +44,8 @@ const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
 
   // Mapping state: transactionId -> loanProfileId
   const [mappings, setMappings] = useState<Record<string, string>>({});
+
+  const [activeTab, setActiveTab] = useState<'mapping' | 'overview'>('mapping');
 
   // Loan Library form
   const [isAddingProfile, setIsAddingProfile] = useState(false);
@@ -76,7 +79,7 @@ const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
       const bankQuery = query(
         collection(db, 'bank_statement_imports'),
         where('userId', '==', dataOwnerId),
-        where('category', 'in', ['LOAN_EMI', 'INTEREST_ONLY', 'CAPEX_REPAYMENT'])
+        where('category', 'in', ['LOAN_EMI', 'INTEREST_ONLY', 'CAPEX_REPAYMENT', 'CREDIT CARD PAYMENT', 'PERSONAL'])
       );
       const bankRes = await getDocs(bankQuery);
       
@@ -86,14 +89,14 @@ const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
       });
       setPeriodBTs(transactions);
 
-      // 4. Fetch Cash Flow Snapshot (Mappings)
-      const snapId = `${user.uid}_${selectedYear}_${selectedMonth}`;
+      // 4. Fetch Cash Flow Snapshot (Mappings) — use deterministic ID
+      const snapId = `${dataOwnerId}_${selectedYear}_${selectedMonth}`;
       const snapRef = doc(db, 'cash_flow_snapshots', snapId);
-      const cfRes = await getDocs(query(collection(db, 'cash_flow_snapshots'), where('userId', '==', dataOwnerId), where('month', '==', selectedMonth), where('year', '==', selectedYear)));
-      
-      if (!cfRes.empty) {
-        const data = cfRes.docs[0].data() as CashFlowSnapshot;
-        setCashFlowSnap({ id: cfRes.docs[0].id, ...data });
+      const cfSnap = await getDoc(snapRef);
+
+      if (cfSnap.exists()) {
+        const data = cfSnap.data() as CashFlowSnapshot;
+        setCashFlowSnap({ id: cfSnap.id, ...data });
         setMappings(data.mappings || {});
       } else {
         setCashFlowSnap(null);
@@ -118,6 +121,8 @@ const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
     const loanEmi = periodBTs.filter(t => t.category === 'LOAN_EMI').reduce((acc, t) => acc + t.amount, 0);
     const interestOnly = periodBTs.filter(t => t.category === 'INTEREST_ONLY').reduce((acc, t) => acc + t.amount, 0);
     const capex = periodBTs.filter(t => t.category === 'CAPEX_REPAYMENT').reduce((acc, t) => acc + t.amount, 0);
+    const creditCard = periodBTs.filter(t => t.category === 'CREDIT CARD PAYMENT').reduce((acc, t) => acc + t.amount, 0);
+    const personal = periodBTs.filter(t => t.category === 'PERSONAL').reduce((acc, t) => acc + t.amount, 0);
 
     // Profile-wise breakdown
     const byProfile: Record<string, number> = {};
@@ -128,18 +133,45 @@ const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
       }
     });
 
-    return { loanEmi, interestOnly, capex, total: loanEmi + interestOnly + capex, byProfile };
+    const total = loanEmi + interestOnly + capex + creditCard + personal;
+    return { loanEmi, interestOnly, capex, creditCard, personal, total, byProfile };
   }, [periodBTs, mappings]);
 
   const realCashLeft = totalNetProfit - totalObligationsBreakdown.total;
 
+  const categoryBreakdown = useMemo(() => {
+    const cats: { key: string; label: string; color: string; bg: string; hex: string }[] = [
+      { key: 'LOAN_EMI',            label: 'Loan EMI',            color: 'bg-rose-500',   bg: 'bg-rose-50',   hex: '#f43f5e' },
+      { key: 'INTEREST_ONLY',       label: 'Interest Only',       color: 'bg-orange-500', bg: 'bg-orange-50', hex: '#f97316' },
+      { key: 'CAPEX_REPAYMENT',     label: 'Capex Repayment',     color: 'bg-amber-500',  bg: 'bg-amber-50',  hex: '#f59e0b' },
+      { key: 'CREDIT CARD PAYMENT', label: 'Credit Card Payment', color: 'bg-violet-500', bg: 'bg-violet-50', hex: '#8b5cf6' },
+      { key: 'PERSONAL',            label: 'Personal',            color: 'bg-pink-500',   bg: 'bg-pink-50',   hex: '#ec4899' },
+    ];
+    return cats.map(c => ({
+      ...c,
+      amount: periodBTs.filter(t => t.category === c.key).reduce((s, t) => s + t.amount, 0),
+    })).filter(c => c.amount > 0);
+  }, [periodBTs]);
+
+  const profileBreakdown = useMemo(() => {
+    return loanProfiles
+      .map(p => ({
+        ...p,
+        amount: Object.entries(totalObligationsBreakdown.byProfile)
+          .filter(([id]) => id === p.id)
+          .reduce((s, [, v]) => s + (v as number), 0),
+      }))
+      .filter(p => p.amount > 0)
+      .sort((a, b) => b.amount - a.amount);
+  }, [loanProfiles, totalObligationsBreakdown.byProfile]);
+
   const handleSaveSnapshot = async () => {
     try {
-      const snapId = `${user.uid}_${selectedYear}_${selectedMonth}`;
+      const snapId = `${dataOwnerId}_${selectedYear}_${selectedMonth}`;
       const snapRef = doc(db, 'cash_flow_snapshots', snapId);
-      
+
       const payload: CashFlowSnapshot = {
-        userId: user.uid,
+        userId: dataOwnerId,
         month: selectedMonth,
         year: selectedYear,
         netProfit: totalNetProfit,
@@ -189,11 +221,63 @@ const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
     }
   };
 
-  const updateMapping = (txId: string, profileId: string) => {
-    setMappings(prev => ({
-      ...prev,
-      [txId]: profileId
-    }));
+  const updateMapping = async (txId: string, profileId: string) => {
+    const newMappings = { ...mappings, [txId]: profileId };
+    setMappings(newMappings);
+    // Auto-save immediately so the user doesn't need to click "Update Reality Snap"
+    try {
+      const snapId = `${dataOwnerId}_${selectedYear}_${selectedMonth}`;
+      const snapRef = doc(db, 'cash_flow_snapshots', snapId);
+      await setDoc(snapRef, {
+        userId: dataOwnerId,
+        month: selectedMonth,
+        year: selectedYear,
+        mappings: newMappings,
+        updatedAt: Date.now()
+      }, { merge: true });
+    } catch (err) {
+      console.error('Error saving mapping:', err);
+    }
+  };
+
+  const PROFILE_PALETTE = ['#6366f1','#0ea5e9','#14b8a6','#84cc16','#f59e0b','#f43f5e','#a855f7','#06b6d4'];
+
+  const renderDonut = (segs: { label: string; amount: number; color: string }[], total: number) => {
+    const size = 200;
+    const sw = 48;
+    const r = (size - sw) / 2;
+    const circ = 2 * Math.PI * r;
+    let acc = 0;
+    const slices = segs.filter(s => s.amount > 0 && total > 0).map(s => {
+      const len = (s.amount / total) * circ;
+      const slice = { ...s, len, offset: circ - acc };
+      acc += len;
+      return slice;
+    });
+    const pct = total > 0 ? Math.round((segs.reduce((s, c) => s + c.amount, 0) / total) * 100) : 0;
+    return (
+      <div className="relative w-fit mx-auto">
+        <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+          <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="#f1f5f9" strokeWidth={sw} />
+          {slices.map((s, i) => (
+            <circle
+              key={i}
+              cx={size/2} cy={size/2} r={r}
+              fill="none"
+              stroke={s.color}
+              strokeWidth={sw}
+              strokeDasharray={`${s.len} ${circ - s.len}`}
+              strokeDashoffset={s.offset}
+              transform={`rotate(-90 ${size/2} ${size/2})`}
+            />
+          ))}
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+          <span className="text-2xl font-black text-slate-900">{pct}%</span>
+          <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">allocated</span>
+        </div>
+      </div>
+    );
   };
 
   return (
@@ -235,6 +319,178 @@ const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
         </div>
       </header>
 
+      {/* Tab switcher */}
+      <div className="flex gap-2 bg-slate-100 p-1.5 rounded-2xl w-fit">
+        {([['mapping', ArrowRightLeft, 'Period Mapping'], ['overview', BarChart2, 'Visual Overview']] as const).map(([tab, Icon, label]) => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === tab ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+          >
+            <Icon size={13} /> {label}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'overview' ? (
+        <div className="space-y-8">
+          {/* Summary cards */}
+          <div className="grid grid-cols-3 gap-6">
+            {[
+              { label: 'Net Profit (P&L)', value: totalNetProfit, color: 'text-indigo-600', bg: 'bg-indigo-50', border: 'border-indigo-100' },
+              { label: 'Total Obligations', value: -totalObligationsBreakdown.total, color: 'text-rose-600', bg: 'bg-rose-50', border: 'border-rose-100' },
+              { label: 'Real Cash Left', value: realCashLeft, color: realCashLeft >= 0 ? 'text-emerald-600' : 'text-rose-600', bg: realCashLeft >= 0 ? 'bg-emerald-50' : 'bg-rose-50', border: realCashLeft >= 0 ? 'border-emerald-100' : 'border-rose-100' },
+            ].map(({ label, value, color, bg, border }) => (
+              <div key={label} className={`${bg} border ${border} rounded-[2rem] p-8`}>
+                <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-3">{label}</p>
+                <p className={`text-3xl font-black tracking-tighter ${color}`}>
+                  {value < 0 ? '-' : ''}₹{Math.abs(value).toLocaleString('en-IN')}
+                </p>
+              </div>
+            ))}
+          </div>
+
+          {/* Stacked bar */}
+          {totalNetProfit > 0 && (
+            <div className="bg-white border border-slate-100 rounded-[2.5rem] p-10 space-y-6">
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Profit Allocation</p>
+              <div className="w-full h-14 rounded-2xl overflow-hidden flex">
+                {categoryBreakdown.map(c => (
+                  <div
+                    key={c.key}
+                    className={`${c.color} h-full transition-all`}
+                    style={{ width: `${Math.min((c.amount / totalNetProfit) * 100, 100)}%` }}
+                    title={`${c.label}: ₹${c.amount.toLocaleString('en-IN')}`}
+                  />
+                ))}
+                {realCashLeft > 0 && (
+                  <div
+                    className="bg-emerald-500 h-full flex-1"
+                    title={`Cash Left: ₹${realCashLeft.toLocaleString('en-IN')}`}
+                  />
+                )}
+              </div>
+              {/* Legend */}
+              <div className="flex flex-wrap gap-4">
+                {categoryBreakdown.map(c => (
+                  <div key={c.key} className="flex items-center gap-2">
+                    <div className={`w-3 h-3 rounded-full ${c.color}`} />
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">{c.label}</span>
+                    <span className="text-[10px] font-black text-slate-800">₹{c.amount.toLocaleString('en-IN')}</span>
+                  </div>
+                ))}
+                {realCashLeft > 0 && (
+                  <div className="flex items-center gap-2">
+                    <div className="w-3 h-3 rounded-full bg-emerald-500" />
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">Cash Left</span>
+                    <span className="text-[10px] font-black text-slate-800">₹{realCashLeft.toLocaleString('en-IN')}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Pie charts — by category and by named profile */}
+          {(categoryBreakdown.length > 0 || profileBreakdown.length > 0) && (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+              {/* Category donut */}
+              {categoryBreakdown.length > 0 && (
+                <div className="bg-white border border-slate-100 rounded-[2.5rem] p-10 space-y-8">
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">By Category</p>
+                  {renderDonut([
+                    ...categoryBreakdown.map(c => ({ label: c.label, amount: c.amount, color: c.hex })),
+                    ...(realCashLeft > 0 ? [{ label: 'Cash Left', amount: realCashLeft, color: '#10b981' }] : []),
+                  ], totalNetProfit)}
+                  <div className="space-y-2.5">
+                    {categoryBreakdown.map(c => {
+                      const pct = totalNetProfit > 0 ? (c.amount / totalNetProfit) * 100 : 0;
+                      return (
+                        <div key={c.key} className="flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: c.hex }} />
+                            <span className="text-[10px] font-bold text-slate-600 uppercase truncate">{c.label}</span>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span className="text-[9px] font-bold text-slate-400">{pct.toFixed(1)}%</span>
+                            <span className="text-[11px] font-black text-slate-900">₹{c.amount.toLocaleString('en-IN')}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {realCashLeft > 0 && (
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-2.5">
+                          <div className="w-2.5 h-2.5 rounded-full shrink-0 bg-emerald-500" />
+                          <span className="text-[10px] font-bold text-slate-600 uppercase">Cash Left</span>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="text-[9px] font-bold text-slate-400">{((realCashLeft / totalNetProfit) * 100).toFixed(1)}%</span>
+                          <span className="text-[11px] font-black text-emerald-600">₹{realCashLeft.toLocaleString('en-IN')}</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Profile donut */}
+              {profileBreakdown.length > 0 && (
+                <div className="bg-white border border-slate-100 rounded-[2.5rem] p-10 space-y-8">
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">By Named Profile</p>
+                  {renderDonut([
+                    ...profileBreakdown.map((p, i) => ({ label: p.name, amount: p.amount, color: PROFILE_PALETTE[i % PROFILE_PALETTE.length] })),
+                    ...(realCashLeft > 0 ? [{ label: 'Cash Left', amount: realCashLeft, color: '#10b981' }] : []),
+                  ], totalNetProfit)}
+                  <div className="space-y-2.5">
+                    {profileBreakdown.map((p, i) => {
+                      const pct = totalNetProfit > 0 ? (p.amount / totalNetProfit) * 100 : 0;
+                      const hex = PROFILE_PALETTE[i % PROFILE_PALETTE.length];
+                      return (
+                        <div key={p.id} className="flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: hex }} />
+                            <div className="min-w-0">
+                              <span className="text-[10px] font-bold text-slate-800 uppercase truncate block">{p.name}</span>
+                              <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest">{p.category.replace(/_/g, ' ')}</span>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span className="text-[9px] font-bold text-slate-400">{pct.toFixed(1)}%</span>
+                            <span className="text-[11px] font-black text-slate-900">₹{p.amount.toLocaleString('en-IN')}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {realCashLeft > 0 && (
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-2.5">
+                          <div className="w-2.5 h-2.5 rounded-full shrink-0 bg-emerald-500" />
+                          <span className="text-[10px] font-bold text-slate-600 uppercase">Cash Left</span>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="text-[9px] font-bold text-slate-400">{((realCashLeft / totalNetProfit) * 100).toFixed(1)}%</span>
+                          <span className="text-[11px] font-black text-emerald-600">₹{realCashLeft.toLocaleString('en-IN')}</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+            </div>
+          )}
+
+          {categoryBreakdown.length === 0 && (
+            <div className="py-24 bg-white border-2 border-dashed border-slate-100 rounded-[3rem] flex flex-col items-center justify-center">
+              <BarChart2 size={48} className="text-slate-200 mb-4" />
+              <p className="text-sm font-black text-slate-300 uppercase tracking-widest">No obligations found for this period</p>
+              <p className="text-[10px] font-bold text-slate-300 uppercase tracking-widest mt-2">Tag transactions in the Mapping tab first</p>
+            </div>
+          )}
+        </div>
+      ) : (
+      <>
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-10">
         {/* Loan Library / Profiles */}
         <div className="xl:col-span-4 space-y-8">
@@ -281,6 +537,8 @@ const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
                           <option value="LOAN_EMI">Loan EMI</option>
                           <option value="INTEREST_ONLY">Interest Only</option>
                           <option value="CAPEX_REPAYMENT">Capex Repayment</option>
+                          <option value="CREDIT CARD PAYMENT">Credit Card Payment</option>
+                          <option value="PERSONAL">Personal</option>
                         </select>
                       </div>
                       <button 
@@ -359,13 +617,13 @@ const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
 
                        <div className="md:col-span-5 flex items-center gap-3">
                           <span className="text-[9px] font-black text-slate-400 whitespace-nowrap">MAP TO:</span>
-                          <select 
+                          <select
                             value={mappings[tx.id!] || ''}
                             onChange={e => updateMapping(tx.id!, e.target.value)}
                             className="flex-1 bg-slate-50 border border-slate-100 px-4 py-2 rounded-xl font-bold text-xs outline-none focus:border-slate-900 transition-all appearance-none cursor-pointer"
                           >
                              <option value="">-- Select Loan --</option>
-                             {loanProfiles.filter(p => p.category === tx.category).map(p => (
+                             {loanProfiles.map(p => (
                                <option key={p.id} value={p.id}>{p.name}</option>
                              ))}
                           </select>
@@ -454,6 +712,8 @@ const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
             </div>
          </div>
       </div>
+      </>
+      )}
     </div>
   );
 };

@@ -116,6 +116,38 @@ service cloud.firestore {
       allow delete: if isDocOwner() || (isAuthenticated() && resource.data.ownerId == request.auth.uid);
     }
 
+    // expense_snapshots — admin owns; linked crew can write (they generate entries that feed reporting)
+    match /expense_snapshots/{snapId} {
+      allow read: if canRead() ||
+        (isAuthenticated() && resource.data.userId == request.auth.uid);
+      allow create: if isAuthenticated() && (
+        request.resource.data.userId == request.auth.uid ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.ownerId == request.resource.data.userId)
+      );
+      allow update: if isDocOwner() || isLinkedToOwner();
+      allow delete: if isDocOwner();
+    }
+
+    // cash_flow_snapshots — admin-only; keyed by ownerId_year_month
+    match /cash_flow_snapshots/{snapId} {
+      allow read: if isAuthenticated() && (
+        resource == null || request.auth.uid == resource.data.userId
+      );
+      allow write: if isAuthenticated() && (
+        request.resource.data.userId == request.auth.uid
+      );
+    }
+
+    // loan_profiles — admin-only
+    match /loan_profiles/{profileId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && (
+        resource == null ? request.resource.data.userId == request.auth.uid
+                        : resource.data.userId == request.auth.uid
+      );
+    }
+
     // Default rule for all other collections
     match /{collection}/{docId} {
       allow read: if canRead();

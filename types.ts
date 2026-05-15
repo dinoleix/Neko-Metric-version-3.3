@@ -14,6 +14,14 @@ export interface UserProfile {
 
 export type EntryStatus = 'paid' | 'pending' | 'cancelled';
 
+export interface BillItem {
+  productId: string;
+  productName: string;
+  quantity: number;
+  pricePerUnit: number;
+  amount: number;
+}
+
 export interface DailyCounterEntry {
   id?: string;
   userId: string;
@@ -31,6 +39,7 @@ export interface DailyCounterEntry {
   billNumber?: string;
   vendorId?: string;
   vendorName?: string;
+  items?: BillItem[];
   createdAt: number;
 }
 
@@ -731,7 +740,7 @@ export interface LoanProfile {
   id?: string;
   userId: string;
   name: string;
-  category: 'LOAN_EMI' | 'INTEREST_ONLY' | 'CAPEX_REPAYMENT';
+  category: 'LOAN_EMI' | 'INTEREST_ONLY' | 'CAPEX_REPAYMENT' | 'CREDIT CARD PAYMENT' | 'PERSONAL';
   description?: string;
   isActive: boolean;
   createdAt: number;

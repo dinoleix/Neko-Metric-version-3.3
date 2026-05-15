@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import type { User } from 'firebase/auth';
-import { collection, query, getDocs, getDoc, where, addDoc, doc, deleteDoc, updateDoc, orderBy } from 'firebase/firestore';
+import { collection, query, getDocs, getDoc, where, addDoc, doc, deleteDoc, updateDoc, setDoc, increment, orderBy } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, storage } from '../firebase';
 import {
@@ -17,7 +17,8 @@ import {
   EntryStatus,
   BankAccount,
   Vendor,
-  Product
+  Product,
+  BillItem
 } from '../types';
 import ProductCatalog from './ProductCatalog';
 import {
@@ -165,6 +166,12 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
   const [catalogProducts, setCatalogProducts] = useState<Product[]>([]);
   const [selectedProductId, setSelectedProductId] = useState('');
 
+  // Bill-builder state (purchase mode)
+  const [billItems, setBillItems] = useState<BillItem[]>([]);
+  const [billProductId, setBillProductId] = useState('');
+  const [billQty, setBillQty] = useState('');
+  const [billPrice, setBillPrice] = useState('');
+
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [selectedVendorId, setSelectedVendorId] = useState('');
   const [showVendorModal, setShowVendorModal] = useState(false);
@@ -192,6 +199,8 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
   const [dsSuccess, setDsSuccess] = useState(false);
   const [dsExistingId, setDsExistingId] = useState<string | null>(null);
   const [dsDuplicateWarning, setDsDuplicateWarning] = useState(false);
+  const [dsLogs, setDsLogs] = useState<DailySalesLog[]>([]);
+  const [dsLoadingLogs, setDsLoadingLogs] = useState(false);
 
   const fetchEntries = async () => {
     setLoading(true);
@@ -303,6 +312,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
 
   useEffect(() => {
     if (activeMode === 'view') fetchEntries();
+    if (activeMode === 'daily-sales') fetchDsLogs();
   }, [activeMode]);
 
   useEffect(() => {
@@ -311,7 +321,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     if (q > 0 && p > 0) setAmount((q * p).toFixed(2));
   }, [quantity, pricePerUnit]);
 
-  useEffect(() => { setSelectedProductId(''); }, [category]);
+  useEffect(() => { setSelectedProductId(''); setBillProductId(''); setBillQty(''); setBillPrice(''); setBillItems([]); }, [category]);
 
   useEffect(() => {
     if (!selectedProductId) return;
@@ -321,6 +331,17 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     if (product.pricePerUnit != null) setPricePerUnit(product.pricePerUnit.toString());
     if (product.quantity != null) setQuantity(product.quantity.toString());
   }, [selectedProductId]);
+
+  // Auto-fill bill item price when a product is selected in the bill builder
+  useEffect(() => {
+    if (!billProductId) { setBillPrice(''); setBillQty(''); return; }
+    const product = catalogProducts.find(p => p.id === billProductId);
+    if (!product) return;
+    if (product.pricePerUnit != null) setBillPrice(product.pricePerUnit.toString());
+    if (product.quantity != null) setBillQty(product.quantity.toString());
+  }, [billProductId]);
+
+  const billTotal = useMemo(() => billItems.reduce((s, i) => s + i.amount, 0), [billItems]);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -372,7 +393,9 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!amount || !category) return;
+    const hasBillItems = entryType === 'purchase' && billItems.length > 0;
+    if (!hasBillItems && !amount) return;
+    if (!category) return;
 
     // Prevent cash expense if it would overdraw the cash account
     if (entryType === 'expense' && status === 'paid' && primaryCashAccount) {
@@ -401,22 +424,31 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
         ? await generateBillNumber(entryType, outletId, date)
         : entries.find(e => e.id === editingId)?.billNumber;
 
+      // For purchases with bill items, use the bill total; otherwise use the manual amount
+      const finalAmount = (entryType === 'purchase' && billItems.length > 0)
+        ? billTotal
+        : parseFloat(amount);
+      const finalDescription = (entryType === 'purchase' && billItems.length > 0)
+        ? billItems.map(i => i.productName).join(', ')
+        : description;
+
       const entryData: any = {
         userId: user.uid,
         userName: user.email?.split('@')[0] || 'Unknown',
         outletId,
         type: entryType,
-        amount: parseFloat(amount),
+        amount: finalAmount,
         quantity: quantity ? parseFloat(quantity) : null,
         pricePerUnit: pricePerUnit ? parseFloat(pricePerUnit) : null,
         date,
         category,
-        description,
+        description: finalDescription,
         status,
         receiptUrl: finalReceiptUrl || null,
         billNumber: billNumber || null,
         vendorId: selectedVendorId || null,
         vendorName: vendors.find(v => v.id === selectedVendorId)?.name || null,
+        items: (entryType === 'purchase' && billItems.length > 0) ? billItems : null,
         createdAt: Date.now()
       };
 
@@ -476,6 +508,26 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
         console.warn('Bank deduction skipped:', bankErr);
       }
 
+      // Update expense_snapshots so all reporting reflects this entry
+      try {
+        const isEdit = activeMode === 'edit' && editingId;
+        if (isEdit) {
+          const oldEntry = entries.find(e => e.id === editingId);
+          if (oldEntry && oldEntry.status === 'paid') {
+            await updateExpenseSnapshot(oldEntry.type, oldEntry.category, -oldEntry.amount, oldEntry.date, oldEntry.outletId);
+          }
+          if (status === 'paid') {
+            await updateExpenseSnapshot(entryType, category, finalAmount, date, outletId);
+          }
+        } else {
+          if (status === 'paid') {
+            await updateExpenseSnapshot(entryType, category, finalAmount, date, outletId);
+          }
+        }
+      } catch (snapErr) {
+        console.warn('Snapshot update skipped:', snapErr);
+      }
+
       setSuccess(true);
       const returnTo = 'view';
       resetForm();
@@ -502,6 +554,32 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     setDsNotes('');
     setDsExistingId(null);
     setDsDuplicateWarning(false);
+  };
+
+  const fetchDsLogs = async () => {
+    setDsLoadingLogs(true);
+    try {
+      const snap = await getDocs(
+        query(collection(db, 'daily_sales_logs'), where('userId', '==', user.uid), orderBy('date', 'desc'))
+      );
+      setDsLogs(snap.docs.map(d => ({ id: d.id, ...d.data() } as DailySalesLog)));
+    } catch (err) {
+      console.error('Error fetching daily sales logs:', err);
+    } finally {
+      setDsLoadingLogs(false);
+    }
+  };
+
+  const handleDsEdit = (log: DailySalesLog) => {
+    setDsDate(log.date);
+    setDsTotal(log.totalNet.toString());
+    setDsCash(log.cash.toString());
+    setDsCard(log.card.toString());
+    setDsUpi(log.upi.toString());
+    setDsNotes(log.notes || '');
+    setDsExistingId(log.id!);
+    setDsDuplicateWarning(true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleDailySalesSubmit = async (e: React.FormEvent) => {
@@ -700,6 +778,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
       }
 
       setDsSuccess(true);
+      fetchDsLogs();
       setTimeout(() => {
         setDsSuccess(false);
         setActiveMode('view');
@@ -726,6 +805,65 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     setExistingReceiptUrl(null);
     setSelectedVendorId('');
     setSelectedProductId('');
+    setBillItems([]);
+    setBillProductId('');
+    setBillQty('');
+    setBillPrice('');
+  };
+
+  // Updates (or reverses) the expense_snapshots aggregate that all reporting reads from.
+  // Pass a negative amount to subtract (delete / edit reversal).
+  const updateExpenseSnapshot = async (
+    type: 'purchase' | 'expense',
+    category: string,
+    amount: number,
+    entryDate: string,
+    entryOutletId: string
+  ) => {
+    const ownerId = profile.ownerId || user.uid;
+    const [yearStr, monthStr] = entryDate.split('-');
+    const year = parseInt(yearStr);
+    const month = parseInt(monthStr);
+    const upperCat = category.toUpperCase();
+
+    let cogsKeywords: string[] = [];
+    let cogsBucketMapping: Record<string, string> = {};
+    try {
+      const settingsSnap = await getDoc(doc(db, 'category_settings', ownerId));
+      if (settingsSnap.exists()) {
+        const d = settingsSnap.data();
+        if (d.cogsKeywords) cogsKeywords = d.cogsKeywords.map((k: string) => k.trim().toUpperCase());
+        if (d.cogsBucketMapping) cogsBucketMapping = d.cogsBucketMapping;
+      }
+    } catch {}
+
+    const snapId = `${ownerId}_${entryOutletId}_${year}_${month}`;
+    const snapRef = doc(db, 'expense_snapshots', snapId);
+    const catKey = type === 'purchase' ? 'purchaseByCategory' : 'expenseByCategory';
+    const totalKey = type === 'purchase' ? 'totalPurchase' : 'totalExpense';
+
+    const snapSnap = await getDoc(snapRef);
+    if (!snapSnap.exists()) {
+      await setDoc(snapRef, {
+        userId: ownerId,
+        outletId: entryOutletId,
+        month, year,
+        totalExpense: 0, totalPurchase: 0,
+        expenseByCategory: {}, purchaseByCategory: {},
+        cogsBucketAgg: { FOOD: 0, DRINKS: 0, 'FOOD SERVINGS': 0, 'DRINKS SERVINGS': 0, UNCATEGORIZED: 0 },
+        lastUpdated: Date.now(),
+      });
+    }
+
+    const updates: Record<string, any> = {
+      [totalKey]: increment(amount),
+      [`${catKey}.${upperCat}`]: increment(amount),
+      lastUpdated: Date.now(),
+    };
+    const bucket = cogsKeywords.includes(upperCat) ? (cogsBucketMapping[upperCat] || 'FOOD') : 'UNCATEGORIZED';
+    updates[`cogsBucketAgg.${bucket}`] = increment(amount);
+
+    await updateDoc(snapRef, updates);
   };
 
   const handleProductSelect = (product: Product) => {
@@ -786,7 +924,48 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
   const handleDelete = async (id: string) => {
     if (!confirm("Delete this entry?")) return;
     try {
+      const entry = entries.find(e => e.id === id);
       await deleteDoc(doc(db, 'crew_entries', id));
+
+      // Reverse the bank deduction if the entry was paid
+      if (entry && entry.status === 'paid') {
+        const accountType = entry.type === 'expense' ? 'cash' : 'digital';
+        const targetAcc = allBankAccounts.find(a => a.outletId === entry.outletId && a.isPrimary && a.accountType === accountType);
+        if (targetAcc) {
+          const now = Date.now();
+          const ownerId = profile.ownerId || user.uid;
+          await updateDoc(doc(db, 'bank_accounts', targetAcc.id!), {
+            balance: targetAcc.balance + entry.amount,
+            updatedAt: now,
+          });
+          await addDoc(collection(db, 'bank_transactions'), {
+            userId: ownerId,
+            ownerId,
+            bankAccountId: targetAcc.id!,
+            date: entry.date,
+            description: `Reversal: ${entry.type === 'expense' ? 'Cash Expense' : 'Digital Purchase'} deleted — ${entry.category}${entry.description ? ` — ${entry.description}` : ''}`,
+            amount: entry.amount,
+            type: 'credit',
+            category: entry.category.toUpperCase(),
+            referenceNo: entry.billNumber || `REV-${id}`,
+            isVerified: false,
+            isReconciled: false,
+            createdAt: now,
+          });
+          // Keep in-memory balance in sync
+          const updater = (a: BankAccount) => a.id === targetAcc.id ? { ...a, balance: a.balance + entry.amount } : a;
+          setAllBankAccounts(prev => prev.map(updater));
+          setBankAccounts(prev => prev.map(updater));
+        }
+
+        // Reverse the expense_snapshot contribution
+        try {
+          await updateExpenseSnapshot(entry.type, entry.category, -entry.amount, entry.date, entry.outletId);
+        } catch (snapErr) {
+          console.warn('Snapshot reversal skipped:', snapErr);
+        }
+      }
+
       fetchEntries();
     } catch (err) {
       console.error(err);
@@ -1096,7 +1275,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
                   {/* Tappable main area */}
                   <button
                     onClick={() => setViewingEntry(entry)}
-                    className="flex items-center gap-5 flex-1 text-left px-5 py-5 min-h-[80px]"
+                    className="flex items-center gap-5 flex-1 text-left px-5 py-3 min-h-[64px]"
                   >
                     <div className={`p-4 rounded-2xl shrink-0 ${entry.type === 'purchase' ? 'bg-indigo-500/15 text-indigo-400' : 'bg-rose-500/15 text-rose-400'}`}>
                       {entry.type === 'purchase' ? <ShoppingBag size={26} /> : <Receipt size={26} />}
@@ -1112,16 +1291,20 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
                       {entry.billNumber && (
                         <p className="text-[10px] font-black text-slate-500 tracking-wider font-mono mb-0.5">{entry.billNumber}</p>
                       )}
-                      {entry.description && (
-                        <p className="text-[10px] text-slate-600 uppercase truncate">{entry.description}</p>
-                      )}
+                      {entry.items && entry.items.length > 0
+                        ? <p className="text-[10px] font-bold text-slate-500 truncate">{entry.items.length} item{entry.items.length !== 1 ? 's' : ''}</p>
+                        : entry.description && <p className="text-[10px] text-slate-600 uppercase truncate">{entry.description}</p>
+                      }
                       {entry.vendorName && (
                         <p className="text-[10px] font-bold text-indigo-400/80 uppercase truncate mt-0.5">{entry.vendorName}</p>
                       )}
                     </div>
+                    <div className="shrink-0 flex flex-col items-center justify-center px-3 border-x border-slate-700/50">
+                      <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-0.5">Date</p>
+                      <p className="text-xs font-black text-white tracking-wide text-center">{entry.date}</p>
+                    </div>
                     <div className="text-right shrink-0 pr-2">
                       <p className="text-xl font-black text-white tracking-tight">₹{entry.amount.toLocaleString()}</p>
-                      <p className="text-[9px] font-bold text-slate-600 uppercase mt-0.5">{entry.date}</p>
                     </div>
                   </button>
 
@@ -1273,10 +1456,54 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
               >
                 {dsSaving ? <Loader2 size={30} className="animate-spin" />
                   : dsSuccess ? <><CheckCircle2 size={30} /> Saved!</>
-                  : dsDuplicateWarning ? <><Plus size={30} /> Update Entry</>
+                  : dsDuplicateWarning ? <><Edit2 size={30} /> Update Entry</>
                   : <><Plus size={30} /> Post Daily Sales</>}
               </button>
+
+              {dsExistingId && (
+                <button type="button" onClick={() => { resetDsForm(); }}
+                  className="w-full py-4 text-slate-400 font-black uppercase text-sm tracking-widest"
+                >
+                  Cancel Edit
+                </button>
+              )}
             </form>
+
+            {/* Past logs */}
+            <div className="px-8 pb-10 space-y-3">
+              <div className="flex items-center gap-3">
+                <div className="h-px flex-1 bg-slate-100" />
+                <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Past Submissions</p>
+                <div className="h-px flex-1 bg-slate-100" />
+              </div>
+              {dsLoadingLogs ? (
+                <div className="py-8 flex justify-center"><Loader2 className="animate-spin text-slate-300" size={24} /></div>
+              ) : dsLogs.length === 0 ? (
+                <p className="text-center text-xs font-bold text-slate-300 uppercase tracking-widest py-6">No past submissions</p>
+              ) : (
+                <div className="space-y-2">
+                  {dsLogs.map(log => (
+                    <div key={log.id} className="flex items-center justify-between gap-4 bg-slate-50 border border-slate-100 rounded-2xl px-5 py-4">
+                      <div className="min-w-0">
+                        <p className="text-sm font-black text-slate-800">{log.date}</p>
+                        <div className="flex items-center gap-3 mt-0.5 flex-wrap">
+                          <span className="text-[10px] font-bold text-slate-500">Total ₹{log.totalNet.toLocaleString('en-IN')}</span>
+                          {log.cash > 0 && <span className="text-[10px] font-bold text-slate-400">Cash ₹{log.cash.toLocaleString('en-IN')}</span>}
+                          {log.card > 0 && <span className="text-[10px] font-bold text-slate-400">Card ₹{log.card.toLocaleString('en-IN')}</span>}
+                          {log.upi > 0 && <span className="text-[10px] font-bold text-slate-400">UPI ₹{log.upi.toLocaleString('en-IN')}</span>}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => handleDsEdit(log)}
+                        className="shrink-0 flex items-center gap-1.5 px-4 py-2 bg-emerald-50 text-emerald-700 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-100 active:scale-95 transition-all"
+                      >
+                        <Edit2 size={12} /> Edit
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
@@ -1430,217 +1657,371 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
                 </button>
               </div>
 
-              {entryType === 'purchase' && (
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Vendor (Optional)</label>
-                  <div className="flex gap-3">
-                    <div className="relative flex-1">
-                      <Store className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={18} />
+              {/* ── PURCHASE BILL BUILDER ───────────────────────────── */}
+              {entryType === 'purchase' && activeMode !== 'edit' ? (
+                <>
+                  {/* Vendor */}
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Vendor (Optional)</label>
+                    <div className="flex gap-3">
+                      <div className="relative flex-1">
+                        <Store className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={18} />
+                        <select
+                          value={selectedVendorId} onChange={e => setSelectedVendorId(e.target.value)}
+                          className="w-full h-14 bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none pl-12 pr-8 rounded-2xl text-sm font-bold text-slate-700 appearance-none uppercase transition-all"
+                        >
+                          <option value="">-- No Vendor --</option>
+                          {vendors.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+                        </select>
+                        <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={16} />
+                      </div>
+                      <button type="button" onClick={() => setShowVendorModal(true)} className="h-14 w-14 flex items-center justify-center bg-indigo-50 text-indigo-600 rounded-2xl border-2 border-indigo-100 active:scale-95 transition-all shrink-0">
+                        <Plus size={20} />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Category */}
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Category</label>
+                    <div className="relative">
                       <select
-                        value={selectedVendorId}
-                        onChange={e => setSelectedVendorId(e.target.value)}
-                        className="w-full h-14 bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none pl-12 pr-8 rounded-2xl text-sm font-bold text-slate-700 appearance-none uppercase transition-all"
+                        required value={category} onChange={e => setCategory(e.target.value)}
+                        className="w-full h-14 bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none px-5 pr-10 rounded-2xl text-sm font-black text-slate-700 appearance-none uppercase transition-all"
                       >
-                        <option value="">-- No Vendor Selected --</option>
-                        {vendors.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+                        <option value="">-- Select Category --</option>
+                        {CATEGORIES['purchase'].map(cat => <option key={cat} value={cat}>{cat}</option>)}
                       </select>
                       <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={16} />
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => setShowVendorModal(true)}
-                      className="h-14 w-14 flex items-center justify-center bg-indigo-50 text-indigo-600 rounded-2xl border-2 border-indigo-100 hover:bg-indigo-100 active:scale-95 transition-all shrink-0"
-                      title="Add New Vendor"
-                    >
-                      <Plus size={20} />
-                    </button>
                   </div>
-                </div>
-              )}
 
-              {/* Qty + Price per unit */}
-              <div className="grid grid-cols-2 gap-5">
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Quantity</label>
-                  <input
-                    type="number" step="0.01" min="0"
-                    value={quantity} onChange={e => setQuantity(e.target.value)}
-                    className="w-full bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none px-5 py-5 rounded-2xl text-xl font-black text-slate-900 transition-all"
-                    placeholder="0"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Price / Unit (₹)</label>
-                  <div className="relative">
-                    <IndianRupee className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={18} />
-                    <input
-                      type="number" step="0.01" min="0"
-                      value={pricePerUnit} onChange={e => setPricePerUnit(e.target.value)}
-                      className="w-full bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none pl-10 pr-5 py-5 rounded-2xl text-xl font-black text-slate-900 transition-all"
-                      placeholder="0.00"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* Amount + Category */}
-              <div className="grid grid-cols-2 gap-5">
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">
-                    Total (₹)
-                    {quantity && pricePerUnit && <span className="ml-2 text-indigo-400 normal-case font-bold tracking-normal">auto-calculated</span>}
-                  </label>
-                  <div className="relative">
-                    <IndianRupee className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={26} />
-                    <input
-                      required type="number" step="0.01"
-                      value={amount} onChange={e => { setAmount(e.target.value); }}
-                      className="w-full bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none pl-14 pr-5 py-5 rounded-2xl text-3xl font-black text-slate-900 transition-all"
-                      placeholder="0.00" autoFocus
-                    />
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Category</label>
-                  <select
-                    required value={category} onChange={e => setCategory(e.target.value)}
-                    className="w-full h-[74px] bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none px-6 rounded-2xl text-base font-black text-slate-700 appearance-none uppercase transition-all"
-                  >
-                    <option value="">-- Pick Category --</option>
-                    {CATEGORIES[entryType].map(cat => <option key={cat} value={cat}>{cat}</option>)}
-                  </select>
-                </div>
-              </div>
-
-              {/* Product picker — always visible once a category is selected */}
-              {category && (
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">
-                    Product <span className="normal-case font-medium tracking-normal text-slate-300">— auto-fills description &amp; price</span>
-                  </label>
-                  <div className="relative">
-                    <Package className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={18} />
-                    {(() => {
-                      const catProducts = catalogProducts.filter(p => p.category === category);
-                      return (
-                        <select
-                          value={selectedProductId}
-                          onChange={e => setSelectedProductId(e.target.value)}
-                          className="w-full h-14 bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none pl-12 pr-8 rounded-2xl text-sm font-bold text-slate-700 appearance-none uppercase transition-all"
-                        >
-                          {catProducts.length === 0
-                            ? <option value="">No products defined for this category</option>
-                            : <>
-                                <option value="">-- Select Product (optional) --</option>
-                                {catProducts.map(p => (
-                                  <option key={p.id} value={p.id!}>
-                                    {p.name}{p.pricePerUnit != null ? ` — ₹${p.pricePerUnit}${p.unit ? `/${p.unit}` : ''}` : ''}
-                                  </option>
-                                ))}
-                              </>
-                          }
-                        </select>
-                      );
-                    })()}
-                    <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={16} />
-                  </div>
-                </div>
-              )}
-
-              {entryType === 'expense' && status === 'paid' && parseFloat(amount) > 0 && primaryCashAccount && parseFloat(amount) - (activeMode === 'edit' && editingId ? (entries.find((en: DailyCounterEntry) => en.id === editingId)?.status === 'paid' ? entries.find((en: DailyCounterEntry) => en.id === editingId)?.amount || 0 : 0) : 0) > primaryCashAccount.balance && (
-                <p className="text-[10px] font-black text-rose-500 uppercase tracking-widest flex items-center gap-1.5 -mt-1">
-                  <AlertTriangle size={12} /> Amount exceeds cash balance (₹{primaryCashAccount.balance.toLocaleString('en-IN')})
-                </p>
-              )}
-
-              {/* Status */}
-              <div className="space-y-2">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Payment Status</label>
-                <div className="flex bg-slate-50 p-1.5 rounded-2xl border-2 border-slate-100 gap-2">
-                  {(['paid', 'pending', 'cancelled'] as EntryStatus[]).map((s) => {
-                    const isActive = status === s;
-                    const cfg = STATUS_CONFIG[s];
-                    return (
-                      <button
-                        key={s} type="button" onClick={() => setStatus(s)}
-                        className={`flex-1 h-14 rounded-xl text-sm font-black uppercase tracking-widest transition-all active:scale-95 border ${isActive ? `${cfg.bg} ${cfg.color} border-current shadow-sm` : 'bg-white border-slate-100 text-slate-400'}`}
-                      >
-                        {cfg.label}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Date */}
-              <div className="space-y-2">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Date</label>
-                <div className="relative">
-                  <Calendar className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={18} />
-                  <input
-                    required type="date" value={date} onChange={e => setDate(e.target.value)}
-                    className="w-full h-14 bg-slate-50 border-2 border-slate-100 outline-none pl-12 pr-4 rounded-2xl text-sm font-bold text-slate-700 appearance-none"
-                  />
-                </div>
-              </div>
-
-              {/* Note */}
-              <div className="space-y-2">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Note / Description</label>
-                <textarea
-                  value={description} onChange={e => setDescription(e.target.value)}
-                  className="w-full bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none px-6 py-5 rounded-2xl text-sm font-medium text-slate-600 resize-none h-24"
-                  placeholder="What was this for? (e.g. Milk, Petrol, Stationery…)"
-                />
-              </div>
-
-              {/* Receipt photo */}
-              <div className="space-y-2">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Receipt Photo</label>
-                <div
-                  onClick={() => fileInputRef.current?.click()}
-                  className="border-2 border-dashed border-slate-200 rounded-[2rem] p-8 flex flex-col items-center justify-center cursor-pointer active:bg-slate-50 transition-all relative overflow-hidden"
-                >
-                  {receiptPreview ? (
-                    <>
-                      <img src={receiptPreview} alt="Receipt Preview" className="absolute inset-0 w-full h-full object-cover opacity-15" />
-                      <div className="relative z-10 flex flex-col items-center gap-2">
-                        <ImageIcon size={44} className="text-indigo-600" />
-                        <p className="text-sm font-black text-slate-800 uppercase tracking-widest">Change Photo</p>
+                  {/* Product + Qty + Price + Add */}
+                  {category && (
+                    <div className="bg-indigo-50 border-2 border-indigo-100 rounded-[2rem] p-5 space-y-4">
+                      <p className="text-[9px] font-black text-indigo-500 uppercase tracking-widest">Add Item to Bill</p>
+                      {/* Product picker */}
+                      <div className="relative">
+                        <Package className="absolute left-4 top-1/2 -translate-y-1/2 text-indigo-300 pointer-events-none" size={16} />
+                        {(() => {
+                          const catProducts = catalogProducts.filter(p => p.category === category);
+                          return (
+                            <select
+                              value={billProductId} onChange={e => setBillProductId(e.target.value)}
+                              className="w-full h-12 bg-white border-2 border-indigo-100 focus:border-indigo-400 outline-none pl-10 pr-8 rounded-2xl text-sm font-bold text-slate-700 appearance-none uppercase transition-all"
+                            >
+                              {catProducts.length === 0
+                                ? <option value="">No products in this category</option>
+                                : <>
+                                    <option value="">-- Select Product --</option>
+                                    {catProducts.map(p => (
+                                      <option key={p.id} value={p.id!}>
+                                        {p.name}{p.pricePerUnit != null ? ` — ₹${p.pricePerUnit}${p.unit ? `/${p.unit}` : ''}` : ''}
+                                      </option>
+                                    ))}
+                                  </>
+                              }
+                            </select>
+                          );
+                        })()}
+                        <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-indigo-300 pointer-events-none" size={14} />
                       </div>
-                    </>
-                  ) : (
-                    <>
-                      <Camera size={44} className="text-slate-300 mb-2" />
-                      <p className="text-sm font-black text-slate-400 uppercase tracking-widest">Tap to Capture or Upload</p>
-                    </>
+                      {/* Qty + Price */}
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="text-[9px] font-black text-indigo-400 uppercase tracking-widest ml-1 block mb-1">Quantity</label>
+                          <input
+                            type="number" step="0.01" min="0"
+                            value={billQty} onChange={e => setBillQty(e.target.value)}
+                            placeholder="0"
+                            className="w-full h-12 bg-white border-2 border-indigo-100 focus:border-indigo-400 outline-none px-4 rounded-2xl text-base font-black text-slate-900 transition-all"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[9px] font-black text-indigo-400 uppercase tracking-widest ml-1 block mb-1">Price / Unit (₹)</label>
+                          <input
+                            type="number" step="0.01" min="0"
+                            value={billPrice} onChange={e => setBillPrice(e.target.value)}
+                            placeholder="0.00"
+                            className="w-full h-12 bg-white border-2 border-indigo-100 focus:border-indigo-400 outline-none px-4 rounded-2xl text-base font-black text-slate-900 transition-all"
+                          />
+                        </div>
+                      </div>
+                      {/* Subtotal preview */}
+                      {parseFloat(billQty) > 0 && parseFloat(billPrice) > 0 && (
+                        <p className="text-xs font-black text-indigo-600 ml-1">
+                          Subtotal: ₹{(parseFloat(billQty) * parseFloat(billPrice)).toLocaleString('en-IN')}
+                        </p>
+                      )}
+                      {/* Add to Bill button */}
+                      <button
+                        type="button"
+                        disabled={!billProductId || !(parseFloat(billQty) > 0) || !(parseFloat(billPrice) > 0)}
+                        onClick={() => {
+                          const product = catalogProducts.find(p => p.id === billProductId);
+                          if (!product) return;
+                          const qty = parseFloat(billQty);
+                          const price = parseFloat(billPrice);
+                          setBillItems(prev => [...prev, {
+                            productId: billProductId,
+                            productName: product.name,
+                            quantity: qty,
+                            pricePerUnit: price,
+                            amount: parseFloat((qty * price).toFixed(2)),
+                          }]);
+                          setBillProductId('');
+                          setBillQty('');
+                          setBillPrice('');
+                        }}
+                        className="w-full h-12 bg-indigo-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest disabled:opacity-40 flex items-center justify-center gap-2 active:scale-95 transition-all"
+                      >
+                        <Plus size={14} /> Add to Bill
+                      </button>
+                    </div>
                   )}
-                  <input
-                    type="file" ref={fileInputRef} onChange={handleFileSelect}
-                    accept="image/*" capture="environment"
-                    className="hidden"
-                  />
-                </div>
-              </div>
 
-              <button
-                disabled={saving || success || (entryType === 'expense' && status === 'paid' && !!primaryCashAccount && parseFloat(amount) - (activeMode === 'edit' && editingId ? (entries.find((en: DailyCounterEntry) => en.id === editingId)?.status === 'paid' ? entries.find((en: DailyCounterEntry) => en.id === editingId)?.amount || 0 : 0) : 0) > primaryCashAccount.balance)}
-                className={`w-full py-7 rounded-[2rem] font-black uppercase text-xl tracking-wider shadow-xl transition-all active:scale-[0.98] flex items-center justify-center gap-4 text-white ${
-                  success ? 'bg-emerald-500' : entryType === 'purchase' ? 'bg-indigo-600' : 'bg-rose-500'
-                }`}
-              >
-                {saving ? <Loader2 size={30} className="animate-spin" />
-                  : success ? <><CheckCircle2 size={30} /> {activeMode === 'edit' ? 'Updated' : 'Submitted'}!</>
-                  : <><Plus size={30} /> {activeMode === 'edit' ? 'Update Entry' : 'Post Entry'}</>}
-              </button>
-              {activeMode === 'edit' && (
-                <button
-                  type="button"
-                  onClick={() => { setActiveMode('view'); resetForm(); }}
-                  className="w-full py-4 text-slate-400 font-black uppercase text-sm tracking-widest"
-                >
-                  Cancel Edit
-                </button>
+                  {/* Bill items list */}
+                  {billItems.length > 0 && (
+                    <div className="space-y-2">
+                      <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Bill Items</p>
+                      {billItems.map((item, idx) => (
+                        <div key={idx} className="flex items-center justify-between gap-3 bg-slate-50 border border-slate-100 rounded-2xl px-4 py-3">
+                          <div className="min-w-0">
+                            <p className="text-sm font-black text-slate-800 uppercase truncate">{item.productName}</p>
+                            <p className="text-[10px] font-bold text-slate-400 mt-0.5">
+                              {item.quantity} × ₹{item.pricePerUnit.toLocaleString('en-IN')}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <p className="text-sm font-black text-slate-900">₹{item.amount.toLocaleString('en-IN')}</p>
+                            <button
+                              type="button"
+                              onClick={() => setBillItems(prev => prev.filter((_, i) => i !== idx))}
+                              className="p-1.5 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-xl transition-all"
+                            >
+                              <X size={13} />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                      {/* Bill total */}
+                      <div className="flex items-center justify-between px-4 py-3 bg-indigo-600 rounded-2xl mt-1">
+                        <p className="text-[10px] font-black text-indigo-200 uppercase tracking-widest">{billItems.length} item{billItems.length !== 1 ? 's' : ''}</p>
+                        <p className="text-lg font-black text-white">₹{billTotal.toLocaleString('en-IN')}</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Status */}
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Payment Status</label>
+                    <div className="flex bg-slate-50 p-1.5 rounded-2xl border-2 border-slate-100 gap-2">
+                      {(['paid', 'pending', 'cancelled'] as EntryStatus[]).map((s) => {
+                        const isActive = status === s;
+                        const cfg = STATUS_CONFIG[s];
+                        return (
+                          <button key={s} type="button" onClick={() => setStatus(s)}
+                            className={`flex-1 h-14 rounded-xl text-sm font-black uppercase tracking-widest transition-all active:scale-95 border ${isActive ? `${cfg.bg} ${cfg.color} border-current shadow-sm` : 'bg-white border-slate-100 text-slate-400'}`}
+                          >
+                            {cfg.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Date */}
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Date</label>
+                    <div className="relative">
+                      <Calendar className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={18} />
+                      <input required type="date" value={date} onChange={e => setDate(e.target.value)}
+                        className="w-full h-14 bg-slate-50 border-2 border-slate-100 outline-none pl-12 pr-4 rounded-2xl text-sm font-bold text-slate-700 appearance-none"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Note */}
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Note (Optional)</label>
+                    <textarea
+                      value={description} onChange={e => setDescription(e.target.value)}
+                      className="w-full bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none px-6 py-5 rounded-2xl text-sm font-medium text-slate-600 resize-none h-20"
+                      placeholder="Any additional notes…"
+                    />
+                  </div>
+
+                  {/* Receipt photo */}
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Receipt Photo</label>
+                    <div onClick={() => fileInputRef.current?.click()} className="border-2 border-dashed border-slate-200 rounded-[2rem] p-8 flex flex-col items-center justify-center cursor-pointer active:bg-slate-50 transition-all relative overflow-hidden">
+                      {receiptPreview ? (
+                        <>
+                          <img src={receiptPreview} alt="Receipt" className="absolute inset-0 w-full h-full object-cover opacity-15" />
+                          <div className="relative z-10 flex flex-col items-center gap-2">
+                            <ImageIcon size={44} className="text-indigo-600" />
+                            <p className="text-sm font-black text-slate-800 uppercase tracking-widest">Change Photo</p>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <Camera size={44} className="text-slate-300 mb-2" />
+                          <p className="text-sm font-black text-slate-400 uppercase tracking-widest">Tap to Capture or Upload</p>
+                        </>
+                      )}
+                      <input type="file" ref={fileInputRef} onChange={handleFileSelect} accept="image/*" capture="environment" className="hidden" />
+                    </div>
+                  </div>
+
+                  <button
+                    disabled={saving || success || billItems.length === 0 || !category}
+                    className={`w-full py-7 rounded-[2rem] font-black uppercase text-xl tracking-wider shadow-xl transition-all active:scale-[0.98] flex items-center justify-center gap-4 text-white ${success ? 'bg-emerald-500' : 'bg-indigo-600'}`}
+                  >
+                    {saving ? <Loader2 size={30} className="animate-spin" />
+                      : success ? <><CheckCircle2 size={30} /> Submitted!</>
+                      : <><Plus size={30} /> Submit Bill · ₹{billTotal.toLocaleString('en-IN')}</>}
+                  </button>
+                </>
+              ) : (
+                <>
+                  {/* ── EXPENSE FORM (or edit mode) ─────────────────── */}
+                  {entryType === 'purchase' && activeMode === 'edit' && (
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Vendor (Optional)</label>
+                      <div className="flex gap-3">
+                        <div className="relative flex-1">
+                          <Store className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={18} />
+                          <select value={selectedVendorId} onChange={e => setSelectedVendorId(e.target.value)}
+                            className="w-full h-14 bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none pl-12 pr-8 rounded-2xl text-sm font-bold text-slate-700 appearance-none uppercase transition-all"
+                          >
+                            <option value="">-- No Vendor --</option>
+                            {vendors.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+                          </select>
+                          <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={16} />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-2 gap-5">
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Quantity</label>
+                      <input type="number" step="0.01" min="0" value={quantity} onChange={e => setQuantity(e.target.value)}
+                        className="w-full bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none px-5 py-5 rounded-2xl text-xl font-black text-slate-900 transition-all" placeholder="0"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Price / Unit (₹)</label>
+                      <div className="relative">
+                        <IndianRupee className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={18} />
+                        <input type="number" step="0.01" min="0" value={pricePerUnit} onChange={e => setPricePerUnit(e.target.value)}
+                          className="w-full bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none pl-10 pr-5 py-5 rounded-2xl text-xl font-black text-slate-900 transition-all" placeholder="0.00"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-5">
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">
+                        Total (₹){quantity && pricePerUnit && <span className="ml-2 text-indigo-400 normal-case font-bold tracking-normal">auto-calculated</span>}
+                      </label>
+                      <div className="relative">
+                        <IndianRupee className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={26} />
+                        <input required type="number" step="0.01" value={amount} onChange={e => setAmount(e.target.value)}
+                          className="w-full bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none pl-14 pr-5 py-5 rounded-2xl text-3xl font-black text-slate-900 transition-all" placeholder="0.00" autoFocus
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Category</label>
+                      <select required value={category} onChange={e => setCategory(e.target.value)}
+                        className="w-full h-[74px] bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none px-6 rounded-2xl text-base font-black text-slate-700 appearance-none uppercase transition-all"
+                      >
+                        <option value="">-- Pick Category --</option>
+                        {CATEGORIES[entryType].map(cat => <option key={cat} value={cat}>{cat}</option>)}
+                      </select>
+                    </div>
+                  </div>
+
+                  {entryType === 'expense' && status === 'paid' && parseFloat(amount) > 0 && primaryCashAccount && parseFloat(amount) - (activeMode === 'edit' && editingId ? (entries.find((en: DailyCounterEntry) => en.id === editingId)?.status === 'paid' ? entries.find((en: DailyCounterEntry) => en.id === editingId)?.amount || 0 : 0) : 0) > primaryCashAccount.balance && (
+                    <p className="text-[10px] font-black text-rose-500 uppercase tracking-widest flex items-center gap-1.5 -mt-1">
+                      <AlertTriangle size={12} /> Amount exceeds cash balance (₹{primaryCashAccount.balance.toLocaleString('en-IN')})
+                    </p>
+                  )}
+
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Payment Status</label>
+                    <div className="flex bg-slate-50 p-1.5 rounded-2xl border-2 border-slate-100 gap-2">
+                      {(['paid', 'pending', 'cancelled'] as EntryStatus[]).map((s) => {
+                        const isActive = status === s;
+                        const cfg = STATUS_CONFIG[s];
+                        return (
+                          <button key={s} type="button" onClick={() => setStatus(s)}
+                            className={`flex-1 h-14 rounded-xl text-sm font-black uppercase tracking-widest transition-all active:scale-95 border ${isActive ? `${cfg.bg} ${cfg.color} border-current shadow-sm` : 'bg-white border-slate-100 text-slate-400'}`}
+                          >
+                            {cfg.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Date</label>
+                    <div className="relative">
+                      <Calendar className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={18} />
+                      <input required type="date" value={date} onChange={e => setDate(e.target.value)}
+                        className="w-full h-14 bg-slate-50 border-2 border-slate-100 outline-none pl-12 pr-4 rounded-2xl text-sm font-bold text-slate-700 appearance-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Note / Description</label>
+                    <textarea value={description} onChange={e => setDescription(e.target.value)}
+                      className="w-full bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none px-6 py-5 rounded-2xl text-sm font-medium text-slate-600 resize-none h-24"
+                      placeholder="What was this for? (e.g. Milk, Petrol, Stationery…)"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Receipt Photo</label>
+                    <div onClick={() => fileInputRef.current?.click()} className="border-2 border-dashed border-slate-200 rounded-[2rem] p-8 flex flex-col items-center justify-center cursor-pointer active:bg-slate-50 transition-all relative overflow-hidden">
+                      {receiptPreview ? (
+                        <>
+                          <img src={receiptPreview} alt="Receipt Preview" className="absolute inset-0 w-full h-full object-cover opacity-15" />
+                          <div className="relative z-10 flex flex-col items-center gap-2">
+                            <ImageIcon size={44} className="text-indigo-600" />
+                            <p className="text-sm font-black text-slate-800 uppercase tracking-widest">Change Photo</p>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <Camera size={44} className="text-slate-300 mb-2" />
+                          <p className="text-sm font-black text-slate-400 uppercase tracking-widest">Tap to Capture or Upload</p>
+                        </>
+                      )}
+                      <input type="file" ref={fileInputRef} onChange={handleFileSelect} accept="image/*" capture="environment" className="hidden" />
+                    </div>
+                  </div>
+
+                  <button
+                    disabled={saving || success || (entryType === 'expense' && status === 'paid' && !!primaryCashAccount && parseFloat(amount) - (activeMode === 'edit' && editingId ? (entries.find((en: DailyCounterEntry) => en.id === editingId)?.status === 'paid' ? entries.find((en: DailyCounterEntry) => en.id === editingId)?.amount || 0 : 0) : 0) > primaryCashAccount.balance)}
+                    className={`w-full py-7 rounded-[2rem] font-black uppercase text-xl tracking-wider shadow-xl transition-all active:scale-[0.98] flex items-center justify-center gap-4 text-white ${success ? 'bg-emerald-500' : entryType === 'purchase' ? 'bg-indigo-600' : 'bg-rose-500'}`}
+                  >
+                    {saving ? <Loader2 size={30} className="animate-spin" />
+                      : success ? <><CheckCircle2 size={30} /> {activeMode === 'edit' ? 'Updated' : 'Submitted'}!</>
+                      : <><Plus size={30} /> {activeMode === 'edit' ? 'Update Entry' : 'Post Entry'}</>}
+                  </button>
+                  {activeMode === 'edit' && (
+                    <button type="button" onClick={() => { setActiveMode('view'); resetForm(); }}
+                      className="w-full py-4 text-slate-400 font-black uppercase text-sm tracking-widest"
+                    >
+                      Cancel Edit
+                    </button>
+                  )}
+                </>
               )}
             </form>
           </div>
@@ -1693,6 +2074,21 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
                 <div className={`inline-flex items-center gap-2.5 px-4 py-2.5 rounded-2xl font-black text-sm uppercase ${config.bg} ${config.color}`}>
                   <StatusIcon size={16} /> {config.label}
                 </div>
+
+                {viewingEntry.items && viewingEntry.items.length > 0 && (
+                  <div className="space-y-1.5">
+                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Bill Breakdown</p>
+                    {viewingEntry.items.map((item, idx) => (
+                      <div key={idx} className="flex items-center justify-between gap-3 bg-slate-50 border border-slate-100 rounded-2xl px-4 py-3">
+                        <div>
+                          <p className="text-sm font-black text-slate-800 uppercase">{item.productName}</p>
+                          <p className="text-[10px] font-bold text-slate-400 mt-0.5">{item.quantity} × ₹{item.pricePerUnit.toLocaleString('en-IN')}</p>
+                        </div>
+                        <p className="text-sm font-black text-slate-900">₹{item.amount.toLocaleString('en-IN')}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
 
                 {viewingEntry.description && (
                   <div className="p-5 bg-slate-50 rounded-2xl border border-slate-100">
