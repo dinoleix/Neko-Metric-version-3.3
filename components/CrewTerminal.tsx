@@ -857,12 +857,18 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
       }
     } catch {}
 
-    // Fetch all crew_entries for this owner, then filter client-side by outlet + period
-    const crewSnap = await getDocs(query(
-      collection(db, 'crew_entries'),
-      where('ownerId', '==', ownerId)
-    ));
-    const paidEntries = crewSnap.docs
+    // Dual query: new entries have ownerId, old entries (pre-ownerId field) are found by userId
+    const [byOwner, byUser] = await Promise.all([
+      getDocs(query(collection(db, 'crew_entries'), where('ownerId', '==', ownerId))),
+      getDocs(query(collection(db, 'crew_entries'), where('userId', '==', user.uid))),
+    ]);
+    const seenIds = new Set<string>();
+    const allDocs = [...byOwner.docs, ...byUser.docs].filter(d => {
+      if (seenIds.has(d.id)) return false;
+      seenIds.add(d.id);
+      return true;
+    });
+    const paidEntries = allDocs
       .map(d => ({ id: d.id, ...d.data() } as DailyCounterEntry))
       .filter(e => {
         if (e.outletId !== entryOutletId || e.status !== 'paid') return false;
