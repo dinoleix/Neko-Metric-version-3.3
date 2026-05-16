@@ -466,7 +466,16 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
       try {
         const ownerId = profile.ownerId || user.uid;
         const accountType = entryType === 'expense' ? 'cash' : 'digital';
-        const targetAcc = allBankAccounts.find(a => a.outletId === outletId && a.isPrimary && a.accountType === accountType);
+        // Try primary first; fall back to any account of the right type for this outlet
+        const targetAcc =
+          allBankAccounts.find(a => a.outletId === outletId && a.isPrimary === true && a.accountType === accountType) ||
+          allBankAccounts.find(a => a.outletId === outletId && a.accountType === accountType) ||
+          allBankAccounts.find(a => a.outletId === outletId);
+
+        if (!targetAcc) {
+          console.warn('[Bank] No account found for outlet:', outletId, '| accountType:', accountType, '| available:', allBankAccounts.map(a => `${a.outletId}/${a.accountType}/primary=${a.isPrimary}`));
+          alert(`⚠️ Purchase saved, but no ${accountType} bank account found for this outlet.\n\nThe entry is recorded in the system, but the bank balance was NOT updated.\n\nTo fix: add a ${accountType} bank account for this outlet in Bank Settings.`);
+        }
 
         if (targetAcc) {
           const isEdit = activeMode === 'edit' && editingId;
