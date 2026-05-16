@@ -474,15 +474,22 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
       try {
         const ownerId = profile.ownerId || user.uid;
         const accountType = entryType === 'expense' ? 'cash' : 'digital';
-        // Try primary first; fall back to any account of the right type for this outlet
+
+        // Re-fetch live bank accounts to avoid stale React state
+        const liveBankSnap = await getDocs(collection(db, 'bank_accounts'));
+        const liveBankAccounts = liveBankSnap.docs
+          .map(d => ({ id: d.id, ...d.data() } as BankAccount))
+          .filter(a => a.userId === ownerId);
+
         const targetAcc =
-          allBankAccounts.find(a => a.outletId === outletId && a.isPrimary === true && a.accountType === accountType) ||
-          allBankAccounts.find(a => a.outletId === outletId && a.accountType === accountType) ||
-          allBankAccounts.find(a => a.outletId === outletId);
+          liveBankAccounts.find(a => a.outletId === outletId && a.isPrimary === true && a.accountType === accountType) ||
+          liveBankAccounts.find(a => a.outletId === outletId && a.accountType === accountType) ||
+          liveBankAccounts.find(a => a.outletId === outletId);
+
+        console.log('[Bank] outletId:', outletId, '| accountType:', accountType, '| liveBankAccounts:', liveBankAccounts.map(a => `${a.outletId}/${a.accountType}/primary=${a.isPrimary}/id=${a.id}`), '| found:', targetAcc?.id);
 
         if (!targetAcc) {
-          console.warn('[Bank] No account found for outlet:', outletId, '| accountType:', accountType, '| available:', allBankAccounts.map(a => `${a.outletId}/${a.accountType}/primary=${a.isPrimary}`));
-          alert(`⚠️ Purchase saved, but no ${accountType} bank account found for this outlet.\n\nThe entry is recorded in the system, but the bank balance was NOT updated.\n\nTo fix: add a ${accountType} bank account for this outlet in Bank Settings.`);
+          alert(`⚠️ Purchase saved, but no bank account found for outlet "${outletId}".\n\nAvailable accounts:\n${liveBankAccounts.map(a => `• ${a.name} (${a.outletId}/${a.accountType})`).join('\n') || 'none'}\n\nThe bank balance was NOT updated.`);
         }
 
         if (targetAcc) {
@@ -506,7 +513,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
               updatedAt: now,
             });
             await addDoc(collection(db, 'bank_transactions'), {
-              userId: ownerId,
+              userId: user.uid,
               ownerId,
               bankAccountId: targetAcc.id!,
               date,
@@ -521,8 +528,9 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
             });
           }
         }
-      } catch (bankErr) {
-        console.warn('Bank deduction skipped:', bankErr);
+      } catch (bankErr: any) {
+        console.error('[Bank] Deduction failed:', bankErr);
+        alert(`⚠️ Purchase saved, but bank deduction failed.\n\nError: ${bankErr?.message || bankErr}\n\nPlease report this to your admin.`);
       }
 
       // Rebuild crew expense snapshot so all reporting reflects the current state of entries
