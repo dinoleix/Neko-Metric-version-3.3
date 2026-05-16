@@ -997,17 +997,22 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
 
       // Reverse the bank deduction if the entry was paid
       if (entry && entry.status === 'paid') {
+        const ownerId = profile.ownerId || user.uid;
         const accountType = entry.type === 'expense' ? 'cash' : 'digital';
-        const targetAcc = allBankAccounts.find(a => a.outletId === entry.outletId && a.isPrimary && a.accountType === accountType);
+        const liveBankSnap = await getDocs(collection(db, 'bank_accounts'));
+        const liveAccounts = liveBankSnap.docs.map(d => ({ id: d.id, ...d.data() } as BankAccount)).filter(a => a.userId === ownerId);
+        const targetAcc = liveAccounts.find(a => a.outletId === entry.outletId && a.isPrimary && a.accountType === accountType)
+          || liveAccounts.find(a => a.outletId === entry.outletId && a.accountType === accountType)
+          || liveAccounts.find(a => a.outletId === entry.outletId);
         if (targetAcc) {
           const now = Date.now();
-          const ownerId = profile.ownerId || user.uid;
+          const safeBalance = (typeof targetAcc.balance === 'number' && !isNaN(targetAcc.balance)) ? targetAcc.balance : 0;
           await updateDoc(doc(db, 'bank_accounts', targetAcc.id!), {
-            balance: targetAcc.balance + entry.amount,
+            balance: safeBalance + entry.amount,
             updatedAt: now,
           });
           await addDoc(collection(db, 'bank_transactions'), {
-            userId: ownerId,
+            userId: user.uid,
             ownerId,
             bankAccountId: targetAcc.id!,
             date: entry.date,
@@ -1021,7 +1026,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
             createdAt: now,
           });
           // Keep in-memory balance in sync
-          const updater = (a: BankAccount) => a.id === targetAcc.id ? { ...a, balance: a.balance + entry.amount } : a;
+          const updater = (a: BankAccount) => a.id === targetAcc.id ? { ...a, balance: safeBalance + entry.amount } : a;
           setAllBankAccounts(prev => prev.map(updater));
           setBankAccounts(prev => prev.map(updater));
         }
