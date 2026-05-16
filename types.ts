@@ -175,6 +175,13 @@ export interface ExpenseMonthlySnapshot {
   expenseByCategory: Record<string, number>;
   purchaseByCategory: Record<string, number>;
   cogsBucketAgg: Record<string, number>;
+  // Crew Terminal contributions (separate from CSV so sources never double-count)
+  crewTotalExpense?: number;
+  crewTotalPurchase?: number;
+  crewExpenseByCategory?: Record<string, number>;
+  crewPurchaseByCategory?: Record<string, number>;
+  crewCogsBucketAgg?: Record<string, number>;
+  crewLastUpdated?: number;
   lastUpdated: number;
 }
 

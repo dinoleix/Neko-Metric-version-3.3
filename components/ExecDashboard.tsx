@@ -107,10 +107,10 @@ const ExecDashboard: React.FC<{ user: User; dataOwnerId: string }> = ({ user, da
     const totalGoodGross = currentSales.reduce((acc, s) => acc + (s.posGoodGross || 0) + (s.onlineGoodGross || 0) + (s.eventRevenue || 0), 0);
     const cashInflow = currentSales.reduce((acc, s) => acc + (s.posGoodNet || 0) + (s.onlineGoodNet || 0) + (s.eventRevenue || 0), 0);
 
-    const totalPurchases = currentExpenses.reduce((acc, s) => acc + (s.totalPurchase || 0), 0);
+    const totalPurchases = currentExpenses.reduce((acc, s) => acc + (s.totalPurchase || 0) + (s.crewTotalPurchase || 0), 0);
     const stockOffset = currentAdjustments.reduce((acc, a) => acc + (a.adjustmentAmount || 0), 0);
     const netMaterialConsumption = Math.max(0, totalPurchases - stockOffset);
-    const totalOpExBills = currentExpenses.reduce((acc, s) => acc + (s.totalExpense || 0), 0);
+    const totalOpExBills = currentExpenses.reduce((acc, s) => acc + (s.totalExpense || 0) + (s.crewTotalExpense || 0), 0);
     
     const totalRent = rentals.reduce((acc, r) => acc + (r.status === 'active' ? r.currentRent : 0), 0);
     const totalFixedPayroll = MASTER_OUTLETS.reduce((acc, o) => {
@@ -149,8 +149,8 @@ const ExecDashboard: React.FC<{ user: User; dataOwnerId: string }> = ({ user, da
         const gross = oSales.reduce((acc, s) => acc + (s.posGoodGross || 0) + (s.onlineGoodGross || 0) + (s.eventRevenue || 0), 0);
         const oInflow = oSales.reduce((acc, s) => acc + (s.posGoodNet || 0) + (s.onlineGoodNet || 0) + (s.eventRevenue || 0), 0);
         
-        const oOpEx = oExp.reduce((acc, s) => acc + (s.totalExpense || 0), 0);
-        const oPurch = oExp.reduce((acc, s) => acc + (s.totalPurchase || 0), 0);
+        const oOpEx = oExp.reduce((acc, s) => acc + (s.totalExpense || 0) + (s.crewTotalExpense || 0), 0);
+        const oPurch = oExp.reduce((acc, s) => acc + (s.totalPurchase || 0) + (s.crewTotalPurchase || 0), 0);
         const oOffset = oAdj.reduce((acc, a) => acc + (a.adjustmentAmount || 0), 0);
         const oStaff = oPay ? oPay.totalAmount : employees.filter(e => e.outletId === o.id).reduce((sum, e) => sum + e.currentSalary, 0);
         
@@ -222,44 +222,44 @@ const ExecDashboard: React.FC<{ user: User; dataOwnerId: string }> = ({ user, da
       </header>
 
       <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6">
-        <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm group hover:shadow-xl transition-all">
+        <div className="bg-white p-6 xl:p-8 rounded-[2.5rem] border border-slate-100 shadow-sm group hover:shadow-xl transition-all overflow-hidden">
           <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Global Revenue</p>
-          <h4 className="text-3xl font-black text-slate-900 tracking-tighter">₹{metrics.totalGoodGross.toLocaleString()}</h4>
+          <h4 className="text-xl lg:text-2xl xl:text-3xl font-black text-slate-900 tracking-tighter truncate">₹{metrics.totalGoodGross.toLocaleString('en-IN')}</h4>
           <div className={`mt-4 flex items-center gap-1.5 font-black uppercase text-[10px] ${metrics.revenueGrowth >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
             {metrics.revenueGrowth >= 0 ? <ArrowUpRight size={14}/> : <ArrowDownRight size={14}/>}
             {Math.abs(metrics.revenueGrowth).toFixed(1)}% vs. Prev Month
           </div>
         </div>
 
-        <div className={`p-8 rounded-[2.5rem] text-white shadow-xl flex flex-col justify-between transition-colors ${metrics.netProfit >= 0 ? 'bg-emerald-600' : 'bg-rose-600'}`}>
+        <div className={`p-6 xl:p-8 rounded-[2.5rem] text-white shadow-xl flex flex-col justify-between transition-colors overflow-hidden ${metrics.netProfit >= 0 ? 'bg-emerald-600' : 'bg-rose-600'}`}>
           <div>
             <p className="text-[10px] font-black uppercase tracking-widest mb-1 opacity-70">Reconciled Net Profit</p>
-            <h4 className="text-3xl font-black text-slate-900 tracking-tighter">₹{metrics.netProfit.toLocaleString()}</h4>
+            <h4 className="text-xl lg:text-2xl xl:text-3xl font-black tracking-tighter truncate">₹{metrics.netProfit.toLocaleString('en-IN')}</h4>
           </div>
           <div className="mt-4 flex items-center gap-1.5 font-black uppercase text-[10px] opacity-80">
             <Scale size={14} /> Full Waterfall Deduction
           </div>
         </div>
 
-        <div className="bg-slate-900 p-8 rounded-[2.5rem] text-white shadow-xl">
+        <div className="bg-slate-900 p-6 xl:p-8 rounded-[2.5rem] text-white shadow-xl overflow-hidden">
           <p className="text-[10px] font-black text-indigo-400 uppercase tracking-widest mb-1">Group Net Margin</p>
-          <h4 className="text-3xl font-black text-indigo-300 tracking-tighter">{metrics.netMargin.toFixed(1)}%</h4>
+          <h4 className="text-xl lg:text-2xl xl:text-3xl font-black text-indigo-300 tracking-tighter">{metrics.netMargin.toFixed(1)}%</h4>
           <div className="mt-4 flex items-center gap-1.5 font-black uppercase text-[10px] text-indigo-300">
             <Activity size={14} /> Efficiency Score
           </div>
         </div>
 
-        <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm">
+        <div className="bg-white p-6 xl:p-8 rounded-[2.5rem] border border-slate-100 shadow-sm overflow-hidden">
           <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Online Sales Mix</p>
-          <h4 className="text-3xl font-black text-indigo-600 tracking-tighter">{(metrics.onlinePercentage || 0).toFixed(1)}%</h4>
+          <h4 className="text-xl lg:text-2xl xl:text-3xl font-black text-indigo-600 tracking-tighter">{(metrics.onlinePercentage || 0).toFixed(1)}%</h4>
           <div className="mt-4 flex items-center gap-1.5 font-black uppercase text-[10px] text-slate-400">
             <Smartphone size={14} className="text-indigo-400" /> Digital Channels
           </div>
         </div>
 
-        <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm">
+        <div className="bg-white p-6 xl:p-8 rounded-[2.5rem] border border-slate-100 shadow-sm overflow-hidden">
           <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Total Burn (Full Opex)</p>
-          <h4 className="text-3xl font-black text-slate-900 tracking-tighter">₹{(metrics.totalOpEx + (metrics.totalPurchases - metrics.stockOffset) + metrics.totalFixedCosts).toLocaleString()}</h4>
+          <h4 className="text-xl lg:text-2xl xl:text-3xl font-black text-slate-900 tracking-tighter truncate">₹{(metrics.totalOpEx + (metrics.totalPurchases - metrics.stockOffset) + metrics.totalFixedCosts).toLocaleString('en-IN')}</h4>
           <div className="mt-4 flex items-center gap-1.5 font-black uppercase text-[10px] text-rose-500">
             <TrendingDown size={14} /> Consolidated Burden
           </div>
@@ -284,24 +284,24 @@ const ExecDashboard: React.FC<{ user: User; dataOwnerId: string }> = ({ user, da
               <p className="text-slate-400 font-bold uppercase text-xs tracking-widest">No Active Outlets Registered</p>
             </div>
           ) : metrics.outletStats.map((o, idx) => (
-            <div key={o.id} className="p-6 bg-slate-50 rounded-3xl border border-slate-100 flex items-center justify-between hover:bg-white transition-all">
-              <div className="flex items-center gap-6">
-                <span className={`w-10 h-10 rounded-full flex items-center justify-center font-black text-sm ${idx === 0 ? 'bg-amber-100 text-amber-600' : 'bg-slate-200 text-slate-500'}`}>
+            <div key={o.id} className="p-5 bg-slate-50 rounded-3xl border border-slate-100 flex items-center justify-between gap-4 hover:bg-white transition-all overflow-hidden">
+              <div className="flex items-center gap-4 min-w-0">
+                <span className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center font-black text-sm ${idx === 0 ? 'bg-amber-100 text-amber-600' : 'bg-slate-200 text-slate-500'}`}>
                   {idx + 1}
                 </span>
-                <div>
-                  <h4 className="text-md font-black text-slate-900 uppercase tracking-tight">{o.name}</h4>
-                  <p className="text-[10px] font-bold text-slate-400 uppercase">Gross Sales: ₹{o.gross.toLocaleString()}</p>
+                <div className="min-w-0">
+                  <h4 className="text-sm font-black text-slate-900 uppercase tracking-tight truncate">{o.name}</h4>
+                  <p className="text-[10px] font-bold text-slate-400 uppercase truncate">Gross: ₹{o.gross.toLocaleString('en-IN')}</p>
                 </div>
               </div>
-              <div className="flex items-center gap-12">
+              <div className="flex items-center gap-6 xl:gap-12 shrink-0">
                 <div className="text-right">
                   <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Net Yield</p>
-                  <p className={`text-lg font-black ${o.profit >= 0 ? 'text-emerald-600' : 'text-rose-500'}`}>₹{o.profit.toLocaleString()}</p>
+                  <p className={`text-base font-black ${o.profit >= 0 ? 'text-emerald-600' : 'text-rose-500'}`}>₹{o.profit.toLocaleString('en-IN')}</p>
                 </div>
-                <div className="text-right w-20">
+                <div className="text-right w-16 xl:w-20">
                   <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Margin</p>
-                  <p className={`text-lg font-black ${o.margin >= 10 ? 'text-indigo-600' : 'text-slate-600'}`}>{o.margin.toFixed(1)}%</p>
+                  <p className={`text-base font-black ${o.margin >= 10 ? 'text-indigo-600' : 'text-slate-600'}`}>{o.margin.toFixed(1)}%</p>
                 </div>
               </div>
             </div>

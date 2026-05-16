@@ -298,6 +298,8 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
       };
       processMap(snap.expenseByCategory);
       processMap(snap.purchaseByCategory);
+      processMap(snap.crewExpenseByCategory || {});
+      processMap(snap.crewPurchaseByCategory || {});
     });
 
     const cogsAdj = adjustments.filter(a => currentFilterOutlets.includes(a.outletId)).reduce((acc, a) => acc + (a.adjustmentAmount || 0), 0);
@@ -402,6 +404,7 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
               else rawU += Number(amt);
             });
             process(snap.expenseByCategory); process(snap.purchaseByCategory);
+            process(snap.crewExpenseByCategory || {}); process(snap.crewPurchaseByCategory || {});
           });
 
           const c = Math.max(0, rawC - (oAdj?.adjustmentAmount || 0));

@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import type { User } from 'firebase/auth';
-import { collection, query, getDocs, getDoc, where, addDoc, doc, deleteDoc, updateDoc, setDoc, increment, orderBy } from 'firebase/firestore';
+import { collection, query, getDocs, getDoc, where, addDoc, doc, deleteDoc, updateDoc, setDoc, orderBy } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, storage } from '../firebase';
 import {
@@ -10,6 +10,7 @@ import {
   SalesLedgerEntry,
   UserProfile,
   MASTER_OUTLETS,
+  MONTH_NAMES,
   getOutletName,
   getOutletCode,
   CREW_PURCHASE_CATEGORIES,
@@ -508,24 +509,23 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
         console.warn('Bank deduction skipped:', bankErr);
       }
 
-      // Update expense_snapshots so all reporting reflects this entry
+      // Rebuild crew expense snapshot so all reporting reflects the current state of entries
       try {
         const isEdit = activeMode === 'edit' && editingId;
         if (isEdit) {
           const oldEntry = entries.find(e => e.id === editingId);
-          if (oldEntry && oldEntry.status === 'paid') {
-            await updateExpenseSnapshot(oldEntry.type, oldEntry.category, -oldEntry.amount, oldEntry.date, oldEntry.outletId);
+          // If outlet or month changed, also rebuild the old period's snapshot
+          if (oldEntry && (oldEntry.status === 'paid' || status === 'paid')) {
+            if (oldEntry && (oldEntry.outletId !== outletId || oldEntry.date.slice(0, 7) !== date.slice(0, 7))) {
+              await rebuildExpenseSnapshot(oldEntry.outletId, oldEntry.date);
+            }
+            await rebuildExpenseSnapshot(outletId, date);
           }
-          if (status === 'paid') {
-            await updateExpenseSnapshot(entryType, category, finalAmount, date, outletId);
-          }
-        } else {
-          if (status === 'paid') {
-            await updateExpenseSnapshot(entryType, category, finalAmount, date, outletId);
-          }
+        } else if (status === 'paid') {
+          await rebuildExpenseSnapshot(outletId, date);
         }
       } catch (snapErr) {
-        console.warn('Snapshot update skipped:', snapErr);
+        console.warn('Snapshot rebuild skipped:', snapErr);
       }
 
       setSuccess(true);
@@ -811,20 +811,14 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     setBillPrice('');
   };
 
-  // Updates (or reverses) the expense_snapshots aggregate that all reporting reads from.
-  // Pass a negative amount to subtract (delete / edit reversal).
-  const updateExpenseSnapshot = async (
-    type: 'purchase' | 'expense',
-    category: string,
-    amount: number,
-    entryDate: string,
-    entryOutletId: string
-  ) => {
+  // Rebuilds the crew_* fields in expense_snapshots from scratch for the given outlet+period.
+  // Called after every paid entry submit, edit, or delete — guarantees the snapshot is always
+  // consistent with actual crew_entries in Firestore (no fragile increment/decrement logic).
+  const rebuildExpenseSnapshot = async (entryOutletId: string, entryDate: string) => {
     const ownerId = profile.ownerId || user.uid;
     const [yearStr, monthStr] = entryDate.split('-');
-    const year = parseInt(yearStr);
-    const month = parseInt(monthStr);
-    const upperCat = category.toUpperCase();
+    const monthNum = parseInt(monthStr);
+    const monthName = MONTH_NAMES[monthNum - 1]; // e.g. "MAY"
 
     let cogsKeywords: string[] = [];
     let cogsBucketMapping: Record<string, string> = {};
@@ -837,33 +831,52 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
       }
     } catch {}
 
-    const snapId = `${ownerId}_${entryOutletId}_${year}_${month}`;
-    const snapRef = doc(db, 'expense_snapshots', snapId);
-    const catKey = type === 'purchase' ? 'purchaseByCategory' : 'expenseByCategory';
-    const totalKey = type === 'purchase' ? 'totalPurchase' : 'totalExpense';
-
-    const snapSnap = await getDoc(snapRef);
-    if (!snapSnap.exists()) {
-      await setDoc(snapRef, {
-        userId: ownerId,
-        outletId: entryOutletId,
-        month, year,
-        totalExpense: 0, totalPurchase: 0,
-        expenseByCategory: {}, purchaseByCategory: {},
-        cogsBucketAgg: { FOOD: 0, DRINKS: 0, 'FOOD SERVINGS': 0, 'DRINKS SERVINGS': 0, UNCATEGORIZED: 0 },
-        lastUpdated: Date.now(),
+    // Fetch all crew_entries for this owner, then filter client-side by outlet + period
+    const crewSnap = await getDocs(query(
+      collection(db, 'crew_entries'),
+      where('ownerId', '==', ownerId)
+    ));
+    const paidEntries = crewSnap.docs
+      .map(d => ({ id: d.id, ...d.data() } as DailyCounterEntry))
+      .filter(e => {
+        if (e.outletId !== entryOutletId || e.status !== 'paid') return false;
+        const [eYear, eMonth] = (e.date || '').split('-');
+        return eYear === yearStr && parseInt(eMonth) === monthNum;
       });
+
+    // Aggregate from zero — no incrementing, always a clean recount
+    const agg = {
+      crewTotalPurchase: 0,
+      crewTotalExpense: 0,
+      crewPurchaseByCategory: {} as Record<string, number>,
+      crewExpenseByCategory: {} as Record<string, number>,
+      crewCogsBucketAgg: { FOOD: 0, DRINKS: 0, 'FOOD SERVINGS': 0, 'DRINKS SERVINGS': 0, UNCATEGORIZED: 0 } as Record<string, number>,
+    };
+
+    for (const e of paidEntries) {
+      const cat = (e.category || 'UNCATEGORIZED').trim().toUpperCase();
+      const amt = e.amount || 0;
+      if (e.type === 'purchase') {
+        agg.crewTotalPurchase += amt;
+        agg.crewPurchaseByCategory[cat] = (agg.crewPurchaseByCategory[cat] || 0) + amt;
+      } else {
+        agg.crewTotalExpense += amt;
+        agg.crewExpenseByCategory[cat] = (agg.crewExpenseByCategory[cat] || 0) + amt;
+      }
+      const bucket = cogsKeywords.includes(cat) ? (cogsBucketMapping[cat] || 'FOOD') : 'UNCATEGORIZED';
+      agg.crewCogsBucketAgg[bucket] = (agg.crewCogsBucketAgg[bucket] || 0) + amt;
     }
 
-    const updates: Record<string, any> = {
-      [totalKey]: increment(amount),
-      [`${catKey}.${upperCat}`]: increment(amount),
-      lastUpdated: Date.now(),
-    };
-    const bucket = cogsKeywords.includes(upperCat) ? (cogsBucketMapping[upperCat] || 'FOOD') : 'UNCATEGORIZED';
-    updates[`cogsBucketAgg.${bucket}`] = increment(amount);
-
-    await updateDoc(snapRef, updates);
+    // Write crew_* fields only — merge:true preserves any CSV-uploaded data in the same document
+    const snapId = `${ownerId}_${entryOutletId}_${yearStr}_${monthName}`;
+    await setDoc(doc(db, 'expense_snapshots', snapId), {
+      userId: ownerId,
+      outletId: entryOutletId,
+      month: monthName,
+      year: yearStr,
+      ...agg,
+      crewLastUpdated: Date.now(),
+    }, { merge: true });
   };
 
   const handleProductSelect = (product: Product) => {
@@ -958,11 +971,11 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
           setBankAccounts(prev => prev.map(updater));
         }
 
-        // Reverse the expense_snapshot contribution
+        // Rebuild snapshot — deleted entry is already gone from Firestore so rebuild gives correct totals
         try {
-          await updateExpenseSnapshot(entry.type, entry.category, -entry.amount, entry.date, entry.outletId);
+          await rebuildExpenseSnapshot(entry.outletId, entry.date);
         } catch (snapErr) {
-          console.warn('Snapshot reversal skipped:', snapErr);
+          console.warn('Snapshot rebuild skipped:', snapErr);
         }
       }
 

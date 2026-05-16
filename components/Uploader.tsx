@@ -983,6 +983,17 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
           const snapRef = doc(db, 'expense_snapshots', `${user.uid}_${oId}_${year}_${month}`);
           const agg = outletAggs[oId];
           const existingSnap = await getDoc(snapRef);
+          // Guard: warn if crew terminal has already contributed data for this period
+          if (existingSnap.exists()) {
+            const existingData = existingSnap.data();
+            const hasCrewData = (existingData.crewTotalPurchase || 0) > 0 || (existingData.crewTotalExpense || 0) > 0;
+            if (hasCrewData) {
+              const proceed = window.confirm(
+                `⚠️ Double-count warning\n\nCrew Terminal entries already exist for outlet "${oId}" in ${month} ${year}.\n\nUploading this CSV will ADD to the crew data, which may inflate your P&L figures.\n\nRecommendation: use either CSV OR Crew Terminal for a given period — not both.\n\nProceed anyway?`
+              );
+              if (!proceed) return;
+            }
+          }
           if (existingSnap.exists()) {
             const data = existingSnap.data();
             const nextExpenseCat = { ...(data.expenseByCategory || {} ) };
