@@ -550,8 +550,9 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
         } else if (status === 'paid') {
           await rebuildExpenseSnapshot(outletId, date);
         }
-      } catch (snapErr) {
-        console.warn('Snapshot rebuild skipped:', snapErr);
+      } catch (snapErr: any) {
+        console.error('[Rebuild] FAILED:', snapErr);
+        alert(`⚠️ Entry saved, but reporting sync failed.\n\nError: ${snapErr?.message || snapErr}\n\nPlease report this to support.`);
       }
 
       setSuccess(true);
@@ -846,6 +847,8 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     const monthNum = parseInt(monthStr);
     const monthName = MONTH_NAMES[monthNum - 1]; // e.g. "MAY"
 
+    console.log('[Rebuild] START outlet:', entryOutletId, 'date:', entryDate, 'ownerId:', ownerId, 'monthName:', monthName);
+
     let cogsKeywords: string[] = [];
     let cogsBucketMapping: Record<string, string> = {};
     try {
@@ -858,16 +861,28 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     } catch {}
 
     // Dual query: new entries have ownerId, old entries (pre-ownerId field) are found by userId
-    const [byOwner, byUser] = await Promise.all([
-      getDocs(query(collection(db, 'crew_entries'), where('ownerId', '==', ownerId))),
-      getDocs(query(collection(db, 'crew_entries'), where('userId', '==', user.uid))),
-    ]);
+    // Each query is isolated — if one fails due to rules, the other still runs
+    let byOwnerDocs: any[] = [];
+    let byUserDocs: any[] = [];
+    try {
+      const snap = await getDocs(query(collection(db, 'crew_entries'), where('ownerId', '==', ownerId)));
+      byOwnerDocs = snap.docs;
+      console.log('[Rebuild] byOwner OK:', snap.size);
+    } catch (e) { console.warn('[Rebuild] byOwner failed:', e); }
+    try {
+      const snap = await getDocs(query(collection(db, 'crew_entries'), where('userId', '==', user.uid)));
+      byUserDocs = snap.docs;
+      console.log('[Rebuild] byUser OK:', snap.size);
+    } catch (e) { console.warn('[Rebuild] byUser failed:', e); }
+
     const seenIds = new Set<string>();
-    const allDocs = [...byOwner.docs, ...byUser.docs].filter(d => {
+    const allDocs = [...byOwnerDocs, ...byUserDocs].filter(d => {
       if (seenIds.has(d.id)) return false;
       seenIds.add(d.id);
       return true;
     });
+    console.log('[Rebuild] merged total:', allDocs.length);
+
     const paidEntries = allDocs
       .map(d => ({ id: d.id, ...d.data() } as DailyCounterEntry))
       .filter(e => {
@@ -875,6 +890,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
         const [eYear, eMonth] = (e.date || '').split('-');
         return eYear === yearStr && parseInt(eMonth) === monthNum;
       });
+    console.log('[Rebuild] paidEntries for this outlet+period:', paidEntries.length, paidEntries.map(e => ({ id: e.id, type: e.type, amt: e.amount, cat: e.category, outletId: e.outletId, date: e.date, status: e.status })));
 
     // Aggregate from zero — no incrementing, always a clean recount
     const agg = {
@@ -901,14 +917,21 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
 
     // Write crew_* fields only — merge:true preserves any CSV-uploaded data in the same document
     const snapId = `${ownerId}_${entryOutletId}_${yearStr}_${monthName}`;
-    await setDoc(doc(db, 'expense_snapshots', snapId), {
-      userId: ownerId,
-      outletId: entryOutletId,
-      month: monthName,
-      year: yearStr,
-      ...agg,
-      crewLastUpdated: Date.now(),
-    }, { merge: true });
+    console.log('[Rebuild] writing snapId:', snapId, 'agg:', JSON.stringify(agg));
+    try {
+      await setDoc(doc(db, 'expense_snapshots', snapId), {
+        userId: ownerId,
+        outletId: entryOutletId,
+        month: monthName,
+        year: yearStr,
+        ...agg,
+        crewLastUpdated: Date.now(),
+      }, { merge: true });
+      console.log('[Rebuild] DONE ✓');
+    } catch (e: any) {
+      console.error('[Rebuild] setDoc FAILED:', e);
+      throw e; // re-throw so outer catch shows the alert
+    }
   };
 
   const handleProductSelect = (product: Product) => {
