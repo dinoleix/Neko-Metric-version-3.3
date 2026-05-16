@@ -120,6 +120,14 @@ const compressImage = (file: File, maxWidth: number = 1200): Promise<Blob> => {
   });
 };
 
+// Returns today's date in YYYY-MM-DD format using IST (UTC+5:30) so the default
+// is never off by one day for users in India regardless of local timezone.
+const istToday = (): string => {
+  const now = new Date();
+  const ist = new Date(now.getTime() + 5.5 * 60 * 60 * 1000);
+  return ist.toISOString().split('T')[0];
+};
+
 const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, profile }) => {
   const [activeMode, setActiveMode] = useState<'landing' | 'view' | 'add' | 'edit' | 'daily-sales' | 'transfer-10k'>('landing');
   const [entryType, setEntryType] = useState<'expense' | 'purchase'>('purchase');
@@ -140,8 +148,8 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
   const [filterType, setFilterType] = useState<'all' | 'purchase' | 'expense'>('all');
   const [filterCategory, setFilterCategory] = useState('all');
   const [datePreset, setDatePreset] = useState<DatePreset>('today');
-  const [customStartDate, setCustomStartDate] = useState(new Date().toISOString().split('T')[0]);
-  const [customEndDate, setCustomEndDate] = useState(new Date().toISOString().split('T')[0]);
+  const [customStartDate, setCustomStartDate] = useState(istToday());
+  const [customEndDate, setCustomEndDate] = useState(istToday());
 
   // Viewing detail state
   const [viewingEntry, setViewingEntry] = useState<DailyCounterEntry | null>(null);
@@ -154,7 +162,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
   const [category, setCategory] = useState('');
   const [description, setDescription] = useState('');
   const [status, setStatus] = useState<EntryStatus>('paid');
-  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+  const [date, setDate] = useState(istToday());
   const [outletId, setOutletId] = useState(profile.assignedOutlet || MASTER_OUTLETS[0].id);
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const [receiptPreview, setReceiptPreview] = useState<string | null>(null);
@@ -189,7 +197,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
   const [vSaving, setVSaving] = useState(false);
 
   // --- Daily Sales Log State ---
-  const [dsDate, setDsDate] = useState(new Date().toISOString().split('T')[0]);
+  const [dsDate, setDsDate] = useState(istToday());
   const [dsTotal, setDsTotal] = useState('');
   const [dsCash, setDsCash] = useState('');
   const [dsCard, setDsCard] = useState('');
@@ -228,8 +236,8 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
       setVendors(vendorSnap.docs.map(d => ({ id: d.id, ...d.data() } as Vendor)).sort((a, b) => a.name.localeCompare(b.name)));
 
       let start: string;
-      let end: string = new Date().toISOString().split('T')[0];
-      const today = new Date();
+      let end: string = istToday();
+      const todayIst = istToday(); // IST-safe date string
 
       switch (datePreset) {
         case 'yesterday':
@@ -254,14 +262,14 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
           end = prevWeekEnd.toISOString().split('T')[0];
           break;
         case 'this-month':
-          start = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().split('T')[0];
+          start = todayIst.slice(0, 8) + '01'; // first day of current IST month
           break;
         case 'custom':
           start = customStartDate;
           end = customEndDate;
           break;
         default: // today
-          start = today.toISOString().split('T')[0];
+          start = todayIst;
           break;
       }
 
@@ -555,7 +563,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
   };
 
   const resetDsForm = () => {
-    setDsDate(new Date().toISOString().split('T')[0]);
+    setDsDate(istToday());
     setDsTotal('');
     setDsCash('');
     setDsCard('');
@@ -1032,7 +1040,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     try {
       const ownerId = profile.ownerId || user.uid;
       const now = Date.now();
-      const today = new Date().toISOString().split('T')[0];
+      const today = istToday();
       const ref = `10K-${now}`;
 
       await Promise.all([
