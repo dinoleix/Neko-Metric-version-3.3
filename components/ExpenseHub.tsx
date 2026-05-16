@@ -214,9 +214,11 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
     filteredSnaps.forEach(snap => {
       if (viewMode === 'combined' || viewMode === 'purchase') {
         Object.entries(snap.purchaseByCategory || {}).forEach(([cat, amt]) => classifyRow(cat, amt as number, 'Online'));
+        Object.entries(snap.crewPurchaseByCategory || {}).forEach(([cat, amt]) => classifyRow(cat, amt as number, 'Online'));
       }
       if (viewMode === 'combined' || viewMode === 'expense') {
         Object.entries(snap.expenseByCategory || {}).forEach(([cat, amt]) => classifyRow(cat, amt as number, 'Cash'));
+        Object.entries(snap.crewExpenseByCategory || {}).forEach(([cat, amt]) => classifyRow(cat, amt as number, 'Cash'));
       }
     });
 
