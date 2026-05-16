@@ -1959,16 +1959,37 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
                 <>
                   {/* ── EXPENSE FORM (or edit mode) ─────────────────── */}
                   {entryType === 'purchase' && activeMode === 'edit' && (
-                    <div className="space-y-2">
-                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Vendor (Optional)</label>
-                      <div className="flex gap-3">
-                        <div className="relative flex-1">
+                    <div className="space-y-4">
+                      {/* Vendor */}
+                      <div className="space-y-2">
+                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Vendor (Optional)</label>
+                        <div className="relative">
                           <Store className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={18} />
                           <select value={selectedVendorId} onChange={e => setSelectedVendorId(e.target.value)}
                             className="w-full h-14 bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none pl-12 pr-8 rounded-2xl text-sm font-bold text-slate-700 appearance-none uppercase transition-all"
                           >
                             <option value="">-- No Vendor --</option>
                             {vendors.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+                          </select>
+                          <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={16} />
+                        </div>
+                      </div>
+                      {/* Product — auto-fills description, price, qty */}
+                      <div className="space-y-2">
+                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Product (Optional)</label>
+                        <div className="relative">
+                          <Package className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={18} />
+                          <select
+                            value={selectedProductId}
+                            onChange={e => setSelectedProductId(e.target.value)}
+                            className="w-full h-14 bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none pl-12 pr-8 rounded-2xl text-sm font-bold text-slate-700 appearance-none uppercase transition-all"
+                          >
+                            <option value="">-- Select Product --</option>
+                            {catalogProducts.filter(p => !category || p.category === category).map(p => (
+                              <option key={p.id} value={p.id!}>
+                                {p.name}{p.pricePerUnit != null ? ` — ₹${p.pricePerUnit}${p.unit ? `/${p.unit}` : ''}` : ''}
+                              </option>
+                            ))}
                           </select>
                           <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={16} />
                         </div>
