@@ -443,6 +443,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
 
       const entryData: any = {
         userId: user.uid,
+        ownerId: profile.ownerId || user.uid,
         userName: user.email?.split('@')[0] || 'Unknown',
         outletId,
         type: entryType,
