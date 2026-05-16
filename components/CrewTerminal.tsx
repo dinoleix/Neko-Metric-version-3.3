@@ -509,8 +509,9 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
 
           if (deduction !== 0) {
             const now = Date.now();
+            const safeBalance = (typeof targetAcc.balance === 'number' && !isNaN(targetAcc.balance)) ? targetAcc.balance : 0;
             await updateDoc(doc(db, 'bank_accounts', targetAcc.id!), {
-              balance: targetAcc.balance - deduction,
+              balance: safeBalance - deduction,
               updatedAt: now,
             });
             await addDoc(collection(db, 'bank_transactions'), {
