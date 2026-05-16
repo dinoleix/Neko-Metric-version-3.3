@@ -487,17 +487,16 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
 
         if (targetAcc) {
           const isEdit = activeMode === 'edit' && editingId;
-          const parsedAmount = parseFloat(amount);
 
           // For edits, compute delta against old entry to avoid double-deducting
           let deduction = 0;
           if (isEdit) {
             const oldEntry = entries.find(e => e.id === editingId);
             const oldImpact = (oldEntry?.status === 'paid') ? oldEntry.amount : 0;
-            const newImpact = status === 'paid' ? parsedAmount : 0;
+            const newImpact = status === 'paid' ? finalAmount : 0;
             deduction = newImpact - oldImpact;
           } else {
-            deduction = status === 'paid' ? parsedAmount : 0;
+            deduction = status === 'paid' ? finalAmount : 0;
           }
 
           if (deduction !== 0) {
