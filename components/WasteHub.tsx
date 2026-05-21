@@ -61,16 +61,19 @@ const WasteHub: React.FC<Props> = ({ user, dataOwnerId }) => {
   const [filterType, setFilterType] = useState<'all' | WasteType>('all');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
   const fetchEntries = async () => {
     setLoading(true);
+    setFetchError(null);
     try {
       const snap = await getDocs(
         query(collection(db, 'waste_entries'), where('ownerId', '==', dataOwnerId))
       );
       setEntries(snap.docs.map(d => ({ id: d.id, ...d.data() } as WasteEntry)));
-    } catch (err) {
+    } catch (err: any) {
       console.error('WasteHub fetch error:', err);
+      setFetchError(err?.message || 'Failed to load entries');
     } finally {
       setLoading(false);
     }
@@ -238,7 +241,14 @@ const WasteHub: React.FC<Props> = ({ user, dataOwnerId }) => {
         </div>
       </div>
 
-      {filtered.length === 0 && !loading && (
+      {fetchError && (
+        <div className="flex items-center gap-3 px-5 py-4 bg-rose-50 border border-rose-200 rounded-2xl text-rose-700 text-sm font-medium">
+          <AlertTriangle size={16} className="shrink-0 text-rose-500" />
+          {fetchError}
+        </div>
+      )}
+
+      {filtered.length === 0 && !loading && !fetchError && (
         <div className="py-20 flex flex-col items-center justify-center gap-3 text-slate-300">
           <SearchX size={40} />
           <p className="text-sm font-black uppercase tracking-widest">No waste entries for this period</p>
