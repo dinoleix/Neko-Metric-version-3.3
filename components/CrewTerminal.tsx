@@ -19,7 +19,11 @@ import {
   BankAccount,
   Vendor,
   Product,
-  BillItem
+  BillItem,
+  ServingOption,
+  WasteEntry,
+  WasteLineItem,
+  WasteType
 } from '../types';
 import ProductCatalog from './ProductCatalog';
 import {
@@ -129,7 +133,7 @@ const istToday = (): string => {
 };
 
 const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, profile }) => {
-  const [activeMode, setActiveMode] = useState<'landing' | 'view' | 'add' | 'edit' | 'daily-sales' | 'transfer-10k'>('landing');
+  const [activeMode, setActiveMode] = useState<'landing' | 'view' | 'add' | 'edit' | 'daily-sales' | 'transfer-10k' | 'record-waste'>('landing');
   const [entryType, setEntryType] = useState<'expense' | 'purchase'>('purchase');
   const [entries, setEntries] = useState<DailyCounterEntry[]>([]);
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
@@ -210,6 +214,85 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
   const [dsDuplicateWarning, setDsDuplicateWarning] = useState(false);
   const [dsLogs, setDsLogs] = useState<DailySalesLog[]>([]);
   const [dsLoadingLogs, setDsLoadingLogs] = useState(false);
+
+  // --- Record Waste State ---
+  const [servingOptions, setServingOptions] = useState<ServingOption[]>([]);
+  const [wasteDate, setWasteDate] = useState(istToday());
+  const [wasteOutletId, setWasteOutletId] = useState(profile.assignedOutlet || MASTER_OUTLETS[0].id);
+  const [wasteNotes, setWasteNotes] = useState('');
+  const [wasteItems, setWasteItems] = useState<WasteLineItem[]>([]);
+  const [wasteSaving, setWasteSaving] = useState(false);
+  const [wasteSuccess, setWasteSuccess] = useState(false);
+  // line-item builder
+  // value format: "servingOptionId::itemName::price"
+  const [wSelItemKey, setWSelItemKey] = useState('');
+  const [wQty, setWQty] = useState('1');
+  const [wType, setWType] = useState<WasteType>('extra_demand');
+
+  const fetchServingOptions = async () => {
+    const ownerId = profile.ownerId || user.uid;
+    const snap = await getDocs(query(collection(db, 'serving_options'), where('userId', '==', ownerId)));
+    setServingOptions(snap.docs.map(d => ({ id: d.id, ...d.data() } as ServingOption)));
+  };
+
+  const resetWasteForm = () => {
+    setWasteDate(istToday());
+    setWasteOutletId(profile.assignedOutlet || MASTER_OUTLETS[0].id);
+    setWasteNotes('');
+    setWasteItems([]);
+    setWasteSuccess(false);
+    setWSelItemKey('');
+    setWQty('1');
+    setWType('extra_demand');
+  };
+
+  const addWasteLineItem = () => {
+    if (!wSelItemKey || !wQty || parseFloat(wQty) <= 0) return;
+    const [optId, itemName, priceStr] = wSelItemKey.split('::');
+    const opt = servingOptions.find(o => o.id === optId);
+    if (!opt) return;
+    const qty = parseFloat(wQty);
+    const price = parseFloat(priceStr);
+    setWasteItems(prev => [...prev, {
+      servingOptionId: opt.id!,
+      servingOptionName: opt.name,
+      itemName,
+      quantity: qty,
+      costPerUnit: price,
+      totalCost: parseFloat((price * qty).toFixed(2)),
+      wasteType: wType,
+    }]);
+    setWSelItemKey('');
+    setWQty('1');
+  };
+
+  const handleWasteSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (wasteItems.length === 0) return;
+    setWasteSaving(true);
+    try {
+      const ownerId = profile.ownerId || user.uid;
+      const totalCost = wasteItems.reduce((s, i) => s + i.totalCost, 0);
+      const entry: WasteEntry = {
+        userId: user.uid,
+        ownerId,
+        outletId: wasteOutletId,
+        date: wasteDate,
+        items: wasteItems,
+        totalCost: parseFloat(totalCost.toFixed(2)),
+        notes: wasteNotes,
+        submittedBy: user.email || user.uid,
+        createdAt: Date.now(),
+      };
+      await addDoc(collection(db, 'waste_entries'), entry);
+      setWasteSuccess(true);
+      setTimeout(() => { resetWasteForm(); setActiveMode('landing'); }, 1800);
+    } catch (err) {
+      console.error('Waste submit error:', err);
+    } finally {
+      setWasteSaving(false);
+    }
+  };
 
   const fetchEntries = async () => {
     setLoading(true);
@@ -322,6 +405,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
   useEffect(() => {
     if (activeMode === 'view') fetchEntries();
     if (activeMode === 'daily-sales') fetchDsLogs();
+    if (activeMode === 'record-waste') fetchServingOptions();
   }, [activeMode]);
 
   useEffect(() => {
@@ -1163,17 +1247,30 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
               </div>
             </button>
           </div>
-          {/* 10K Transfer */}
-          <button
-            onClick={() => setActiveMode('transfer-10k')}
-            className="w-full max-w-2xl h-28 bg-amber-500 active:scale-95 text-white rounded-[2.5rem] flex items-center justify-center gap-6 shadow-2xl shadow-amber-900/40 transition-transform border border-amber-400/20"
-          >
-            <Vault size={44} strokeWidth={1.5} />
-            <div className="text-left">
-              <p className="text-2xl font-black uppercase tracking-tight leading-tight">10K Transfer</p>
-              <p className="text-[11px] font-bold text-amber-200/80 mt-1.5 uppercase tracking-widest">Move counter cash to safe</p>
-            </div>
-          </button>
+          {/* 10K Transfer + Record Waste */}
+          <div className="grid grid-cols-2 gap-5 w-full max-w-2xl">
+            <button
+              onClick={() => setActiveMode('transfer-10k')}
+              className="h-28 bg-amber-500 active:scale-95 text-white rounded-[2.5rem] flex flex-col items-center justify-center gap-2 shadow-2xl shadow-amber-900/40 transition-transform border border-amber-400/20"
+            >
+              <Vault size={32} strokeWidth={1.5} />
+              <div className="text-center px-3">
+                <p className="text-base font-black uppercase tracking-tight leading-tight">10K Transfer</p>
+                <p className="text-[10px] font-bold text-amber-200/80 mt-1 uppercase tracking-widest">Counter → Safe</p>
+              </div>
+            </button>
+
+            <button
+              onClick={() => { resetWasteForm(); setActiveMode('record-waste'); }}
+              className="h-28 bg-rose-600 active:scale-95 text-white rounded-[2.5rem] flex flex-col items-center justify-center gap-2 shadow-2xl shadow-rose-900/40 transition-transform border border-rose-500/20"
+            >
+              <Trash2 size={32} strokeWidth={1.5} />
+              <div className="text-center px-3">
+                <p className="text-base font-black uppercase tracking-tight leading-tight">Record Waste</p>
+                <p className="text-[10px] font-bold text-rose-200/80 mt-1 uppercase tracking-widest">Servings · Broken</p>
+              </div>
+            </button>
+          </div>
 
           {/* Shortcuts row */}
           <div className="flex flex-wrap items-center justify-center gap-3">
@@ -1684,6 +1781,182 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
                 </form>
               )}
             </div>
+          </div>
+        </div>
+
+      /* ── RECORD WASTE ─────────────────────────────────────────── */
+      ) : activeMode === 'record-waste' ? (
+        <div className="animate-in slide-in-from-right duration-300 px-1 pt-2">
+          <div className="bg-white rounded-[2.5rem] shadow-2xl overflow-hidden">
+            <header className="px-8 py-7 flex items-center justify-between text-white bg-rose-600">
+              <div className="flex items-center gap-4">
+                <button onClick={() => { setActiveMode('landing'); resetWasteForm(); }} className="p-3.5 bg-white/15 rounded-2xl active:bg-white/30 transition-all">
+                  <ArrowLeft size={22} />
+                </button>
+                <div>
+                  <h3 className="text-2xl font-black uppercase tracking-tight leading-none">Record Waste</h3>
+                  <p className="text-white/60 text-[10px] font-bold uppercase tracking-widest mt-1.5">Serving materials used beyond billing</p>
+                </div>
+              </div>
+            </header>
+
+            <form onSubmit={handleWasteSubmit} className="p-8 space-y-7">
+
+              {/* Outlet + Date */}
+              <div className="grid grid-cols-2 gap-5">
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Outlet</label>
+                  {profile.assignedOutlet ? (
+                    <div className="h-14 bg-slate-50 border-2 border-slate-100 rounded-2xl flex items-center px-5">
+                      <MapPin size={16} className="text-slate-300 mr-3 shrink-0" />
+                      <span className="text-sm font-black text-slate-700 uppercase">{getOutletName(wasteOutletId)}</span>
+                    </div>
+                  ) : (
+                    <div className="relative">
+                      <MapPin className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={16} />
+                      <select value={wasteOutletId} onChange={e => setWasteOutletId(e.target.value)}
+                        className="w-full h-14 bg-slate-50 border-2 border-slate-100 focus:border-rose-400 outline-none pl-10 pr-8 rounded-2xl text-sm font-black text-slate-700 appearance-none uppercase transition-all"
+                      >
+                        {MASTER_OUTLETS.filter(o => o.id !== 'GLOBAL').map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+                      </select>
+                      <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={16} />
+                    </div>
+                  )}
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Date</label>
+                  <div className="relative">
+                    <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={16} />
+                    <input required type="date" value={wasteDate} onChange={e => setWasteDate(e.target.value)}
+                      className="w-full h-14 bg-slate-50 border-2 border-slate-100 outline-none pl-10 pr-4 rounded-2xl text-sm font-bold text-slate-700 appearance-none"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Line-item builder */}
+              <div className="space-y-3">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Add Serving Material</label>
+                <div className="bg-slate-50 border-2 border-slate-100 rounded-3xl p-5 space-y-4">
+                  {/* Waste type toggle */}
+                  <div className="flex bg-white p-1 rounded-2xl border-2 border-slate-100 gap-2">
+                    {(['extra_demand', 'broken'] as WasteType[]).map(t => (
+                      <button key={t} type="button" onClick={() => setWType(t)}
+                        className={`flex-1 h-11 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all active:scale-95 border ${
+                          wType === t
+                            ? t === 'broken' ? 'bg-orange-500/10 text-orange-600 border-orange-200' : 'bg-rose-500/10 text-rose-600 border-rose-200'
+                            : 'bg-white border-slate-100 text-slate-400'
+                        }`}
+                      >
+                        {t === 'extra_demand' ? 'Extra Demand' : 'Broken on Unpack'}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Individual item select — flat deduplicated list */}
+                  <div className="relative">
+                    <select value={wSelItemKey} onChange={e => setWSelItemKey(e.target.value)}
+                      className="w-full bg-white border-2 border-slate-100 focus:border-rose-400 outline-none px-5 py-3.5 rounded-2xl text-sm font-black text-slate-700 appearance-none uppercase transition-all"
+                    >
+                      <option value="">-- Select item --</option>
+                      {(() => {
+                        const seen = new Set<string>();
+                        return servingOptions.flatMap(o =>
+                          o.items
+                            .filter(item => {
+                              const key = item.name.toUpperCase();
+                              if (seen.has(key)) return false;
+                              seen.add(key);
+                              return true;
+                            })
+                            .map(item => (
+                              <option key={`${o.id}::${item.name}`} value={`${o.id}::${item.name}::${item.price}`}>
+                                {item.name} — ₹{item.price}
+                              </option>
+                            ))
+                        );
+                      })()}
+                    </select>
+                    <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={16} />
+                  </div>
+
+                  {/* Quantity stepper + Add */}
+                  <div className="flex gap-3">
+                    <button type="button"
+                      onClick={() => setWQty(q => String(Math.max(1, parseInt(q || '1') - 1)))}
+                      className="w-14 shrink-0 bg-white border-2 border-slate-100 active:bg-slate-100 rounded-2xl text-2xl font-black text-slate-600 flex items-center justify-center transition-all active:scale-95"
+                    >−</button>
+                    <input
+                      type="number" min="1" step="1" value={wQty}
+                      onChange={e => setWQty(String(Math.max(1, parseInt(e.target.value) || 1)))}
+                      className="w-0 flex-1 bg-white border-2 border-slate-100 focus:border-rose-400 outline-none px-3 py-3.5 rounded-2xl text-2xl font-black text-slate-900 text-center transition-all"
+                    />
+                    <button type="button"
+                      onClick={() => setWQty(q => String(parseInt(q || '1') + 1))}
+                      className="w-14 shrink-0 bg-white border-2 border-slate-100 active:bg-slate-100 rounded-2xl text-2xl font-black text-slate-600 flex items-center justify-center transition-all active:scale-95"
+                    >+</button>
+                    <button type="button" onClick={addWasteLineItem}
+                      disabled={!wSelItemKey}
+                      className="px-7 py-3.5 bg-rose-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest disabled:opacity-40 active:scale-95 transition-all flex items-center gap-2 shadow-lg shadow-rose-100"
+                    >
+                      <Plus size={16} /> Add
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Waste item list */}
+              {wasteItems.length > 0 && (
+                <div className="space-y-2">
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1">Items to Record</p>
+                  {wasteItems.map((item, idx) => (
+                    <div key={idx} className="flex items-center justify-between gap-3 bg-slate-50 border-2 border-slate-100 rounded-2xl px-5 py-3.5">
+                      <div className="min-w-0">
+                        <p className="text-sm font-black text-slate-900 uppercase truncate">{item.itemName}</p>
+                        <div className="flex items-center gap-3 mt-1">
+                          <span className="text-[10px] font-bold text-slate-400 truncate">{item.servingOptionName}</span>
+                          <span className="text-[10px] font-bold text-slate-500">{item.quantity} × ₹{item.costPerUnit}</span>
+                          <span className={`text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full ${item.wasteType === 'broken' ? 'bg-orange-100 text-orange-600' : 'bg-rose-100 text-rose-600'}`}>
+                            {item.wasteType === 'extra_demand' ? 'Extra Demand' : 'Broken'}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3 shrink-0">
+                        <p className="text-sm font-black text-slate-900">₹{item.totalCost.toLocaleString('en-IN')}</p>
+                        <button type="button" onClick={() => setWasteItems(prev => prev.filter((_, i) => i !== idx))}
+                          className="p-1.5 text-slate-300 hover:text-rose-500 transition-colors rounded-xl"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {/* Total */}
+                  <div className="flex items-center justify-between px-5 py-4 bg-rose-50 border-2 border-rose-100 rounded-2xl mt-1">
+                    <p className="text-[10px] font-black text-rose-600 uppercase tracking-widest">Total Waste Cost</p>
+                    <p className="text-xl font-black text-rose-700">₹{wasteItems.reduce((s, i) => s + i.totalCost, 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Notes */}
+              <div className="space-y-2">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Notes (Optional)</label>
+                <textarea value={wasteNotes} onChange={e => setWasteNotes(e.target.value)}
+                  className="w-full bg-slate-50 border-2 border-slate-100 focus:border-rose-400 outline-none px-6 py-5 rounded-2xl text-sm font-medium text-slate-600 resize-none h-20"
+                  placeholder="Any context about the waste…"
+                />
+              </div>
+
+              <button
+                disabled={wasteSaving || wasteSuccess || wasteItems.length === 0}
+                className={`w-full py-7 rounded-[2rem] font-black uppercase text-xl tracking-wider shadow-xl transition-all active:scale-[0.98] flex items-center justify-center gap-4 text-white disabled:opacity-40 ${wasteSuccess ? 'bg-emerald-500' : 'bg-rose-600'}`}
+              >
+                {wasteSaving ? <Loader2 size={30} className="animate-spin" />
+                  : wasteSuccess ? <><CheckCircle2 size={30} /> Recorded!</>
+                  : <><Trash2 size={28} /> Submit Waste · ₹{wasteItems.reduce((s, i) => s + i.totalCost, 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</>}
+              </button>
+            </form>
           </div>
         </div>
 

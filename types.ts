@@ -249,6 +249,31 @@ export interface ServingOption {
   updatedAt: number;
 }
 
+export type WasteType = 'extra_demand' | 'broken';
+
+export interface WasteLineItem {
+  servingOptionId: string;
+  servingOptionName: string;
+  itemName: string;
+  quantity: number;
+  costPerUnit: number;
+  totalCost: number;
+  wasteType: WasteType;
+}
+
+export interface WasteEntry {
+  id?: string;
+  userId: string;
+  ownerId: string;
+  outletId: string;
+  date: string;
+  items: WasteLineItem[];
+  totalCost: number;
+  notes?: string;
+  submittedBy: string;
+  createdAt: number;
+}
+
 export type SkuCategory = 'FOOD' | 'DRINKS' | 'MISC' | 'UNMAPPED';
 
 export interface SkuMapping {
