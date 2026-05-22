@@ -31,7 +31,6 @@ import VendorManagement from './components/VendorManagement';
 import CashFlowTracker from './components/CashFlowTracker';
 import HolidayRegistry from './components/HolidayRegistry';
 import OnlineProfitCenter from './components/OnlineProfitCenter';
-import WasteHub from './components/WasteHub';
 import { 
   LayoutDashboard, 
   LogOut, 
@@ -67,7 +66,7 @@ import {
   Store
 } from 'lucide-react';
 
-type AppTab = 'exec-dashboard' | 'dashboard' | 'sales' | 'raw-verify' | 'items' | 'pnl' | 'cash-flow' | 'pnl-insights' | 'waste' | 'waste-v2' | 'waste-hub' | 'integrity' | 'team' | 'rentals' | 'catalog' | 'upload' | 'category-settings' | 'expenses' | 'partnership' | 'crew-terminal' | 'users' | 'bank-management' | 'bank-audit' | 'holidays' | 'online-profit' | 'vendor-management';
+type AppTab = 'exec-dashboard' | 'dashboard' | 'sales' | 'raw-verify' | 'items' | 'pnl' | 'cash-flow' | 'pnl-insights' | 'waste' | 'waste-v2' | 'integrity' | 'team' | 'rentals' | 'catalog' | 'upload' | 'category-settings' | 'expenses' | 'partnership' | 'crew-terminal' | 'users' | 'bank-management' | 'bank-audit' | 'holidays' | 'online-profit' | 'vendor-management';
 
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
@@ -332,7 +331,6 @@ const App: React.FC = () => {
           <NavItem tab="items" icon={<ShoppingBag size={18} />} label="Item Insights" />
           <NavItem tab="online-profit" icon={<Globe size={18} />} label="Online Profit Center" />
           <NavItem tab="waste-v2" icon={<Zap size={18} />} label="Waste Radar" />
-          <NavItem tab="waste-hub" icon={<Trash2 size={18} />} label="Serving Waste" />
           <NavItem tab="pnl" icon={<PieChart size={18} />} label="P&L Command" />
           <NavItem tab="cash-flow" icon={<Banknote size={18} />} label="Cash Reality" />
           <NavItem tab="pnl-insights" icon={<Sparkles size={18} />} label="Margin Intelligence" />
@@ -410,7 +408,7 @@ const App: React.FC = () => {
           {activeTab === 'items' && <ItemSalesHub user={user} dataOwnerId={dataOwnerId} />}
           {activeTab === 'waste' && <WasteManagement user={user} dataOwnerId={dataOwnerId} />}
           {activeTab === 'waste-v2' && <WasteManagementV2 user={user} dataOwnerId={dataOwnerId} />}
-          {activeTab === 'waste-hub' && <WasteHub user={user} dataOwnerId={dataOwnerId} />}
+
           {activeTab === 'integrity' && !isReadOnly && <IntegrityAudit user={user} dataOwnerId={dataOwnerId} />}
           {activeTab === 'pnl' && <PnLHub user={user} dataOwnerId={dataOwnerId} readOnly={isReadOnly} />}
           {activeTab === 'cash-flow' && <CashFlowTracker user={user} dataOwnerId={dataOwnerId} />}

@@ -3,8 +3,8 @@ import React, { useState, useEffect, useMemo } from 'react';
 import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase';
-import { 
-  ItemMonthlySnapshot, 
+import {
+  ItemMonthlySnapshot,
   ExpenseMonthlySnapshot,
   ItemCost,
   SkuMapping,
@@ -18,11 +18,13 @@ import {
   StoreRental,
   MenuNormalization,
   YEAR_OPTIONS,
-  MONTH_NAMES
+  MONTH_NAMES,
+  WasteEntry,
+  WasteType,
 } from '../types';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell,
-  PieChart as RechartsPieChart, Pie
+  PieChart as RechartsPieChart, Pie, ComposedChart, Line,
 } from 'recharts';
 import {
   Zap,
@@ -60,10 +62,13 @@ import {
   Filter,
   Users,
   SearchCode,
-  DollarSign
+  DollarSign,
+  Trash2,
+  X,
+  BarChart2,
 } from 'lucide-react';
 
-type WasteTab = 'audit' | 'drift' | 'staff';
+type WasteTab = 'audit' | 'drift' | 'staff' | 'serving';
 
 const PILLARS: { id: CogsBucket, label: string, icon: any, color: string, ring: string, hex: string }[] = [
   { id: 'FOOD', label: 'Food Ingredients', icon: Utensils, color: 'text-emerald-500', ring: 'ring-emerald-500', hex: '#10b981' },
@@ -90,6 +95,81 @@ const WasteManagementV2: React.FC<{ user: User; dataOwnerId: string }> = ({ user
   const [activeDrilldown, setActiveDrilldown] = useState<'ingredients' | 'packaging'>('ingredients');
   const [segmentFilter, setSegmentFilter] = useState('all');
   const [staffChartView, setStaffChartView] = useState<'bar' | 'pie'>('bar');
+
+  // --- Serving Waste state ---
+  const [swEntries, setSwEntries] = useState<WasteEntry[]>([]);
+  const [swLoading, setSwLoading] = useState(false);
+  const [swError, setSwError] = useState<string | null>(null);
+  const now = new Date();
+  const [swYear, setSwYear] = useState(String(now.getFullYear()));
+  const [swMonth, setSwMonth] = useState(String(now.getMonth() + 1).padStart(2, '0'));
+  const [swOutlet, setSwOutlet] = useState('all');
+  const [swType, setSwType] = useState<'all' | WasteType>('all');
+  const [swExpanded, setSwExpanded] = useState<string | null>(null);
+  const [swDeleting, setSwDeleting] = useState<string | null>(null);
+
+  const fetchServingWaste = async () => {
+    setSwLoading(true);
+    setSwError(null);
+    try {
+      const snap = await getDocs(query(collection(db, 'waste_entries'), where('ownerId', '==', dataOwnerId)));
+      setSwEntries(snap.docs.map(d => ({ id: d.id, ...d.data() } as WasteEntry)));
+    } catch (err: any) {
+      setSwError(err?.message || 'Failed to load entries');
+    } finally {
+      setSwLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'serving') fetchServingWaste();
+  }, [activeTab]);
+
+  const swFiltered = useMemo(() => {
+    const monthStr = `${swYear}-${swMonth}`;
+    return swEntries.filter(e => {
+      if (!e.date.startsWith(monthStr)) return false;
+      if (swOutlet !== 'all' && e.outletId !== swOutlet) return false;
+      if (swType !== 'all' && !e.items.some(i => i.wasteType === swType)) return false;
+      return true;
+    });
+  }, [swEntries, swYear, swMonth, swOutlet, swType]);
+
+  const swTotalCost = useMemo(() => swFiltered.reduce((s, e) => s + e.totalCost, 0), [swFiltered]);
+  const swExtraCost = useMemo(() => swFiltered.reduce((s, e) => s + e.items.filter(i => i.wasteType === 'extra_demand').reduce((a, i) => a + i.totalCost, 0), 0), [swFiltered]);
+  const swBrokenCost = useMemo(() => swFiltered.reduce((s, e) => s + e.items.filter(i => i.wasteType === 'broken').reduce((a, i) => a + i.totalCost, 0), 0), [swFiltered]);
+
+  const swCategoryBreakdown = useMemo(() => {
+    const map: Record<string, { extra_demand: number; broken: number; total: number; extra_demand_qty: number; broken_qty: number; total_qty: number }> = {};
+    swFiltered.forEach(e => e.items.forEach(item => {
+      const key = item.itemName || item.servingOptionName;
+      if (!map[key]) map[key] = { extra_demand: 0, broken: 0, total: 0, extra_demand_qty: 0, broken_qty: 0, total_qty: 0 };
+      map[key][item.wasteType] += item.totalCost;
+      map[key].total += item.totalCost;
+      map[key][`${item.wasteType}_qty` as 'extra_demand_qty' | 'broken_qty'] += item.quantity;
+      map[key].total_qty += item.quantity;
+    }));
+    return Object.entries(map).map(([name, v]) => ({ name, ...v })).sort((a, b) => b.total - a.total);
+  }, [swFiltered]);
+
+  const swDailyTrend = useMemo(() => {
+    const map: Record<string, number> = {};
+    swFiltered.forEach(e => { const day = e.date.slice(8); map[day] = (map[day] || 0) + e.totalCost; });
+    return Object.entries(map).sort(([a], [b]) => a.localeCompare(b)).map(([day, cost]) => ({ day: parseInt(day), cost: parseFloat(cost.toFixed(2)) }));
+  }, [swFiltered]);
+
+  const handleSwDelete = async (id: string) => {
+    if (!confirm('Delete this waste entry?')) return;
+    setSwDeleting(id);
+    try {
+      const { deleteDoc, doc: firestoreDoc } = await import('firebase/firestore');
+      await deleteDoc(firestoreDoc(db, 'waste_entries', id));
+      setSwEntries(prev => prev.filter(e => e.id !== id));
+    } catch (err) { console.error(err); }
+    finally { setSwDeleting(null); }
+  };
+
+  const swFmt = (n: number) => n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   const fetchPrerequisites = async () => {
     try {
@@ -314,15 +394,196 @@ const WasteManagementV2: React.FC<{ user: User; dataOwnerId: string }> = ({ user
         </div>
       </header>
 
-      {!hasGenerated ? (
+      {/* Tab bar — always visible; serving waste tab works independently of audit */}
+      <div className="flex flex-wrap bg-slate-200/50 p-1.5 rounded-[1.5rem] w-fit border border-slate-100 shadow-inner gap-1">
+        <button onClick={() => setActiveTab('audit')} className={`px-8 py-3 rounded-2xl flex items-center gap-3 text-xs font-black uppercase tracking-widest transition-all ${activeTab === 'audit' ? 'bg-white text-indigo-600 shadow-lg translate-y-[-1px]' : 'text-slate-500 hover:text-slate-800'}`}><PieChart size={16}/> Executive Audit</button>
+        <button onClick={() => setActiveTab('drift')} className={`px-8 py-3 rounded-2xl flex items-center gap-3 text-xs font-black uppercase tracking-widest transition-all ${activeTab === 'drift' ? 'bg-white text-indigo-600 shadow-lg translate-y-[-1px]' : 'text-slate-500 hover:text-slate-800'}`}><LayoutList size={16}/> SKU Drift</button>
+        <button onClick={() => setActiveTab('staff')} className={`px-8 py-3 rounded-2xl flex items-center gap-3 text-xs font-black uppercase tracking-widest transition-all ${activeTab === 'staff' ? 'bg-white text-indigo-600 shadow-lg translate-y-[-1px]' : 'text-slate-500 hover:text-slate-800'}`}><Users size={16}/> Staff Consumption</button>
+        <button onClick={() => setActiveTab('serving')} className={`px-8 py-3 rounded-2xl flex items-center gap-3 text-xs font-black uppercase tracking-widest transition-all ${activeTab === 'serving' ? 'bg-white text-rose-600 shadow-lg translate-y-[-1px]' : 'text-slate-500 hover:text-slate-800'}`}><Trash2 size={16}/> Serving Waste</button>
+      </div>
+
+      {activeTab === 'serving' ? (
+        /* ── SERVING WASTE TAB ─────────────────────────────────── */
+        <div className="animate-in fade-in duration-500 space-y-6">
+          {/* Filters */}
+          <div className="bg-white border border-slate-100 rounded-3xl p-5 shadow-sm flex flex-wrap items-center gap-3">
+            <Filter size={14} className="text-slate-400 shrink-0" />
+            <div className="relative">
+              <select value={swYear} onChange={e => setSwYear(e.target.value)} className="h-10 pl-4 pr-8 bg-slate-50 border border-slate-200 rounded-2xl text-[11px] font-black text-slate-700 appearance-none outline-none uppercase">
+                {YEAR_OPTIONS.map(y => <option key={y} value={y}>{y}</option>)}
+              </select>
+              <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={12} />
+            </div>
+            <div className="relative">
+              <select value={swMonth} onChange={e => setSwMonth(e.target.value)} className="h-10 pl-4 pr-8 bg-slate-50 border border-slate-200 rounded-2xl text-[11px] font-black text-slate-700 appearance-none outline-none uppercase">
+                {MONTH_NAMES.map((m, i) => <option key={m} value={String(i + 1).padStart(2, '0')}>{m}</option>)}
+              </select>
+              <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={12} />
+            </div>
+            <div className="relative">
+              <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={12} />
+              <select value={swOutlet} onChange={e => setSwOutlet(e.target.value)} className="h-10 pl-8 pr-8 bg-slate-50 border border-slate-200 rounded-2xl text-[11px] font-black text-slate-700 appearance-none outline-none uppercase">
+                <option value="all">All Outlets</option>
+                {MASTER_OUTLETS.filter(o => o.id !== 'GLOBAL').map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+              </select>
+              <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={12} />
+            </div>
+            <div className="flex bg-slate-50 border border-slate-200 p-1 rounded-2xl gap-1">
+              {(['all', 'extra_demand', 'broken'] as const).map(t => (
+                <button key={t} onClick={() => setSwType(t)} className={`h-8 px-4 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${swType === t ? (t === 'broken' ? 'bg-orange-500 text-white' : t === 'extra_demand' ? 'bg-rose-500 text-white' : 'bg-slate-700 text-white') : 'text-slate-400'}`}>
+                  {t === 'all' ? 'All' : t === 'extra_demand' ? 'Extra Demand' : 'Broken'}
+                </button>
+              ))}
+            </div>
+            <button onClick={fetchServingWaste} className="ml-auto h-10 w-10 flex items-center justify-center text-slate-400 hover:text-slate-700 transition-colors">
+              <RefreshCw size={16} className={swLoading ? 'animate-spin' : ''} />
+            </button>
+          </div>
+
+          {swError && (
+            <div className="flex items-center gap-3 px-5 py-4 bg-rose-50 border border-rose-200 rounded-2xl text-rose-700 text-sm font-medium">
+              <AlertTriangle size={16} className="shrink-0 text-rose-500" /> {swError}
+            </div>
+          )}
+
+          {/* Summary cards */}
+          <div className="grid grid-cols-3 gap-4">
+            <div className="bg-white border border-slate-100 rounded-3xl p-6 shadow-sm">
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Total Waste Cost</p>
+              <p className="text-3xl font-black text-slate-900 tracking-tighter">₹{swFmt(swTotalCost)}</p>
+              <p className="text-[10px] font-bold text-slate-400 mt-1">{swFiltered.length} entr{swFiltered.length !== 1 ? 'ies' : 'y'}</p>
+            </div>
+            <div className="bg-rose-50 border border-rose-100 rounded-3xl p-6">
+              <p className="text-[10px] font-black text-rose-500 uppercase tracking-widest mb-2">Extra Demand</p>
+              <p className="text-3xl font-black text-rose-700 tracking-tighter">₹{swFmt(swExtraCost)}</p>
+              <p className="text-[10px] font-bold text-rose-400 mt-1">{swTotalCost > 0 ? ((swExtraCost / swTotalCost) * 100).toFixed(1) : '0'}% of waste</p>
+            </div>
+            <div className="bg-orange-50 border border-orange-100 rounded-3xl p-6">
+              <p className="text-[10px] font-black text-orange-500 uppercase tracking-widest mb-2">Broken / Damaged</p>
+              <p className="text-3xl font-black text-orange-700 tracking-tighter">₹{swFmt(swBrokenCost)}</p>
+              <p className="text-[10px] font-bold text-orange-400 mt-1">{swTotalCost > 0 ? ((swBrokenCost / swTotalCost) * 100).toFixed(1) : '0'}% of waste</p>
+            </div>
+          </div>
+
+          {swFiltered.length === 0 && !swLoading && !swError && (
+            <div className="py-20 flex flex-col items-center justify-center gap-3 text-slate-300 bg-white rounded-3xl border border-slate-100">
+              <SearchX size={40} />
+              <p className="text-sm font-black uppercase tracking-widest">No waste entries for this period</p>
+            </div>
+          )}
+
+          {swCategoryBreakdown.length > 0 && (
+            <div className="bg-white border border-slate-100 rounded-3xl p-6 shadow-sm">
+              <div className="flex items-center justify-between mb-5">
+                <div className="flex items-center gap-2">
+                  <BarChart2 size={16} className="text-rose-500" />
+                  <h3 className="text-sm font-black text-slate-800 uppercase tracking-widest">Waste by Item</h3>
+                </div>
+                <div className="flex items-center gap-4 text-[9px] font-black uppercase tracking-widest text-slate-400">
+                  <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-rose-400 inline-block" />Extra Demand ₹</span>
+                  <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-orange-400 inline-block" />Broken ₹</span>
+                  <span className="flex items-center gap-1.5"><span className="w-2.5 h-0.5 bg-indigo-400 inline-block" />Total Qty</span>
+                </div>
+              </div>
+              <ResponsiveContainer width="100%" height={240}>
+                <ComposedChart data={swCategoryBreakdown} margin={{ top: 4, right: 40, left: -10, bottom: 40 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                  <XAxis dataKey="name" tick={{ fontSize: 9, fontWeight: 700, fill: '#475569' }} interval={0} angle={-30} textAnchor="end" height={50} axisLine={false} tickLine={false} />
+                  <YAxis yAxisId="cost" tick={{ fontSize: 9, fill: '#94a3b8' }} tickFormatter={v => `₹${v}`} axisLine={false} tickLine={false} />
+                  <YAxis yAxisId="qty" orientation="right" tick={{ fontSize: 9, fill: '#818cf8' }} tickFormatter={v => `${v}u`} axisLine={false} tickLine={false} />
+                  <Tooltip formatter={(v: number, key: string) => key === 'Total Qty' ? [`${v} units`, key] : [`₹${v.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`, key]} contentStyle={{ borderRadius: 12, border: '1px solid #e2e8f0', fontSize: 11, fontWeight: 700 }} />
+                  <Bar yAxisId="cost" dataKey="extra_demand" name="Extra Demand" fill="#f43f5e" radius={[4, 4, 0, 0]} maxBarSize={32} fillOpacity={0.85} />
+                  <Bar yAxisId="cost" dataKey="broken" name="Broken" fill="#f97316" radius={[4, 4, 0, 0]} maxBarSize={32} fillOpacity={0.85} />
+                  <Line yAxisId="qty" type="monotone" dataKey="total_qty" name="Total Qty" stroke="#6366f1" strokeWidth={2} dot={{ r: 4, fill: '#6366f1', strokeWidth: 0 }} />
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          {swDailyTrend.length > 1 && (
+            <div className="bg-white border border-slate-100 rounded-3xl p-6 shadow-sm">
+              <div className="flex items-center gap-2 mb-5">
+                <TrendingDown size={16} className="text-rose-500" />
+                <h3 className="text-sm font-black text-slate-800 uppercase tracking-widest">Daily Waste Cost — {MONTH_NAMES[parseInt(swMonth) - 1]} {swYear}</h3>
+              </div>
+              <ResponsiveContainer width="100%" height={160}>
+                <BarChart data={swDailyTrend} margin={{ top: 4, right: 4, left: -10, bottom: 4 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                  <XAxis dataKey="day" tick={{ fontSize: 9 }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fontSize: 9 }} tickFormatter={v => `₹${v}`} axisLine={false} tickLine={false} />
+                  <Tooltip formatter={(v: number) => [`₹${v.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`, 'Cost']} contentStyle={{ borderRadius: 12, border: '1px solid #e2e8f0', fontSize: 11, fontWeight: 700 }} />
+                  <Bar dataKey="cost" fill="#f43f5e" radius={[4, 4, 0, 0]} fillOpacity={0.8} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          {/* Entry list */}
+          {swFiltered.length > 0 && (
+            <div className="bg-white border border-slate-100 rounded-3xl shadow-sm overflow-hidden">
+              <div className="px-6 py-5 border-b border-slate-100 flex items-center justify-between">
+                <h3 className="text-sm font-black text-slate-800 uppercase tracking-widest">All Entries</h3>
+                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{swFiltered.length} record{swFiltered.length !== 1 ? 's' : ''}</span>
+              </div>
+              <div className="divide-y divide-slate-100">
+                {[...swFiltered].sort((a, b) => b.createdAt - a.createdAt).map(entry => {
+                  const extraCost = entry.items.filter(i => i.wasteType === 'extra_demand').reduce((s, i) => s + i.totalCost, 0);
+                  const brknCost = entry.items.filter(i => i.wasteType === 'broken').reduce((s, i) => s + i.totalCost, 0);
+                  const isOpen = swExpanded === entry.id;
+                  return (
+                    <div key={entry.id}>
+                      <div className="flex items-center gap-4 px-6 py-4 cursor-pointer hover:bg-slate-50 transition-colors" onClick={() => setSwExpanded(isOpen ? null : (entry.id ?? null))}>
+                        <div className="p-2.5 bg-rose-100 rounded-xl shrink-0"><Trash2 size={14} className="text-rose-600" /></div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <p className="text-sm font-black text-slate-900">{entry.date}</p>
+                            <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest bg-slate-100 px-2 py-0.5 rounded-full">{getOutletName(entry.outletId)}</span>
+                            <span className="text-[9px] font-bold text-slate-400">{entry.items.length} item{entry.items.length !== 1 ? 's' : ''}</span>
+                          </div>
+                          <div className="flex items-center gap-3 mt-1">
+                            {extraCost > 0 && <span className="text-[10px] font-bold text-rose-500">Demand ₹{swFmt(extraCost)}</span>}
+                            {brknCost > 0 && <span className="text-[10px] font-bold text-orange-500">Broken ₹{swFmt(brknCost)}</span>}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-3 shrink-0">
+                          <p className="text-base font-black text-slate-900">₹{swFmt(entry.totalCost)}</p>
+                          <button onClick={e => { e.stopPropagation(); entry.id && handleSwDelete(entry.id); }} disabled={swDeleting === entry.id} className="p-1.5 text-slate-300 hover:text-rose-500 transition-colors rounded-xl disabled:opacity-50">
+                            {swDeleting === entry.id ? <Loader2 size={13} className="animate-spin" /> : <X size={13} />}
+                          </button>
+                          <ChevronRight size={14} className={`text-slate-300 transition-transform ${isOpen ? 'rotate-90' : ''}`} />
+                        </div>
+                      </div>
+                      {isOpen && (
+                        <div className="px-6 pb-5 bg-slate-50 border-t border-slate-100 pt-4 space-y-2">
+                          {entry.items.map((item, idx) => (
+                            <div key={idx} className="flex items-center justify-between gap-3 bg-white border border-slate-100 rounded-2xl px-4 py-3">
+                              <div className="min-w-0">
+                                <p className="text-sm font-black text-slate-900 uppercase truncate">{item.itemName || item.servingOptionName}</p>
+                                <div className="flex items-center gap-2 mt-0.5">
+                                  {item.itemName && <span className="text-[9px] font-bold text-slate-400 uppercase">{item.servingOptionName}</span>}
+                                  <span className="text-[10px] font-bold text-slate-500">{item.quantity} × ₹{item.costPerUnit}</span>
+                                  <span className={`text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full ${item.wasteType === 'broken' ? 'bg-orange-100 text-orange-600' : 'bg-rose-100 text-rose-600'}`}>{item.wasteType === 'extra_demand' ? 'Extra Demand' : 'Broken'}</span>
+                                </div>
+                              </div>
+                              <p className="text-sm font-black text-slate-900 shrink-0">₹{swFmt(item.totalCost)}</p>
+                            </div>
+                          ))}
+                          {entry.notes && <p className="text-[11px] font-medium text-slate-500 italic px-1">"{entry.notes}"</p>}
+                          <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest px-1">Submitted by {entry.submittedBy} · {new Date(entry.createdAt).toLocaleString('en-IN')}</p>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+
+      ) : !hasGenerated ? (
         <section className="py-40 bg-white rounded-[3.5rem] border-2 border-dashed border-slate-200 text-center animate-in zoom-in-95"><div className="w-24 h-24 bg-indigo-50 rounded-full flex items-center justify-center mx-auto mb-8 text-indigo-300"><Layers size={48} /></div><h3 className="text-3xl font-black text-slate-900 tracking-tight">Performance Aggregation Active</h3><p className="text-slate-500 mt-3 font-medium max-w-md mx-auto leading-relaxed uppercase tracking-widest text-[10px]">Select scope and run audit to view relational drift.</p></section>
       ) : intelligence && (
         <div className="animate-in fade-in duration-500 space-y-12">
-           <div className="flex bg-slate-200/50 p-1.5 rounded-[1.5rem] w-fit border border-slate-100 shadow-inner gap-1">
-             <button onClick={() => setActiveTab('audit')} className={`px-10 py-3 rounded-2xl flex items-center gap-3 text-xs font-black uppercase tracking-widest transition-all ${activeTab === 'audit' ? 'bg-white text-indigo-600 shadow-lg translate-y-[-1px]' : 'text-slate-500 hover:text-slate-800'}`}><PieChart size={16}/> Executive Audit</button>
-             <button onClick={() => setActiveTab('drift')} className={`px-10 py-3 rounded-2xl flex items-center gap-3 text-xs font-black uppercase tracking-widest transition-all ${activeTab === 'drift' ? 'bg-white text-indigo-600 shadow-lg translate-y-[-1px]' : 'text-slate-500 hover:text-slate-800'}`}><LayoutList size={16}/> Theoretical SKU Drift</button>
-             <button onClick={() => setActiveTab('staff')} className={`px-10 py-3 rounded-2xl flex items-center gap-3 text-xs font-black uppercase tracking-widest transition-all ${activeTab === 'staff' ? 'bg-white text-indigo-600 shadow-lg translate-y-[-1px]' : 'text-slate-500 hover:text-slate-800'}`}><Users size={16}/> Staff Consumption</button>
-           </div>
 
            {intelligence.unmappedProductCount > 0 && (
              <div className="bg-rose-50 border border-rose-100 p-6 rounded-[2rem] flex items-center gap-5 slide-in-from-top-4 animate-in duration-500">
