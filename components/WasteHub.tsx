@@ -40,6 +40,7 @@ import {
   Legend,
   LineChart,
   Line,
+  ComposedChart,
 } from 'recharts';
 
 interface Props {
@@ -102,14 +103,19 @@ const WasteHub: React.FC<Props> = ({ user, dataOwnerId }) => {
     [filtered]
   );
 
-  // Category breakdown: group by servingOptionName
+  // Category breakdown: group by item name — tracks both cost and quantity
   const categoryBreakdown = useMemo(() => {
-    const map: Record<string, { extra_demand: number; broken: number; total: number }> = {};
+    const map: Record<string, {
+      extra_demand: number; broken: number; total: number;
+      extra_demand_qty: number; broken_qty: number; total_qty: number;
+    }> = {};
     filtered.forEach(e => e.items.forEach(item => {
       const key = item.itemName || item.servingOptionName;
-      if (!map[key]) map[key] = { extra_demand: 0, broken: 0, total: 0 };
+      if (!map[key]) map[key] = { extra_demand: 0, broken: 0, total: 0, extra_demand_qty: 0, broken_qty: 0, total_qty: 0 };
       map[key][item.wasteType] += item.totalCost;
       map[key].total += item.totalCost;
+      map[key][`${item.wasteType}_qty` as 'extra_demand_qty' | 'broken_qty'] += item.quantity;
+      map[key].total_qty += item.quantity;
     }));
     return Object.entries(map)
       .map(([name, vals]) => ({ name, ...vals }))
@@ -260,20 +266,55 @@ const WasteHub: React.FC<Props> = ({ user, dataOwnerId }) => {
           {/* Category breakdown chart */}
           {categoryBreakdown.length > 0 && (
             <div className="bg-white border border-slate-100 rounded-3xl p-6 shadow-sm">
-              <div className="flex items-center gap-2 mb-5">
-                <BarChart2 size={16} className="text-rose-500" />
-                <h3 className="text-sm font-black text-slate-800 uppercase tracking-widest">Waste by Serving Material</h3>
+              <div className="flex items-center justify-between mb-5">
+                <div className="flex items-center gap-2">
+                  <BarChart2 size={16} className="text-rose-500" />
+                  <h3 className="text-sm font-black text-slate-800 uppercase tracking-widest">Waste by Item</h3>
+                </div>
+                <div className="flex items-center gap-4 text-[9px] font-black uppercase tracking-widest text-slate-400">
+                  <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-rose-400 inline-block" />Extra Demand ₹</span>
+                  <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-orange-400 inline-block" />Broken ₹</span>
+                  <span className="flex items-center gap-1.5"><span className="w-2.5 h-0.5 bg-indigo-400 inline-block" />Total Qty</span>
+                </div>
               </div>
-              <ResponsiveContainer width="100%" height={220}>
-                <BarChart data={categoryBreakdown} margin={{ top: 4, right: 4, left: -10, bottom: 4 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                  <XAxis dataKey="name" tick={{ fontSize: 9, fontWeight: 700 }} interval={0} angle={-15} textAnchor="end" height={44} />
-                  <YAxis tick={{ fontSize: 9 }} tickFormatter={v => `₹${v}`} />
-                  <Tooltip formatter={(v: number) => `₹${v.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`} />
-                  <Legend iconType="square" wrapperStyle={{ fontSize: 10, fontWeight: 700 }} />
-                  <Bar dataKey="extra_demand" name="Extra Demand" fill="#f43f5e" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="broken" name="Broken" fill="#f97316" radius={[4, 4, 0, 0]} />
-                </BarChart>
+              <ResponsiveContainer width="100%" height={240}>
+                <ComposedChart data={categoryBreakdown} margin={{ top: 4, right: 40, left: -10, bottom: 40 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                  <XAxis
+                    dataKey="name"
+                    tick={{ fontSize: 9, fontWeight: 700, fill: '#475569' }}
+                    interval={0}
+                    angle={-30}
+                    textAnchor="end"
+                    height={50}
+                    axisLine={false}
+                    tickLine={false}
+                  />
+                  <YAxis
+                    yAxisId="cost"
+                    tick={{ fontSize: 9, fill: '#94a3b8' }}
+                    tickFormatter={v => `₹${v}`}
+                    axisLine={false}
+                    tickLine={false}
+                  />
+                  <YAxis
+                    yAxisId="qty"
+                    orientation="right"
+                    tick={{ fontSize: 9, fill: '#818cf8' }}
+                    tickFormatter={v => `${v} u`}
+                    axisLine={false}
+                    tickLine={false}
+                  />
+                  <Tooltip
+                    formatter={(v: number, key: string) =>
+                      key === 'Total Qty' ? [`${v} units`, key] : [`₹${v.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`, key]
+                    }
+                    contentStyle={{ borderRadius: 12, border: '1px solid #e2e8f0', fontSize: 11, fontWeight: 700 }}
+                  />
+                  <Bar yAxisId="cost" dataKey="extra_demand" name="Extra Demand" fill="#f43f5e" radius={[4, 4, 0, 0]} maxBarSize={32} fillOpacity={0.85} />
+                  <Bar yAxisId="cost" dataKey="broken" name="Broken" fill="#f97316" radius={[4, 4, 0, 0]} maxBarSize={32} fillOpacity={0.85} />
+                  <Line yAxisId="qty" type="monotone" dataKey="total_qty" name="Total Qty" stroke="#6366f1" strokeWidth={2} dot={{ r: 4, fill: '#6366f1', strokeWidth: 0 }} />
+                </ComposedChart>
               </ResponsiveContainer>
             </div>
           )}
