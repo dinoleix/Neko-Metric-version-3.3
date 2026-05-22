@@ -20,13 +20,17 @@ import {
   YEAR_OPTIONS,
   MONTH_NAMES
 } from '../types';
-import { 
-  Zap, 
-  RefreshCw, 
-  MapPin, 
-  AlertTriangle, 
-  CheckCircle2, 
-  ShoppingCart, 
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell,
+  PieChart as RechartsPieChart, Pie
+} from 'recharts';
+import {
+  Zap,
+  RefreshCw,
+  MapPin,
+  AlertTriangle,
+  CheckCircle2,
+  ShoppingCart,
   ShoppingBag,
   Utensils,
   Coffee,
@@ -85,6 +89,7 @@ const WasteManagementV2: React.FC<{ user: User; dataOwnerId: string }> = ({ user
   const [storeFilter, setStoreFilter] = useState('all');
   const [activeDrilldown, setActiveDrilldown] = useState<'ingredients' | 'packaging'>('ingredients');
   const [segmentFilter, setSegmentFilter] = useState('all');
+  const [staffChartView, setStaffChartView] = useState<'bar' | 'pie'>('bar');
 
   const fetchPrerequisites = async () => {
     try {
@@ -384,6 +389,122 @@ const WasteManagementV2: React.FC<{ user: User; dataOwnerId: string }> = ({ user
                    <div className="flex items-center gap-4"><div className="p-4 bg-indigo-50 text-indigo-600 rounded-2xl shadow-inner"><Users size={28}/></div><div><h3 className="text-2xl font-black text-slate-900 tracking-tight">Staff Consumption Audit</h3><p className="text-slate-400 text-sm font-medium uppercase tracking-widest mt-1">Aggregated NC- bill tracking (Pre-calculated in Snapshots)</p></div></div>
                    <div className="flex gap-4"><div className="bg-white px-6 py-4 rounded-2xl border border-slate-100 shadow-sm"><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Lost Market Value</p><p className="text-xl font-black text-indigo-600">₹{Math.round(intelligence.staffDrilldown.reduce((acc, item) => acc + item[1].potentialRevenue, 0)).toLocaleString()}</p></div><div className="bg-white px-6 py-4 rounded-2xl border border-slate-100 shadow-sm"><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Internal Cost Burn</p><p className="text-xl font-black text-rose-500">₹{Math.round(intelligence.staffDrilldown.reduce((acc, item) => acc + item[1].theoreticalCost, 0)).toLocaleString()}</p></div></div>
                 </div>
+
+                {/* Wide visualization chart */}
+                {intelligence.staffDrilldown.length > 0 && (
+                  <div className="px-10 py-8 border-b border-slate-50">
+                    <div className="flex items-center justify-between mb-6">
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                        {staffChartView === 'bar' ? 'Cost Burn vs Market Value — per SKU' : 'Burn Cost Distribution — by SKU'}
+                      </p>
+                      <div className="flex bg-slate-100 p-1 rounded-2xl gap-1">
+                        <button onClick={() => setStaffChartView('bar')}
+                          className={`px-4 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${staffChartView === 'bar' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400'}`}
+                        >Bar</button>
+                        <button onClick={() => setStaffChartView('pie')}
+                          className={`px-4 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${staffChartView === 'pie' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400'}`}
+                        >Pie</button>
+                      </div>
+                    </div>
+
+                    {staffChartView === 'bar' ? (
+                      <>
+                        <ResponsiveContainer width="100%" height={Math.max(260, intelligence.staffDrilldown.length * 56)}>
+                          <BarChart
+                            data={intelligence.staffDrilldown.map(([name, d]) => ({
+                              name: name.length > 14 ? name.slice(0, 13) + '…' : name,
+                              fullName: name,
+                              'Burn Cost': Math.round(d.theoreticalCost),
+                              'Market Value': Math.round(d.potentialRevenue),
+                              category: d.category,
+                            }))}
+                            margin={{ top: 8, right: 16, left: 0, bottom: 60 }}
+                            barCategoryGap="35%"
+                            barGap={3}
+                          >
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                            <XAxis
+                              dataKey="name"
+                              tick={{ fontSize: 9, fontWeight: 700, fill: '#475569' }}
+                              angle={-35}
+                              textAnchor="end"
+                              interval={0}
+                              axisLine={false}
+                              tickLine={false}
+                            />
+                            <YAxis
+                              tick={{ fontSize: 9, fill: '#94a3b8' }}
+                              tickFormatter={v => `₹${(v as number) >= 1000 ? ((v as number) / 1000).toFixed(1) + 'k' : v}`}
+                              axisLine={false}
+                              tickLine={false}
+                            />
+                            <Tooltip
+                              formatter={(v: number, key: string) => [`₹${v.toLocaleString('en-IN')}`, key]}
+                              labelFormatter={(_, payload) => payload?.[0]?.payload?.fullName || ''}
+                              contentStyle={{ borderRadius: 12, border: '1px solid #e2e8f0', fontSize: 11, fontWeight: 700 }}
+                            />
+                            <Legend iconType="square" wrapperStyle={{ fontSize: 10, fontWeight: 700, paddingTop: 8 }} />
+                            <Bar dataKey="Burn Cost" radius={[6, 6, 0, 0]} maxBarSize={28}>
+                              {intelligence.staffDrilldown.map(([name, d]) => (
+                                <Cell key={name} fill={d.category === 'FOOD' ? '#f43f5e' : '#818cf8'} />
+                              ))}
+                            </Bar>
+                            <Bar dataKey="Market Value" fill="#6366f1" radius={[6, 6, 0, 0]} maxBarSize={28} fillOpacity={0.35} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                        <p className="text-[9px] font-bold text-slate-300 uppercase tracking-widest mt-1 text-right">Food in rose · Drinks in indigo</p>
+                      </>
+                    ) : (
+                      <div className="flex flex-col md:flex-row items-center gap-8">
+                        <ResponsiveContainer width="100%" height={280}>
+                          <RechartsPieChart>
+                            <Pie
+                              data={intelligence.staffDrilldown.map(([name, d]) => ({
+                                name,
+                                value: Math.round(d.theoreticalCost),
+                                category: d.category,
+                              }))}
+                              cx="50%"
+                              cy="50%"
+                              innerRadius={70}
+                              outerRadius={120}
+                              paddingAngle={3}
+                              dataKey="value"
+                            >
+                              {intelligence.staffDrilldown.map(([name, d], i) => {
+                                const palette = d.category === 'FOOD'
+                                  ? ['#f43f5e','#fb7185','#fda4af','#fecdd3','#ffe4e6']
+                                  : ['#6366f1','#818cf8','#a5b4fc','#c7d2fe','#e0e7ff'];
+                                return <Cell key={name} fill={palette[i % palette.length]} />;
+                              })}
+                            </Pie>
+                            <Tooltip
+                              formatter={(v: number, _: any, props: any) => [`₹${v.toLocaleString('en-IN')}`, props.payload.name]}
+                              contentStyle={{ borderRadius: 12, border: '1px solid #e2e8f0', fontSize: 11, fontWeight: 700 }}
+                            />
+                          </RechartsPieChart>
+                        </ResponsiveContainer>
+                        <div className="flex flex-col gap-2 min-w-[200px] w-full md:w-auto">
+                          {intelligence.staffDrilldown.map(([name, d], i) => {
+                            const palette = d.category === 'FOOD'
+                              ? ['#f43f5e','#fb7185','#fda4af','#fecdd3','#ffe4e6']
+                              : ['#6366f1','#818cf8','#a5b4fc','#c7d2fe','#e0e7ff'];
+                            const total = intelligence.staffDrilldown.reduce((s, [, x]) => s + x.theoreticalCost, 0);
+                            const pct = total > 0 ? ((d.theoreticalCost / total) * 100).toFixed(1) : '0';
+                            return (
+                              <div key={name} className="flex items-center gap-3">
+                                <span className="w-3 h-3 rounded-full shrink-0" style={{ background: palette[i % palette.length] }} />
+                                <span className="text-[10px] font-black text-slate-700 uppercase truncate flex-1">{name}</span>
+                                <span className="text-[10px] font-bold text-slate-400 shrink-0">{pct}%</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <div className="overflow-x-auto"><table className="w-full text-left"><thead><tr className="bg-slate-50/80 border-b border-slate-100"><th className="px-12 py-6 text-[10px] font-black text-slate-400 uppercase tracking-widest">Consumed SKU</th><th className="px-12 py-6 text-[10px] font-black text-slate-400 uppercase text-center">Unit Count</th><th className="px-12 py-6 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Burn Cost (₹)</th><th className="px-12 py-6 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Market Value (₹)</th><th className="px-12 py-6 text-[10px] font-black text-slate-400 uppercase text-center">Integrity</th></tr></thead><tbody className="divide-y divide-slate-50">{intelligence.staffDrilldown.length === 0 ? (<tr><td colSpan={5} className="py-20 text-center"><SearchCode size={40} className="mx-auto text-slate-200 mb-4" /><p className="text-slate-400 font-black uppercase text-xs">No aggregate staff logs detected</p></td></tr>) : intelligence.staffDrilldown.map(([name, data]) => (<tr key={name} className="group hover:bg-slate-50/50 transition-colors"><td className="px-12 py-6"><div className="flex items-center gap-4"><div className={`p-2 rounded-xl text-white ${data.category === 'FOOD' ? 'bg-emerald-500' : 'bg-indigo-500'}`}>{data.category === 'FOOD' ? <Utensils size={12}/> : <Coffee size={12}/>}</div><div><p className="text-sm font-black text-slate-900 uppercase tracking-tight">{name}</p><p className="text-[9px] font-bold text-slate-400 uppercase">{data.segment} • {data.category}</p></div></div></td><td className="px-12 py-6 text-center font-black text-slate-600">{data.qty}</td><td className="px-12 py-6 text-right font-black text-rose-500">₹{Math.round(data.theoreticalCost).toLocaleString()}</td><td className="px-12 py-6 text-right font-black text-indigo-600">₹{Math.round(data.potentialRevenue).toLocaleString()}</td><td className="px-12 py-6"><div className="flex justify-center">{data.hasCost ? (<div className="p-1.5 bg-emerald-50 text-emerald-600 rounded-lg shadow-inner"><CheckCircle2 size={14}/></div>) : (<div className="p-1.5 bg-rose-50 text-rose-500 rounded-lg animate-pulse"><AlertTriangle size={14}/></div>)}</div></td></tr>))}</tbody></table></div>
              </section>
            )}
