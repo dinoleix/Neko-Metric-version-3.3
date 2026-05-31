@@ -238,8 +238,11 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
         const amt = Number(t.amount);
         const cat = t.category || 'UNCATEGORIZED';
         
-        if (cat === 'COGS') csvCogs += amt;
-        else if (cat === 'SALARIES') csvLabour += amt;
+        if (cat === 'COGS') {
+          csvCogs += amt;
+          // BUG-08 fix: also update cogsBucketAgg so pie/bar charts match the headline COGS total
+          cogsBucketAgg['UNCATEGORIZED'] = (cogsBucketAgg['UNCATEGORIZED'] || 0) + amt;
+        } else if (cat === 'SALARIES') csvLabour += amt;
         else if (cat === 'RENTALS') fixedRent += amt;
         else if (cat === 'OPERATIONS') {
           csvOps += amt;
@@ -941,7 +944,7 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
 
                    {trajectoryMode === 'stacked' && (
                      trajectoryData.map((d, i) => {
-                        const x = (i / (trajectoryData.length - 1)) * 1000;
+                        const x = (i / Math.max(trajectoryData.length - 1, 1)) * 1000;
                         const width = (1000 / trajectoryData.length) * 0.7;
                         let currentY = 350;
                         return (
@@ -963,7 +966,7 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
 
                    {trajectoryMode === 'grouped' && (
                      trajectoryData.map((d, i) => {
-                        const centerX = (i / (trajectoryData.length - 1)) * 1000;
+                        const centerX = (i / Math.max(trajectoryData.length - 1, 1)) * 1000;
                         const groupWidth = (1000 / trajectoryData.length) * 0.85;
                         const barWidth = groupWidth / 5;
                         return (
@@ -985,7 +988,7 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
                    {trajectoryMode === 'line' && (
                      ['COGS', 'OPERATIONS', 'LABOUR', 'FIXED (RENT)', 'UNCATEGORIZED'].map(pillar => {
                         const points = trajectoryData.map((d, i) => {
-                           const x = (i / (trajectoryData.length - 1)) * 1000;
+                           const x = (i / Math.max(trajectoryData.length - 1, 1)) * 1000;
                            const y = 350 - ((d[pillar as keyof typeof d] as number) / maxTrajectoryVal) * 350;
                            return `${x},${y}`;
                         }).join(' L ');
@@ -993,7 +996,7 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
                           <g key={pillar} className="group">
                              <path d={`M ${points}`} fill="none" stroke={PILLAR_COLORS[pillar]} strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" className="transition-all duration-700 opacity-80 group-hover:opacity-100" />
                              {trajectoryData.map((d, i) => (
-                               <circle key={i} cx={(i / (trajectoryData.length - 1)) * 1000} cy={350 - ((d[pillar as keyof typeof d] as number) / maxTrajectoryVal) * 350} r="5" fill="white" stroke={PILLAR_COLORS[pillar]} strokeWidth="3" className="transition-all duration-300 cursor-pointer" onMouseEnter={(e) => {
+                               <circle key={i} cx={(i / Math.max(trajectoryData.length - 1, 1)) * 1000} cy={350 - ((d[pillar as keyof typeof d] as number) / maxTrajectoryVal) * 350} r="5" fill="white" stroke={PILLAR_COLORS[pillar]} strokeWidth="3" className="transition-all duration-300 cursor-pointer" onMouseEnter={(e) => {
                                   const rect = e.currentTarget.getBoundingClientRect();
                                   setHoveredPoint({ x: rect.left, y: rect.top, label: `${d.month} ${d.year}`, values: { [pillar]: (d[pillar as keyof typeof d] as number) }, total: (d[pillar as keyof typeof d] as number) });
                                }} onMouseLeave={() => setHoveredPoint(null)} />

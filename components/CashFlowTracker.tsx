@@ -84,7 +84,7 @@ const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
       const bankRes = await getDocs(bankQuery);
       
       const transactions = bankRes.docs.map(d => ({ id: d.id, ...d.data() } as BankTransaction)).filter(bt => {
-        const d = new Date(bt.date);
+        const d = new Date(bt.date + 'T00:00:00'); // BUG-04 fix: force local (IST) parse to avoid UTC midnight shift
         return d.getFullYear().toString() === selectedYear && MONTH_NAMES[d.getMonth()] === selectedMonth;
       });
       setPeriodBTs(transactions);

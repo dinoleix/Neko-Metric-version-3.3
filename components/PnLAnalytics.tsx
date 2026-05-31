@@ -261,15 +261,27 @@ const PnLAnalytics: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
     const netProfit = grossProfit - totalOpEx;
     const netMargin = goodRev > 0 ? (netProfit / goodRev) * 100 : 0;
 
-    const consolidatedItems: Record<string, { qty: number, rev: number }> = {};
+    const outletTierMap: Record<string, 'TIER_1' | 'TIER_2'> = {};
+    rentals.forEach(r => { outletTierMap[r.outletId] = r.tier; });
+
+    const consolidatedItems: Record<string, { qty: number, rev: number, theoreticalCost: number }> = {};
     filteredItemSnaps.forEach(snap => {
+      const tier = outletTierMap[snap.outletId] ?? 'TIER_1';
       Object.entries(snap.items || {}).forEach(([name, data]: [string, any]) => {
         const upperName = name.trim().toUpperCase();
         const masterName = (normalizationMap[upperName] || name).trim().toUpperCase();
-        
-        if (!consolidatedItems[masterName]) consolidatedItems[masterName] = { qty: 0, rev: 0 };
+
+        if (!consolidatedItems[masterName]) consolidatedItems[masterName] = { qty: 0, rev: 0, theoreticalCost: 0 };
         consolidatedItems[masterName].qty += data.quantity;
         consolidatedItems[masterName].rev += data.revenue;
+
+        const costRec = itemCosts.find(c => (c.itemName || '').trim().toUpperCase() === masterName);
+        if (costRec) {
+          const servingCost = tier === 'TIER_1'
+            ? (costRec.tier1ServingsCost ?? costRec.servingsCostPerUnit ?? 0)
+            : (costRec.tier2ServingsCost ?? costRec.servingsCostPerUnit ?? 0);
+          consolidatedItems[masterName].theoreticalCost += data.quantity * (Number(costRec.costPerUnit || 0) + servingCost);
+        }
       });
     });
 
@@ -277,7 +289,7 @@ const PnLAnalytics: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
       const costRec = itemCosts.find(c => (c.itemName || '').trim().toUpperCase() === name);
       const mapping = skuMappings[name] || { category: 'UNMAPPED' };
       const avgPrice = data.qty > 0 ? data.rev / data.qty : 0;
-      const cost = costRec ? (Number(costRec.costPerUnit || 0) + Number(costRec.servingsCostPerUnit || 0) + (costRec.tier1ServingsCost || 0)) : 0;
+      const cost = data.qty > 0 ? data.theoreticalCost / data.qty : 0;
       const margin = avgPrice - cost;
       const marginPercent = avgPrice > 0 ? (margin / avgPrice) * 100 : 0;
       const profitAmount = margin * data.qty;

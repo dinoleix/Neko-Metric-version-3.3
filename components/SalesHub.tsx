@@ -249,7 +249,9 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
     const maxHourVal = Math.max(...totals.hourlyIntensity, 1);
 
     const numMonths = endVal - startVal + 1;
-    const totalDays = isSingleMonth ? 30 : numMonths * 30;
+    // BUG-10 fix: use actual calendar days for single-month avg (30 is wrong for Feb and 31-day months)
+    const daysInStartMonth = new Date(parseInt(startYear), MONTH_NAMES.indexOf(startMonth) + 1, 0).getDate();
+    const totalDays = isSingleMonth ? daysInStartMonth : numMonths * 30;
     const avgDailyOrders = totals.settledOrderCount / totalDays;
     const avgBillValue = totals.settledOrderCount > 0 ? totalGoodGross / totals.settledOrderCount : 0;
 

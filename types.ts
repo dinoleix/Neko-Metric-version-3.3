@@ -768,6 +768,75 @@ export interface CategorizationRule {
   lastUsedAt: number;
 }
 
+// ─── Subscription Module ───────────────────────────────────────────────────────
+
+export type SubscriptionStatus = 'pending_approval' | 'active' | 'paused' | 'cancelled' | 'completed';
+export type OrderDeliveryStatus = 'scheduled' | 'confirmed' | 'delivered' | 'skipped';
+export type DeliveryDay = 'MON' | 'TUE' | 'WED' | 'THU' | 'FRI' | 'SAT' | 'SUN';
+
+export interface SubscriptionLineItem {
+  itemName: string;
+  qty: number;
+  unitPrice: number;
+  discountedUnitPrice: number;
+}
+
+export interface SubscriptionCustomer {
+  id?: string;
+  userId: string;
+  ownerId: string;
+  name: string;
+  phone: string;
+  address: string;
+  notes?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface Subscription {
+  id?: string;
+  userId: string;
+  ownerId: string;
+  customerId: string;
+  customerName: string;
+  customerPhone: string;
+  customerAddress: string;
+  outletId: string;
+  startDate: string;
+  endDate: string;
+  deliveryDays: DeliveryDay[];
+  discountPercent: number;
+  defaultItems: SubscriptionLineItem[];
+  totalDeliveries: number;
+  completedDeliveries: number;
+  status: SubscriptionStatus;
+  notes?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface SubscriptionOrder {
+  id?: string;
+  subscriptionId: string;
+  customerId: string;
+  customerName: string;
+  customerPhone: string;
+  customerAddress: string;
+  userId: string;
+  ownerId: string;
+  outletId: string;
+  scheduledDate: string;
+  status: OrderDeliveryStatus;
+  items: SubscriptionLineItem[];
+  baseTotal: number;
+  discountedTotal: number;
+  discountPercent: number;
+  notes?: string;
+  deliveredAt?: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface LoanProfile {
   id?: string;
   userId: string;

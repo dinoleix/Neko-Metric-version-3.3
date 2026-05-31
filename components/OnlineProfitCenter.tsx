@@ -341,7 +341,7 @@ const OnlineProfitCenter: React.FC<{ user: User; dataOwnerId: string }> = ({ use
       });
     });
 
-    const topOnlineItems = Object.entries(itemMap)
+    const allOnlineItems = Object.entries(itemMap)
       .map(([name, data]) => ({
         name,
         qty: data.onlineQty,
@@ -351,10 +351,11 @@ const OnlineProfitCenter: React.FC<{ user: User; dataOwnerId: string }> = ({ use
         netMargin: data.onlineRev * (1 - effectiveCommissionRate/100) - (data.onlineQty * data.cost)
       }))
       .filter(i => i.qty > 0)
-      .sort((a, b) => b.qty - a.qty)
-      .slice(0, 10);
+      .sort((a, b) => b.qty - a.qty);
 
-    const totalTheoreticalCOGS = topOnlineItems.reduce((acc, i) => acc + i.theoreticalCost, 0);
+    const topOnlineItems = allOnlineItems.slice(0, 10);
+
+    const totalTheoreticalCOGS = allOnlineItems.reduce((acc, i) => acc + i.theoreticalCost, 0);
     const contributionMargin = netPayout - totalTheoreticalCOGS;
 
     // 3. Hourly & Weekday Distribution
@@ -414,7 +415,7 @@ const OnlineProfitCenter: React.FC<{ user: User; dataOwnerId: string }> = ({ use
 
     if (velocityRange === 'custom') {
       startDate = new Date(parseInt(customStartYear), MONTH_NAMES.indexOf(customStartMonth), 1);
-      endDate = new Date(parseInt(customEndYear), MONTH_NAMES.indexOf(customEndMonth), 28); // End of month approx
+      endDate = new Date(parseInt(customEndYear), MONTH_NAMES.indexOf(customEndMonth) + 1, 0); // BUG-11 fix: last day of month (avoids day-28 cutoff for 29/30/31-day months)
     } else {
       const monthsBack = parseInt(velocityRange);
       startDate = new Date(now.getFullYear(), now.getMonth() - monthsBack + 1, 1);

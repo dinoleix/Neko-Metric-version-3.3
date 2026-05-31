@@ -1,5 +1,7 @@
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase';
@@ -66,6 +68,7 @@ import {
   Trash2,
   X,
   BarChart2,
+  Download,
 } from 'lucide-react';
 
 type WasteTab = 'audit' | 'drift' | 'staff' | 'serving';
@@ -135,7 +138,8 @@ const WasteManagementV2: React.FC<{ user: User; dataOwnerId: string }> = ({ user
     });
   }, [swEntries, swYear, swMonth, swOutlet, swType]);
 
-  const swTotalCost = useMemo(() => swFiltered.reduce((s, e) => s + e.totalCost, 0), [swFiltered]);
+  // BUG-07 fix: when a type filter is active, only sum costs of matching items (not all items in the entry)
+  const swTotalCost = useMemo(() => swFiltered.reduce((s, e) => s + e.items.filter(i => swType === 'all' || i.wasteType === swType).reduce((a, i) => a + i.totalCost, 0), 0), [swFiltered, swType]);
   const swExtraCost = useMemo(() => swFiltered.reduce((s, e) => s + e.items.filter(i => i.wasteType === 'extra_demand').reduce((a, i) => a + i.totalCost, 0), 0), [swFiltered]);
   const swBrokenCost = useMemo(() => swFiltered.reduce((s, e) => s + e.items.filter(i => i.wasteType === 'broken').reduce((a, i) => a + i.totalCost, 0), 0), [swFiltered]);
 
@@ -380,6 +384,166 @@ const WasteManagementV2: React.FC<{ user: User; dataOwnerId: string }> = ({ user
     };
   }, [itemSnaps, expenseSnaps, itemCosts, skuMappings, normalizationMap, adjustments, hasGenerated, storeFilter, selectedMonth, selectedYear, rentals, activeDrilldown, segmentFilter, availableOutlets]);
 
+  const exportAuditPDF = useCallback(() => {
+    if (!intelligence) return;
+    const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+    const scopeLabel = storeFilter === 'all' ? 'All Active Outlets' : (availableOutlets.find(o => o.id === storeFilter)?.name ?? storeFilter);
+    const periodLabel = `${selectedMonth} ${selectedYear}`;
+    const dateStr = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+    const retentionRate = ((Math.max(0, intelligence.totalRevenue - intelligence.totalActual) / (intelligence.totalRevenue || 1)) * 100).toFixed(1);
+
+    // ── Header band ─────────────────────────────────────────────────
+    doc.setFillColor(15, 23, 42);
+    doc.rect(0, 0, 210, 42, 'F');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(17);
+    doc.setTextColor(255, 255, 255);
+    doc.text('WASTE RADAR v2 — EXECUTIVE AUDIT', 14, 16);
+    doc.setFontSize(8);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(148, 163, 184);
+    doc.text(`Scope: ${scopeLabel}  |  Period: ${periodLabel}  |  Generated: ${dateStr}`, 14, 25);
+    doc.text('Multi-Pillar Material Reconciliation  •  Confidential', 14, 32);
+
+    // ── KPI summary row ──────────────────────────────────────────────
+    const kpis = [
+      { label: 'Gross Revenue', val: `₹${Math.round(intelligence.totalRevenue).toLocaleString()}` },
+      { label: 'Actual COGS', val: `₹${Math.round(intelligence.totalActual).toLocaleString()}` },
+      { label: 'Theoretical COGS', val: `₹${Math.round(intelligence.totalTheoretical).toLocaleString()}` },
+      { label: 'Total Drift / Waste', val: `₹${Math.round(intelligence.totalWastage).toLocaleString()}` },
+      { label: 'Retention Rate', val: `${retentionRate}%` },
+    ];
+    const kpiW = (210 - 28) / kpis.length;
+    kpis.forEach((k, i) => {
+      const x = 14 + i * kpiW;
+      doc.setFillColor(i === 3 ? 255 : (i === 4 ? 240 : 248), i === 3 ? 241 : (i === 4 ? 253 : 250), i === 3 ? 242 : (i === 4 ? 244 : 252));
+      doc.roundedRect(x, 47, kpiW - 2, 18, 3, 3, 'F');
+      doc.setFontSize(6.5);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(100, 116, 139);
+      doc.text(k.label.toUpperCase(), x + (kpiW - 2) / 2, 53, { align: 'center' });
+      doc.setFontSize(9);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(i === 3 ? 239 : (i === 4 ? 5 : 30), i === 3 ? 68 : (i === 4 ? 150 : 27), i === 3 ? 68 : (i === 4 ? 105 : 75));
+      doc.text(k.val, x + (kpiW - 2) / 2, 61, { align: 'center' });
+    });
+
+    // ── Pillar Metrics table ─────────────────────────────────────────
+    doc.setFontSize(9);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(30, 27, 75);
+    doc.text('PILLAR PERFORMANCE BREAKDOWN', 14, 74);
+
+    autoTable(doc, {
+      head: [['Pillar', 'Actual Spend', 'Target Burn', 'Variance', 'Leakage %', 'Coverage %']],
+      body: intelligence.pillarMetrics.map(p => [
+        p.label,
+        `₹${Math.round(p.actual).toLocaleString()}`,
+        `₹${Math.round(p.theoretical).toLocaleString()}`,
+        `₹${Math.round(p.variance).toLocaleString()}`,
+        `${p.leakage.toFixed(1)}%`,
+        `${p.coveragePct.toFixed(0)}%`,
+      ]),
+      startY: 77,
+      styles: { fontSize: 8, cellPadding: 3.5, font: 'helvetica' },
+      headStyles: { fillColor: [79, 70, 229], textColor: 255, fontStyle: 'bold', halign: 'center' },
+      columnStyles: {
+        0: { fontStyle: 'bold', textColor: [30, 27, 75] },
+        1: { halign: 'center' },
+        2: { halign: 'center' },
+        3: { halign: 'center' },
+        4: { halign: 'center' },
+        5: { halign: 'center' },
+      },
+      didParseCell: (data) => {
+        if (data.section === 'body' && data.column.index === 4) {
+          const val = parseFloat(String(data.cell.raw).replace('%', ''));
+          if (val > 8) data.cell.styles.textColor = [239, 68, 68];
+          else data.cell.styles.textColor = [5, 150, 105];
+        }
+      },
+      alternateRowStyles: { fillColor: [248, 250, 252] },
+    });
+
+    const afterPillars = (doc as any).lastAutoTable?.finalY ?? 140;
+
+    // ── Strategic Yield Waterfall table ─────────────────────────────
+    doc.setFontSize(9);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(30, 27, 75);
+    doc.text('STRATEGIC YIELD WATERFALL', 14, afterPillars + 10);
+    doc.setFontSize(7);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(100, 116, 139);
+    doc.text('Revenue erosion audit — snapshot aggregated data', 14, afterPillars + 16);
+
+    let runningBalance = intelligence.totalRevenue;
+    const waterfallRows = intelligence.waterfall.map((step, i) => {
+      let display: string;
+      if (i === 0) {
+        display = `₹${Math.round(step.val).toLocaleString()}`;
+        runningBalance = step.val;
+      } else if (step.isFinal) {
+        display = `₹${Math.round(step.val).toLocaleString()}`;
+      } else {
+        runningBalance -= step.val;
+        display = `₹${Math.round(step.val).toLocaleString()}`;
+      }
+      const pct = intelligence.totalRevenue > 0 ? ((step.val / intelligence.totalRevenue) * 100).toFixed(1) + '%' : '—';
+      return [step.label, display, pct, step.isFinal ? `₹${Math.round(step.val).toLocaleString()}` : (i === 0 ? display : `₹${Math.round(runningBalance + step.val - step.val).toLocaleString()}`)];
+    });
+
+    autoTable(doc, {
+      head: [['Step', 'Amount (₹)', '% of Revenue', 'Running Balance']],
+      body: intelligence.waterfall.map((step, i) => {
+        let runBal = 0;
+        let cumulative = intelligence.totalRevenue;
+        for (let j = 0; j <= i; j++) {
+          const s = intelligence.waterfall[j];
+          if (j === 0) cumulative = s.val;
+          else if (!s.isFinal) cumulative -= s.val;
+          else cumulative = s.val;
+        }
+        const pct = intelligence.totalRevenue > 0 ? ((step.val / intelligence.totalRevenue) * 100).toFixed(1) + '%' : '—';
+        return [
+          step.label,
+          `${step.isPositive ? '' : '−'}₹${Math.round(step.val).toLocaleString()}`,
+          pct,
+          `₹${Math.round(cumulative).toLocaleString()}`,
+        ];
+      }),
+      startY: afterPillars + 19,
+      styles: { fontSize: 8, cellPadding: 3.5, font: 'helvetica' },
+      headStyles: { fillColor: [15, 23, 42], textColor: 255, fontStyle: 'bold', halign: 'center' },
+      columnStyles: {
+        0: { fontStyle: 'bold' },
+        1: { halign: 'right' },
+        2: { halign: 'center' },
+        3: { halign: 'right', fontStyle: 'bold' },
+      },
+      didParseCell: (data) => {
+        if (data.section === 'body') {
+          const step = intelligence.waterfall[data.row.index];
+          if (step?.isFinal) {
+            data.cell.styles.fillColor = [236, 253, 245];
+            data.cell.styles.textColor = [5, 150, 105];
+            data.cell.styles.fontStyle = 'bold';
+          } else if (!step?.isPositive && data.column.index === 1) {
+            data.cell.styles.textColor = [239, 68, 68];
+          }
+        }
+      },
+      alternateRowStyles: { fillColor: [248, 250, 252] },
+    });
+
+    const finalY = (doc as any).lastAutoTable?.finalY ?? 250;
+    doc.setFontSize(7);
+    doc.setTextColor(148, 163, 184);
+    doc.text('Neko Metric  |  Waste Radar v2  |  Confidential — Internal Use Only', 14, finalY + 10);
+
+    doc.save(`Waste-Radar-Executive-Audit-${scopeLabel.replace(/\s+/g, '-')}-${periodLabel.replace(/\s/g, '-')}.pdf`);
+  }, [intelligence, storeFilter, availableOutlets, selectedMonth, selectedYear]);
+
   return (
     <div className="space-y-10 animate-in fade-in duration-700 pb-20">
       <header className="flex flex-col xl:flex-row xl:items-center justify-between gap-6">
@@ -621,9 +785,14 @@ const WasteManagementV2: React.FC<{ user: User; dataOwnerId: string }> = ({ user
                 <section className="bg-white p-12 rounded-[3.5rem] border border-slate-100 shadow-sm overflow-hidden">
                   <div className="flex flex-col md:flex-row md:items-center justify-between mb-16 gap-8">
                     <div><h3 className="text-3xl font-black text-slate-900 tracking-tight flex items-center gap-3"><BarChartHorizontal className="text-indigo-600" /> Strategic Yield Waterfall</h3><p className="text-slate-400 text-sm font-medium mt-1 uppercase tracking-widest">Revenue Erosion Audit: Snapshot Aggregated Data</p></div>
-                    <div className="flex items-center gap-10 bg-slate-50 p-6 rounded-[2rem] border border-slate-100 shadow-inner">
-                        <div className="text-center"><p className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1">Total Drift (Waste)</p><p className="text-2xl font-black text-rose-500">₹{(intelligence.totalWastage ?? 0).toLocaleString()}</p></div>
-                        <div className="h-10 w-px bg-slate-200" /><div className="text-center"><p className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1">Retention Rate</p><p className="text-2xl font-black text-emerald-600">{((Math.max(0, intelligence.totalRevenue - intelligence.totalActual) / (intelligence.totalRevenue || 1)) * 100).toFixed(1)}%</p></div>
+                    <div className="flex items-center gap-4">
+                      <div className="flex items-center gap-10 bg-slate-50 p-6 rounded-[2rem] border border-slate-100 shadow-inner">
+                          <div className="text-center"><p className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1">Total Drift (Waste)</p><p className="text-2xl font-black text-rose-500">₹{(intelligence.totalWastage ?? 0).toLocaleString()}</p></div>
+                          <div className="h-10 w-px bg-slate-200" /><div className="text-center"><p className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1">Retention Rate</p><p className="text-2xl font-black text-emerald-600">{((Math.max(0, intelligence.totalRevenue - intelligence.totalActual) / (intelligence.totalRevenue || 1)) * 100).toFixed(1)}%</p></div>
+                      </div>
+                      <button onClick={exportAuditPDF} className="flex items-center gap-2 px-5 py-2.5 bg-slate-900 hover:bg-slate-700 active:scale-95 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-md transition-all shrink-0">
+                        <Download size={13} /> Export PDF
+                      </button>
                     </div>
                   </div>
                   <div className="relative w-full h-[400px]"><svg viewBox="0 0 1000 400" className="w-full h-full overflow-visible" preserveAspectRatio="none">{[0, 0.5, 1].map((p, idx) => (<line key={idx} x1="60" y1={350 - (p * 300)} x2="950" y2={350 - (p * 300)} stroke="#f1f5f9" strokeWidth="1" />))}<line x1="60" y1={350} x2="950" y2={350} stroke="#e2e8f0" strokeWidth="2" />{(() => { const max = intelligence.totalRevenue || 1; const steps = intelligence.waterfall; const barWidth = 100; const spacing = (890 - steps.length * barWidth) / (steps.length + 1); let currentBaseline = 0; return steps.map((step, i) => { const x = 60 + spacing + i * (barWidth + spacing); let y, height; if (i === 0) { const vH = (step.val / max) * 300; y = 350 - vH; height = vH; currentBaseline = step.val; } else if (step.isFinal) { const vH = (step.val / max) * 300; y = 350 - vH; height = vH; } else { const sV = currentBaseline; const eV = currentBaseline - step.val; const sY = 350 - (sV / max) * 300; const eY = 350 - (eV / max) * 300; y = Math.min(sY, eY); height = Math.max(4, Math.abs(sY - eY)); currentBaseline = eV; } return (<g key={i} className="group"><rect x={x} y={y} width={barWidth} height={height} fill={step.color} rx="8" className="transition-all duration-1000 ease-out hover:opacity-80 shadow-md" /><text x={x + barWidth/2} y="380" textAnchor="middle" className="text-[10px] font-black fill-slate-400 uppercase tracking-tighter">{step.label}</text><text x={x + barWidth/2} y={y - 12} textAnchor="middle" className={`text-[11px] font-black ${step.isPositive ? 'fill-slate-900' : 'fill-rose-500'}`}>{step.isPositive ? '' : '-'}{Math.round(step.val).toLocaleString()}</text>{i > 0 && !step.isFinal && (<line x1={x - spacing} y1={y} x2={x} y2={y} stroke="#e2e8f0" strokeDasharray="4 4" />)}</g>); }); })()}</svg></div>

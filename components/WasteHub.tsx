@@ -93,7 +93,8 @@ const WasteHub: React.FC<Props> = ({ user, dataOwnerId }) => {
   }, [entries, filterYear, filterMonth, filterOutlet, filterType]);
 
   // Summary metrics
-  const totalCost = useMemo(() => filtered.reduce((s, e) => s + e.totalCost, 0), [filtered]);
+  // BUG-07 fix: when a type filter is active, only sum costs of matching items (not all items in the entry)
+  const totalCost = useMemo(() => filtered.reduce((s, e) => s + e.items.filter(i => filterType === 'all' || i.wasteType === filterType).reduce((a, i) => a + i.totalCost, 0), 0), [filtered, filterType]);
   const extraDemandCost = useMemo(() =>
     filtered.reduce((s, e) => s + e.items.filter(i => i.wasteType === 'extra_demand').reduce((a, i) => a + i.totalCost, 0), 0),
     [filtered]

@@ -302,7 +302,13 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
       processMap(snap.crewPurchaseByCategory || {});
     });
 
-    const cogsAdj = adjustments.filter(a => currentFilterOutlets.includes(a.outletId)).reduce((acc, a) => acc + (a.adjustmentAmount || 0), 0);
+    // Fallback: if adjustmentAmount missing (legacy records), compute from sub-buckets
+    const getAdjTotal = (a: CogsAdjustment) =>
+      a.adjustmentAmount != null
+        ? a.adjustmentAmount
+        : (a.foodIngredientsAdjustment || 0) + (a.drinkIngredientsAdjustment || 0) + (a.foodServingsAdjustment || 0) + (a.drinkServingsAdjustment || 0);
+
+    const cogsAdj = adjustments.filter(a => currentFilterOutlets.includes(a.outletId)).reduce((acc, a) => acc + getAdjTotal(a), 0);
     const foodIngredientsAdj = adjustments.filter(a => currentFilterOutlets.includes(a.outletId)).reduce((acc, a) => acc + (a.foodIngredientsAdjustment || 0), 0);
     const drinkIngredientsAdj = adjustments.filter(a => currentFilterOutlets.includes(a.outletId)).reduce((acc, a) => acc + (a.drinkIngredientsAdjustment || 0), 0);
     const foodServingsAdj = adjustments.filter(a => currentFilterOutlets.includes(a.outletId)).reduce((acc, a) => acc + (a.foodServingsAdjustment || 0), 0);
@@ -407,9 +413,16 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
             process(snap.crewExpenseByCategory || {}); process(snap.crewPurchaseByCategory || {});
           });
 
-          const c = Math.max(0, rawC - (oAdj?.adjustmentAmount || 0));
+          // BUG-01 fix: fall back to summing sub-buckets if adjustmentAmount is absent (legacy records)
+          const adjTotal = oAdj
+            ? (oAdj.adjustmentAmount != null
+                ? oAdj.adjustmentAmount
+                : (oAdj.foodIngredientsAdjustment || 0) + (oAdj.drinkIngredientsAdjustment || 0) + (oAdj.foodServingsAdjustment || 0) + (oAdj.drinkServingsAdjustment || 0))
+            : 0;
+          const c = Math.max(0, rawC - adjTotal);
           const rent = oRent?.currentRent || 0;
-          const labour = rawL + (oPay?.totalAmount || employees.filter(e => e.outletId === oId).reduce((s, e) => s + e.currentSalary, 0));
+          // BUG-02 fix: use ?? not || so a payroll record with totalAmount=0 is respected; also guard e.currentSalary
+          const labour = rawL + (oPay != null ? oPay.totalAmount : employees.filter(e => e.outletId === oId).reduce((s, e) => s + (e.currentSalary || 0), 0));
           const profit = inflow - c - labour - rent - rawO - rawU;
           const den = gross || 1;
 

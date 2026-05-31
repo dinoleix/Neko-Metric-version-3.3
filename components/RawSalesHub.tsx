@@ -105,20 +105,22 @@ const RawSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, data
     try {
       const constraints = [where('userId', '==', dataOwnerId)];
       
+      // BUG-15 fix: cap all unbounded queries to prevent runaway Firestore reads at scale
+      const CAP = limit(500);
       if (activeView === 'sales') {
-        const sSnap = await getDocs(query(collection(db, 'sales_summary'), ...constraints));
+        const sSnap = await getDocs(query(collection(db, 'sales_summary'), ...constraints, CAP));
         setRecords(sSnap.docs.map(d => ({ ...d.data(), id: d.id } as SalesSummaryRecord)));
       } else if (activeView === 'online-orders') {
-        const oSnap = await getDocs(query(collection(db, 'online_order_details'), ...constraints));
+        const oSnap = await getDocs(query(collection(db, 'online_order_details'), ...constraints, CAP));
         setOnlineOrders(oSnap.docs.map(d => ({ ...d.data(), id: d.id })));
       } else if (activeView === 'online-items') {
         const iSnap = await getDocs(query(collection(db, 'item_sales'), where('userId', '==', dataOwnerId), where('isPlatform', '==', true), limit(1000)));
         setItemRecords(iSnap.docs.map(d => ({ ...d.data(), id: d.id } as ItemSalesRecord)));
       } else if (activeView === 'expenses') {
-        const eSnap = await getDocs(query(collection(db, 'expenses'), ...constraints));
+        const eSnap = await getDocs(query(collection(db, 'expenses'), ...constraints, CAP));
         setExpenseRecords(eSnap.docs.map(d => ({ ...d.data(), id: d.id } as ExpenseRecord)));
       } else if (activeView === 'purchases') {
-        const pSnap = await getDocs(query(collection(db, 'purchases'), ...constraints));
+        const pSnap = await getDocs(query(collection(db, 'purchases'), ...constraints, CAP));
         setPurchaseRecords(pSnap.docs.map(d => ({ ...d.data(), id: d.id } as PurchaseRecord)));
       }
       setHasSearched(true);
@@ -450,13 +452,26 @@ const RawSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, data
           batch.update(doc(db, 'online_order_details', editingRecord.id), { itemTotal: newItemTotal, totalTax: newTax, commission: newComm, netPayout: newPayout, lastUpdated: Date.now() });
         }
         
-        const snapUpdate: any = { 
-            onlineGoodGross: increment(deltaRev), 
-            onlineGoodTax: increment(deltaTax), 
-            onlineGoodComm: increment(deltaComm), 
-            onlineGoodNet: increment(deltaPayout), 
-            lastUpdated: Date.now() 
-        };
+        // BUG-06 fix: route snapshot update to correct channel fields based on record type
+        const snapUpdate: any = { lastUpdated: Date.now() };
+        if (activeView === 'online-orders') {
+          snapUpdate.onlineGoodGross = increment(deltaRev);
+          snapUpdate.onlineGoodTax = increment(deltaTax);
+          snapUpdate.onlineGoodComm = increment(deltaComm);
+          snapUpdate.onlineGoodNet = increment(deltaPayout);
+        } else {
+          const isOnline = editingRecord.onlinePlatform && editingRecord.onlinePlatform.toLowerCase() !== 'none';
+          if (isOnline) {
+            snapUpdate.onlineGoodGross = increment(deltaRev);
+            snapUpdate.onlineGoodTax = increment(deltaTax);
+            snapUpdate.onlineGoodComm = increment(deltaComm);
+            snapUpdate.onlineGoodNet = increment(deltaPayout);
+          } else {
+            snapUpdate.posGoodGross = increment(deltaRev);
+            snapUpdate.posGoodTax = increment(deltaTax);
+            snapUpdate.posGoodNet = increment(deltaPayout);
+          }
+        }
         
         const dayIdx = d.getDate() - 1;
         if (dayIdx >= 0 && dayIdx < 31) {

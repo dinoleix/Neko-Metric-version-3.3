@@ -110,13 +110,25 @@ const ExecDashboard: React.FC<{ user: User; dataOwnerId: string }> = ({ user, da
     const totalPurchases = currentExpenses.reduce((acc, s) => acc + (s.totalPurchase || 0) + (s.crewTotalPurchase || 0), 0);
     const stockOffset = currentAdjustments.reduce((acc, a) => acc + (a.adjustmentAmount || 0), 0);
     const netMaterialConsumption = Math.max(0, totalPurchases - stockOffset);
-    const totalOpExBills = currentExpenses.reduce((acc, s) => acc + (s.totalExpense || 0) + (s.crewTotalExpense || 0), 0);
-    
+
+    // BUG-03 fix: separate labour-classified rows from general opex so they don't stack on top of totalFixedPayroll
+    let csvLabourFromExpenses = 0;
+    currentExpenses.forEach(s => {
+      const processMap = (map: Record<string, number> | undefined) => {
+        Object.entries(map || {}).forEach(([cat, amt]) => {
+          if (DEFAULT_LABOUR.includes(cat.trim().toUpperCase())) csvLabourFromExpenses += Math.abs(Number(amt) || 0);
+        });
+      };
+      processMap(s.expenseByCategory);
+      processMap((s as any).crewExpenseByCategory);
+    });
+    const totalOpExBills = currentExpenses.reduce((acc, s) => acc + (s.totalExpense || 0) + (s.crewTotalExpense || 0), 0) - csvLabourFromExpenses;
+
     const totalRent = rentals.reduce((acc, r) => acc + (r.status === 'active' ? r.currentRent : 0), 0);
     const totalFixedPayroll = MASTER_OUTLETS.reduce((acc, o) => {
        const fiscal = currentPayrolls.find(p => p.outletId === o.id);
        if (fiscal) return acc + fiscal.totalAmount;
-       return acc + employees.filter(e => e.outletId === o.id).reduce((sum, e) => sum + e.currentSalary, 0);
+       return acc + employees.filter(e => e.outletId === o.id).reduce((sum, e) => sum + (e.currentSalary || 0), 0);
     }, 0);
 
     const totalBurden = netMaterialConsumption + totalOpExBills + totalRent + totalFixedPayroll;
@@ -149,11 +161,19 @@ const ExecDashboard: React.FC<{ user: User; dataOwnerId: string }> = ({ user, da
         const gross = oSales.reduce((acc, s) => acc + (s.posGoodGross || 0) + (s.onlineGoodGross || 0) + (s.eventRevenue || 0), 0);
         const oInflow = oSales.reduce((acc, s) => acc + (s.posGoodNet || 0) + (s.onlineGoodNet || 0) + (s.eventRevenue || 0), 0);
         
-        const oOpEx = oExp.reduce((acc, s) => acc + (s.totalExpense || 0) + (s.crewTotalExpense || 0), 0);
+        let oCSVLabour = 0;
+        oExp.forEach(s => {
+          const pm = (map: Record<string, number> | undefined) => Object.entries(map || {}).forEach(([cat, amt]) => {
+            if (DEFAULT_LABOUR.includes(cat.trim().toUpperCase())) oCSVLabour += Math.abs(Number(amt) || 0);
+          });
+          pm(s.expenseByCategory);
+          pm((s as any).crewExpenseByCategory);
+        });
+        const oOpEx = oExp.reduce((acc, s) => acc + (s.totalExpense || 0) + (s.crewTotalExpense || 0), 0) - oCSVLabour;
         const oPurch = oExp.reduce((acc, s) => acc + (s.totalPurchase || 0) + (s.crewTotalPurchase || 0), 0);
         const oOffset = oAdj.reduce((acc, a) => acc + (a.adjustmentAmount || 0), 0);
-        const oStaff = oPay ? oPay.totalAmount : employees.filter(e => e.outletId === o.id).reduce((sum, e) => sum + e.currentSalary, 0);
-        
+        const oStaff = oPay != null ? oPay.totalAmount : employees.filter(e => e.outletId === o.id).reduce((sum, e) => sum + (e.currentSalary || 0), 0);
+
         const oBurden = oOpEx + Math.max(0, oPurch - oOffset) + oRent + oStaff;
         const profit = oInflow - oBurden;
         const margin = gross > 0 ? (profit / gross) * 100 : 0;

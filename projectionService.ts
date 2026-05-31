@@ -19,11 +19,12 @@ export const generateSalesProjection = async (
     const endDate = new Date(now.getTime() + 5 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
     // Historical Sales (Last 3 months)
+    // BUG-14 fix: increased limit from 24 to 60 (5 years) so in-memory sort always catches the most recent months
     const salesSnapQ = query(
       collection(db, 'sales_snapshots'),
       where('outletId', '==', outletId),
       where('userId', '==', userId),
-      limit(24) // Get up to 2 years of data to sort in memory
+      limit(60)
     );
     
     // Upcoming Holidays

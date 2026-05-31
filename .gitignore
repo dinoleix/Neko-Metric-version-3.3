@@ -23,3 +23,14 @@ dist-ssr
 *.sln
 *.sw?
 
+
+# Secrets / local env
+.env
+.env.*
+
+# Vite cache
+.vite
+
+# Data files & archives (not source; may contain PII)
+*.csv
+*.zip

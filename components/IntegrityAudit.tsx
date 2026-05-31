@@ -72,9 +72,9 @@ const IntegrityAudit: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
       const yearNum = parseInt(selectedYear);
 
       const filterByPeriod = (r: any) => {
-        const d = new Date(r.date);
-        return !isNaN(d.getTime()) && 
-               d.getFullYear() === yearNum && 
+        const d = new Date(r.date + 'T00:00:00'); // BUG-05 fix: force local (IST) parse to avoid UTC midnight shift
+        return !isNaN(d.getTime()) &&
+               d.getFullYear() === yearNum &&
                (selectedMonth === 'All Months' || d.getMonth() === monthIdx);
       };
 

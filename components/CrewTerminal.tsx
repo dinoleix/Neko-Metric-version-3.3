@@ -23,7 +23,12 @@ import {
   ServingOption,
   WasteEntry,
   WasteLineItem,
-  WasteType
+  WasteType,
+  SubscriptionCustomer,
+  Subscription,
+  SubscriptionOrder,
+  SubscriptionLineItem,
+  DeliveryDay
 } from '../types';
 import ProductCatalog from './ProductCatalog';
 import {
@@ -64,7 +69,12 @@ import {
   AlertTriangle,
   ArrowRightLeft,
   Vault,
-  Package
+  Package,
+  Star,
+  Phone,
+  Truck,
+  Tag,
+  Users
 } from 'lucide-react';
 
 const ALL_CREW_CATEGORIES = Array.from(
@@ -133,7 +143,7 @@ const istToday = (): string => {
 };
 
 const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, profile }) => {
-  const [activeMode, setActiveMode] = useState<'landing' | 'view' | 'add' | 'edit' | 'daily-sales' | 'transfer-10k' | 'record-waste'>('landing');
+  const [activeMode, setActiveMode] = useState<'landing' | 'view' | 'add' | 'edit' | 'daily-sales' | 'transfer-10k' | 'record-waste' | 'sub-list' | 'sub-add-customer' | 'sub-request' | 'sub-delivery'>('landing');
   const [entryType, setEntryType] = useState<'expense' | 'purchase'>('purchase');
   const [entries, setEntries] = useState<DailyCounterEntry[]>([]);
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
@@ -244,6 +254,144 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     setWSelItemKey('');
     setWQty('1');
     setWType('extra_demand');
+  };
+
+  // --- Subscription State ---
+  const [subCustomers, setSubCustomers] = useState<SubscriptionCustomer[]>([]);
+  const [subSubscriptions, setSubSubscriptions] = useState<Subscription[]>([]);
+  const [subTodayOrders, setSubTodayOrders] = useState<SubscriptionOrder[]>([]);
+  const [subProducts, setSubProducts] = useState<Product[]>([]);
+  const [subLoading, setSubLoading] = useState(false);
+  const [subSaving, setSubSaving] = useState(false);
+  const [subSuccess, setSubSuccess] = useState(false);
+  const [subError, setSubError] = useState('');
+  // Selected delivery for detail view
+  const [selectedOrder, setSelectedOrder] = useState<SubscriptionOrder | null>(null);
+  // Customer form
+  const [subCustName, setSubCustName] = useState('');
+  const [subCustPhone, setSubCustPhone] = useState('');
+  const [subCustAddress, setSubCustAddress] = useState('');
+  const [subCustNotes, setSubCustNotes] = useState('');
+  // Subscription request form
+  const [subReqCustomerId, setSubReqCustomerId] = useState('');
+  const [subReqCustSearch, setSubReqCustSearch] = useState('');
+  const [subReqDays, setSubReqDays] = useState<DeliveryDay[]>(['MON', 'WED', 'FRI']);
+  const [subReqStartDate, setSubReqStartDate] = useState(istToday());
+  const [subReqNotes, setSubReqNotes] = useState('');
+  const [subReqItems, setSubReqItems] = useState<SubscriptionLineItem[]>([]);
+  const [subReqSelProduct, setSubReqSelProduct] = useState('');
+  const [subReqQty, setSubReqQty] = useState('1');
+  // Delivery detail edits
+  const [deliveryItems, setDeliveryItems] = useState<SubscriptionLineItem[]>([]);
+  const [deliveryNotes, setDeliveryNotes] = useState('');
+
+  const DAY_LABELS_CT: Record<DeliveryDay, string> = { MON: 'Mon', TUE: 'Tue', WED: 'Wed', THU: 'Thu', FRI: 'Fri', SAT: 'Sat', SUN: 'Sun' };
+  const ALL_DAYS_CT: DeliveryDay[] = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
+
+  const fetchSubData = async () => {
+    const ownerId = profile.ownerId || user.uid;
+    setSubLoading(true);
+    setSubError('');
+    try {
+      const today = istToday();
+      // Single-field queries only — avoids composite index requirements on new collections.
+      // Status and date filtering is done client-side.
+      const [custSnap, subSnap, ordSnap, prodSnap] = await Promise.all([
+        getDocs(query(collection(db, 'subscription_customers'), where('ownerId', '==', ownerId))),
+        getDocs(query(collection(db, 'subscriptions'), where('ownerId', '==', ownerId))),
+        getDocs(query(collection(db, 'subscription_orders'), where('ownerId', '==', ownerId))),
+        getDocs(collection(db, 'products')),
+      ]);
+      setSubCustomers(custSnap.docs.map(d => ({ id: d.id, ...d.data() } as SubscriptionCustomer)));
+      setSubSubscriptions(
+        subSnap.docs.map(d => ({ id: d.id, ...d.data() } as Subscription)).filter(s => s.status === 'active')
+      );
+      setSubTodayOrders(
+        ordSnap.docs.map(d => ({ id: d.id, ...d.data() } as SubscriptionOrder))
+          .filter(o => o.scheduledDate === today && o.status === 'scheduled')
+      );
+      setSubProducts(
+        prodSnap.docs.map(d => ({ id: d.id, ...d.data() } as Product))
+          .filter(p => (p as any).userId === ownerId || (p as any).ownerId === ownerId)
+          .sort((a, b) => a.name.localeCompare(b.name))
+      );
+    } catch (err) {
+      console.error('[fetchSubData]', err);
+      setSubError('Failed to load subscription data.');
+    } finally {
+      setSubLoading(false);
+    }
+  };
+
+  const handleSaveSubCustomer = async () => {
+    if (!subCustName.trim() || !subCustPhone.trim() || !subCustAddress.trim()) { setSubError('Name, phone and address are required.'); return; }
+    const ownerId = profile.ownerId || user.uid;
+    setSubSaving(true); setSubError('');
+    try {
+      const now = Date.now();
+      await addDoc(collection(db, 'subscription_customers'), {
+        userId: user.uid, ownerId, name: subCustName.trim(), phone: subCustPhone.trim(),
+        address: subCustAddress.trim(), notes: subCustNotes.trim(), createdAt: now, updatedAt: now,
+      });
+      setSubSuccess(true);
+      setTimeout(() => { setSubSuccess(false); setSubCustName(''); setSubCustPhone(''); setSubCustAddress(''); setSubCustNotes(''); setActiveMode('sub-list'); }, 1500);
+    } catch { setSubError('Failed to save customer.'); }
+    finally { setSubSaving(false); }
+  };
+
+  const handleSubmitSubRequest = async () => {
+    const ownerId = profile.ownerId || user.uid;
+    if (!subReqCustomerId) { setSubError('Select a customer.'); return; }
+    if (subReqDays.length === 0) { setSubError('Select at least one delivery day.'); return; }
+    if (subReqItems.length === 0) { setSubError('Add at least one item.'); return; }
+    setSubSaving(true); setSubError('');
+    try {
+      const cust = subCustomers.find(c => c.id === subReqCustomerId)!;
+      const outletId = profile.assignedOutlet || MASTER_OUTLETS[0].id;
+      const now = Date.now();
+      const endDate = (() => { const d = new Date(subReqStartDate + 'T00:00:00+05:30'); d.setDate(d.getDate() + 29); return d.toISOString().split('T')[0]; })();
+      await addDoc(collection(db, 'subscriptions'), {
+        userId: user.uid, ownerId, customerId: cust.id, customerName: cust.name,
+        customerPhone: cust.phone, customerAddress: cust.address, outletId,
+        startDate: subReqStartDate, endDate, deliveryDays: subReqDays, discountPercent: 0,
+        defaultItems: subReqItems, totalDeliveries: 0, completedDeliveries: 0,
+        status: 'pending_approval', notes: subReqNotes.trim(), createdAt: now, updatedAt: now,
+      });
+      setSubSuccess(true);
+      setTimeout(() => {
+        setSubSuccess(false); setSubReqCustomerId(''); setSubReqCustSearch(''); setSubReqDays(['MON', 'WED', 'FRI']);
+        setSubReqStartDate(istToday()); setSubReqItems([]); setSubReqNotes(''); setActiveMode('sub-list');
+      }, 1500);
+    } catch { setSubError('Failed to submit request.'); }
+    finally { setSubSaving(false); }
+  };
+
+  const handleMarkDelivered = async (status: 'delivered' | 'skipped') => {
+    if (!selectedOrder?.id) return;
+    const ownerId = profile.ownerId || user.uid;
+    setSubSaving(true); setSubError('');
+    try {
+      const now = Date.now();
+      await updateDoc(doc(db, 'subscription_orders', selectedOrder.id), {
+        status, items: deliveryItems, notes: deliveryNotes, userId: user.uid,
+        deliveredAt: status === 'delivered' ? now : undefined, updatedAt: now,
+      });
+      if (status === 'delivered' && selectedOrder.subscriptionId) {
+        const sub = subSubscriptions.find(s => s.id === selectedOrder.subscriptionId);
+        if (sub) await updateDoc(doc(db, 'subscriptions', selectedOrder.subscriptionId), { completedDeliveries: (sub.completedDeliveries || 0) + 1, updatedAt: now });
+      }
+      setSubSuccess(true);
+      setTimeout(() => { setSubSuccess(false); setSelectedOrder(null); setActiveMode('sub-list'); fetchSubData(); }, 1500);
+    } catch { setSubError('Failed to update delivery.'); }
+    finally { setSubSaving(false); }
+  };
+
+  const addSubReqItem = () => {
+    const prod = subProducts.find(p => p.id === subReqSelProduct);
+    if (!prod || !subReqQty || Number(subReqQty) <= 0) return;
+    const unitPrice = prod.pricePerUnit || 0;
+    setSubReqItems(prev => [...prev, { itemName: prod.name, qty: Number(subReqQty), unitPrice, discountedUnitPrice: unitPrice }]);
+    setSubReqSelProduct(''); setSubReqQty('1');
   };
 
   const addWasteLineItem = () => {
@@ -406,6 +554,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     if (activeMode === 'view') fetchEntries();
     if (activeMode === 'daily-sales') fetchDsLogs();
     if (activeMode === 'record-waste') fetchServingOptions();
+    if (activeMode === 'sub-list' || activeMode === 'sub-request') fetchSubData();
   }, [activeMode]);
 
   useEffect(() => {
@@ -1272,6 +1421,23 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
             </button>
           </div>
 
+          {/* Subscriptions card */}
+          <div className="w-full max-w-2xl">
+            <button
+              onClick={() => setActiveMode('sub-list')}
+              className="w-full h-20 bg-indigo-700 active:scale-95 text-white rounded-[2.5rem] flex items-center justify-center gap-5 shadow-2xl shadow-indigo-900/50 transition-transform border border-indigo-600/30"
+            >
+              <Star size={28} strokeWidth={1.5} />
+              <div className="text-left">
+                <p className="text-lg font-black uppercase tracking-tight leading-tight">Subscriptions</p>
+                <p className="text-[10px] font-bold text-indigo-300/80 uppercase tracking-widest">Customers · Deliveries</p>
+              </div>
+              {subTodayOrders.length > 0 && (
+                <span className="ml-2 w-7 h-7 bg-white text-indigo-700 rounded-full text-xs font-black flex items-center justify-center">{subTodayOrders.length}</span>
+              )}
+            </button>
+          </div>
+
           {/* Shortcuts row */}
           <div className="flex flex-wrap items-center justify-center gap-3">
             <button
@@ -1957,6 +2123,394 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
                   : <><Trash2 size={28} /> Submit Waste · ₹{wasteItems.reduce((s, i) => s + i.totalCost, 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</>}
               </button>
             </form>
+          </div>
+        </div>
+
+      /* ── SUB LIST ─────────────────────────────────────────────── */
+      ) : activeMode === 'sub-list' ? (
+        <div className="animate-in slide-in-from-right duration-300 px-1 pt-2 space-y-5">
+          {/* Header */}
+          <div className="flex items-center gap-4">
+            <button onClick={() => setActiveMode('landing')} className="flex items-center gap-2.5 h-14 px-6 bg-slate-800 active:scale-95 border border-slate-700 rounded-2xl text-white text-sm font-black uppercase tracking-widest shrink-0 transition-transform">
+              <ArrowLeft size={18} /> Home
+            </button>
+            <h2 className="flex-1 text-center text-base font-black text-white uppercase tracking-widest">Subscriptions</h2>
+            <button onClick={() => { setSubCustName(''); setSubCustPhone(''); setSubCustAddress(''); setSubCustNotes(''); setSubError(''); setActiveMode('sub-add-customer'); }} className="flex items-center gap-2 h-14 px-5 bg-indigo-600 active:scale-95 rounded-2xl text-white text-sm font-black uppercase tracking-widest transition-transform shadow-lg shrink-0">
+              <Plus size={18} />
+            </button>
+          </div>
+
+          {subLoading ? (
+            <div className="flex flex-col items-center justify-center py-24 gap-4">
+              <Loader2 size={36} className="animate-spin text-indigo-500" />
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Loading…</p>
+            </div>
+          ) : (
+            <>
+              {/* Today's Deliveries */}
+              <div className="bg-white rounded-[2.5rem] shadow-2xl overflow-hidden">
+                <div className="px-8 py-6 bg-indigo-700 flex items-center justify-between">
+                  <div>
+                    <h3 className="text-xl font-black text-white uppercase tracking-tight">Today's Deliveries</h3>
+                    <p className="text-indigo-300/80 text-[10px] font-bold uppercase tracking-widest mt-1">Scheduled for today</p>
+                  </div>
+                  <div className="w-12 h-12 bg-white/10 rounded-2xl flex items-center justify-center">
+                    <Truck size={22} className="text-white" />
+                  </div>
+                </div>
+                <div className="p-5 space-y-3">
+                  {subTodayOrders.length === 0 ? (
+                    <div className="py-8 text-center">
+                      <CheckCircle2 size={32} className="mx-auto text-slate-200 mb-2" />
+                      <p className="text-xs font-black text-slate-300 uppercase tracking-widest">All clear — no scheduled deliveries today</p>
+                    </div>
+                  ) : subTodayOrders.map(order => (
+                    <button key={order.id} onClick={() => { setSelectedOrder(order); setDeliveryItems(order.items); setDeliveryNotes(order.notes || ''); setActiveMode('sub-delivery'); }}
+                      className="w-full text-left bg-indigo-50 border-2 border-indigo-100 rounded-[1.5rem] p-5 active:scale-[0.98] transition-transform flex items-center gap-4"
+                    >
+                      <div className="w-10 h-10 bg-indigo-200 rounded-2xl flex items-center justify-center shrink-0">
+                        <Truck size={18} className="text-indigo-700" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-black text-slate-900 uppercase truncate">{order.customerName}</p>
+                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">{order.customerPhone}</p>
+                        <p className="text-[10px] font-bold text-indigo-500 mt-0.5">{order.items.length} item{order.items.length !== 1 ? 's' : ''} · ₹{order.discountedTotal.toLocaleString('en-IN', { minimumFractionDigits: 0 })}</p>
+                      </div>
+                      <ChevronRight size={18} className="text-slate-300 shrink-0" />
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Active Subscriptions */}
+              <div className="bg-white rounded-[2.5rem] shadow-2xl overflow-hidden">
+                <div className="px-8 py-6 bg-slate-800 flex items-center justify-between">
+                  <div>
+                    <h3 className="text-xl font-black text-white uppercase tracking-tight">Active Plans</h3>
+                    <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mt-1">{subSubscriptions.length} active subscription{subSubscriptions.length !== 1 ? 's' : ''}</p>
+                  </div>
+                  <button onClick={() => { setSubReqCustomerId(''); setSubReqCustSearch(''); setSubReqDays(['MON', 'WED', 'FRI']); setSubReqStartDate(istToday()); setSubReqItems([]); setSubReqNotes(''); setSubError(''); setActiveMode('sub-request'); }}
+                    className="flex items-center gap-2 h-10 px-4 bg-indigo-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest active:scale-95 transition-all"
+                  >
+                    <Plus size={14} /> New Request
+                  </button>
+                </div>
+                <div className="p-5 space-y-3">
+                  {subSubscriptions.length === 0 ? (
+                    <div className="py-8 text-center">
+                      <Star size={32} className="mx-auto text-slate-200 mb-2" />
+                      <p className="text-xs font-black text-slate-300 uppercase tracking-widest">No active subscriptions</p>
+                    </div>
+                  ) : subSubscriptions.map(sub => (
+                    <div key={sub.id} className="bg-slate-50 border border-slate-100 rounded-[1.5rem] p-5">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-sm font-black text-slate-900 uppercase truncate">{sub.customerName}</p>
+                          <p className="text-[10px] font-bold text-slate-400 flex items-center gap-1 mt-0.5">
+                            <Phone size={10} /> {sub.customerPhone}
+                          </p>
+                        </div>
+                        <span className="shrink-0 px-3 py-1 bg-emerald-100 text-emerald-700 rounded-full text-[9px] font-black uppercase tracking-widest">{sub.discountPercent}% off</span>
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-1.5">
+                        {sub.deliveryDays.map(d => (
+                          <span key={d} className="px-2 py-0.5 bg-indigo-100 text-indigo-700 rounded-full text-[9px] font-black uppercase">{DAY_LABELS_CT[d]}</span>
+                        ))}
+                      </div>
+                      <div className="mt-2 flex items-center gap-4">
+                        <p className="text-[10px] font-bold text-slate-400">{sub.completedDeliveries}/{sub.totalDeliveries} delivered</p>
+                        <div className="flex-1 h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                          <div className="h-full bg-indigo-500 rounded-full transition-all" style={{ width: `${sub.totalDeliveries > 0 ? (sub.completedDeliveries / sub.totalDeliveries) * 100 : 0}%` }} />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+
+      /* ── SUB ADD CUSTOMER ──────────────────────────────────────── */
+      ) : activeMode === 'sub-add-customer' ? (
+        <div className="animate-in slide-in-from-right duration-300 px-1 pt-2">
+          <div className="bg-white rounded-[2.5rem] shadow-2xl overflow-hidden">
+            <header className="px-8 py-7 flex items-center gap-4 bg-indigo-700 text-white">
+              <button onClick={() => setActiveMode('sub-list')} className="p-3.5 bg-white/15 rounded-2xl active:bg-white/30 transition-all">
+                <ArrowLeft size={22} />
+              </button>
+              <div>
+                <h3 className="text-2xl font-black uppercase tracking-tight leading-none">New Customer</h3>
+                <p className="text-white/60 text-[10px] font-bold uppercase tracking-widest mt-1.5">Add subscription customer</p>
+              </div>
+            </header>
+
+            <div className="p-8 space-y-5">
+              {subError && <p className="text-xs font-bold text-rose-600 bg-rose-50 border border-rose-100 rounded-2xl px-4 py-3">{subError}</p>}
+
+              <div className="space-y-2">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Full Name *</label>
+                <input value={subCustName} onChange={e => setSubCustName(e.target.value)} placeholder="Customer name"
+                  className="w-full h-14 bg-slate-50 border-2 border-slate-100 focus:border-indigo-400 outline-none px-5 rounded-2xl text-sm font-bold text-slate-700 transition-all"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Phone *</label>
+                <div className="relative">
+                  <Phone size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" />
+                  <input type="tel" value={subCustPhone} onChange={e => setSubCustPhone(e.target.value)} placeholder="Mobile number"
+                    className="w-full h-14 bg-slate-50 border-2 border-slate-100 focus:border-indigo-400 outline-none pl-10 pr-5 rounded-2xl text-sm font-bold text-slate-700 transition-all"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Delivery Address *</label>
+                <textarea value={subCustAddress} onChange={e => setSubCustAddress(e.target.value)} placeholder="Full delivery address" rows={3}
+                  className="w-full bg-slate-50 border-2 border-slate-100 focus:border-indigo-400 outline-none px-5 py-4 rounded-2xl text-sm font-bold text-slate-700 resize-none transition-all"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Notes (Optional)</label>
+                <textarea value={subCustNotes} onChange={e => setSubCustNotes(e.target.value)} placeholder="Dietary notes, landmarks, etc." rows={2}
+                  className="w-full bg-slate-50 border-2 border-slate-100 focus:border-indigo-400 outline-none px-5 py-4 rounded-2xl text-sm font-medium text-slate-700 resize-none transition-all"
+                />
+              </div>
+
+              <button onClick={handleSaveSubCustomer} disabled={subSaving || !subCustName.trim() || !subCustPhone.trim() || !subCustAddress.trim()}
+                className="w-full h-[70px] bg-indigo-700 text-white rounded-[2rem] font-black uppercase tracking-widest text-base flex items-center justify-center gap-3 disabled:opacity-50 active:scale-[0.98] transition-transform shadow-xl shadow-indigo-900/30"
+              >
+                {subSaving ? <Loader2 size={26} className="animate-spin" /> : subSuccess ? <><CheckCircle2 size={26} /> Saved!</> : <><Users size={24} /> Save Customer</>}
+              </button>
+            </div>
+          </div>
+        </div>
+
+      /* ── SUB REQUEST ───────────────────────────────────────────── */
+      ) : activeMode === 'sub-request' ? (
+        <div className="animate-in slide-in-from-right duration-300 px-1 pt-2">
+          <div className="bg-white rounded-[2.5rem] shadow-2xl overflow-hidden">
+            <header className="px-8 py-7 flex items-center gap-4 bg-indigo-700 text-white">
+              <button onClick={() => setActiveMode('sub-list')} className="p-3.5 bg-white/15 rounded-2xl active:bg-white/30 transition-all">
+                <ArrowLeft size={22} />
+              </button>
+              <div>
+                <h3 className="text-2xl font-black uppercase tracking-tight leading-none">New Subscription</h3>
+                <p className="text-white/60 text-[10px] font-bold uppercase tracking-widest mt-1.5">Submit for admin approval</p>
+              </div>
+            </header>
+
+            <div className="p-8 space-y-6">
+              {subError && <p className="text-xs font-bold text-rose-600 bg-rose-50 border border-rose-100 rounded-2xl px-4 py-3">{subError}</p>}
+
+              {/* Customer picker */}
+              <div className="space-y-2">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Customer *</label>
+                <div className="relative">
+                  <Search size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" />
+                  <input value={subReqCustSearch} onChange={e => setSubReqCustSearch(e.target.value)} placeholder="Search customer…"
+                    className="w-full h-14 bg-slate-50 border-2 border-slate-100 focus:border-indigo-400 outline-none pl-10 pr-5 rounded-2xl text-sm font-bold text-slate-700 transition-all"
+                  />
+                </div>
+                {subReqCustSearch && (
+                  <div className="bg-white border-2 border-slate-100 rounded-2xl overflow-hidden shadow-lg max-h-48 overflow-y-auto">
+                    {subCustomers.filter(c => c.name.toLowerCase().includes(subReqCustSearch.toLowerCase()) || c.phone.includes(subReqCustSearch)).map(c => (
+                      <button key={c.id} type="button" onClick={() => { setSubReqCustomerId(c.id!); setSubReqCustSearch(c.name); }}
+                        className={`w-full text-left px-5 py-3 hover:bg-indigo-50 transition-colors border-b border-slate-50 last:border-0 ${subReqCustomerId === c.id ? 'bg-indigo-50' : ''}`}
+                      >
+                        <p className="text-sm font-black text-slate-900 uppercase">{c.name}</p>
+                        <p className="text-[10px] font-bold text-slate-400">{c.phone}</p>
+                      </button>
+                    ))}
+                    {subCustomers.filter(c => c.name.toLowerCase().includes(subReqCustSearch.toLowerCase()) || c.phone.includes(subReqCustSearch)).length === 0 && (
+                      <div className="px-5 py-4 text-center">
+                        <p className="text-xs font-bold text-slate-400">No match — <button type="button" onClick={() => setActiveMode('sub-add-customer')} className="text-indigo-600 underline">add new customer</button></p>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {subReqCustomerId && !subReqCustSearch.includes('(') && (
+                  <p className="text-[10px] font-bold text-emerald-600 ml-1 flex items-center gap-1"><CheckCircle2 size={11} /> Customer selected</p>
+                )}
+              </div>
+
+              {/* Delivery days */}
+              <div className="space-y-2">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Delivery Days *</label>
+                <div className="flex flex-wrap gap-2">
+                  {ALL_DAYS_CT.map(day => (
+                    <button key={day} type="button" onClick={() => setSubReqDays(prev => prev.includes(day) ? prev.filter(d => d !== day) : [...prev, day])}
+                      className={`h-11 px-4 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all active:scale-95 border-2 ${subReqDays.includes(day) ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-slate-50 text-slate-400 border-slate-100'}`}
+                    >
+                      {DAY_LABELS_CT[day]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Start date */}
+              <div className="space-y-2">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Start Date</label>
+                <div className="relative">
+                  <Calendar size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" />
+                  <input type="date" value={subReqStartDate} onChange={e => setSubReqStartDate(e.target.value)}
+                    className="w-full h-14 bg-slate-50 border-2 border-slate-100 focus:border-indigo-400 outline-none pl-10 pr-4 rounded-2xl text-sm font-bold text-slate-700 transition-all"
+                  />
+                </div>
+              </div>
+
+              {/* Item builder */}
+              <div className="space-y-3">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Default Items *</label>
+                <div className="bg-slate-50 border-2 border-slate-100 rounded-3xl p-5 space-y-4">
+                  <div className="flex gap-3">
+                    <div className="relative flex-1">
+                      <Package size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" />
+                      <select value={subReqSelProduct} onChange={e => setSubReqSelProduct(e.target.value)}
+                        className="w-full h-12 bg-white border-2 border-slate-100 focus:border-indigo-400 outline-none pl-10 pr-8 rounded-2xl text-sm font-bold text-slate-700 appearance-none transition-all"
+                      >
+                        <option value="">Select item…</option>
+                        {subProducts.map(p => <option key={p.id} value={p.id}>{p.name} — ₹{p.pricePerUnit}</option>)}
+                      </select>
+                      <ChevronDown size={14} className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" />
+                    </div>
+                    <input type="number" min="1" value={subReqQty} onChange={e => setSubReqQty(e.target.value)} placeholder="Qty"
+                      className="w-20 h-12 bg-white border-2 border-slate-100 focus:border-indigo-400 outline-none px-3 rounded-2xl text-sm font-bold text-slate-700 text-center transition-all"
+                    />
+                    <button type="button" onClick={addSubReqItem} disabled={!subReqSelProduct || Number(subReqQty) <= 0}
+                      className="h-12 w-12 bg-indigo-600 text-white rounded-2xl flex items-center justify-center disabled:opacity-40 active:scale-95 transition-all shrink-0"
+                    >
+                      <Plus size={18} />
+                    </button>
+                  </div>
+                  {subReqItems.length > 0 && (
+                    <div className="space-y-2 pt-2 border-t border-slate-100">
+                      {subReqItems.map((item, idx) => (
+                        <div key={idx} className="flex items-center justify-between gap-3 bg-white rounded-2xl px-4 py-3 border border-slate-100">
+                          <div>
+                            <p className="text-sm font-black text-slate-900 uppercase">{item.itemName}</p>
+                            <p className="text-[10px] font-bold text-slate-400">Qty {item.qty} · ₹{item.unitPrice}/unit</p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-black text-indigo-600">₹{(item.qty * item.unitPrice).toLocaleString('en-IN')}</span>
+                            <button type="button" onClick={() => setSubReqItems(prev => prev.filter((_, i) => i !== idx))}
+                              className="p-1.5 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-xl transition-all"
+                            >
+                              <X size={14} />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                      <div className="flex items-center justify-between px-1 pt-1">
+                        <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Base Total</span>
+                        <span className="text-sm font-black text-slate-900">₹{subReqItems.reduce((s, i) => s + i.qty * i.unitPrice, 0).toLocaleString('en-IN', { minimumFractionDigits: 0 })}</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Notes */}
+              <div className="space-y-2">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Notes (Optional)</label>
+                <textarea value={subReqNotes} onChange={e => setSubReqNotes(e.target.value)} placeholder="Any special instructions…" rows={2}
+                  className="w-full bg-slate-50 border-2 border-slate-100 focus:border-indigo-400 outline-none px-5 py-4 rounded-2xl text-sm font-medium text-slate-700 resize-none transition-all"
+                />
+              </div>
+
+              <button onClick={handleSubmitSubRequest} disabled={subSaving || !subReqCustomerId || subReqDays.length === 0 || subReqItems.length === 0}
+                className="w-full h-[70px] bg-indigo-700 text-white rounded-[2rem] font-black uppercase tracking-widest text-base flex items-center justify-center gap-3 disabled:opacity-50 active:scale-[0.98] transition-transform shadow-xl shadow-indigo-900/30"
+              >
+                {subSaving ? <Loader2 size={26} className="animate-spin" /> : subSuccess ? <><CheckCircle2 size={26} /> Submitted!</> : <><Star size={24} /> Submit for Approval</>}
+              </button>
+            </div>
+          </div>
+        </div>
+
+      /* ── SUB DELIVERY ──────────────────────────────────────────── */
+      ) : activeMode === 'sub-delivery' && selectedOrder ? (
+        <div className="animate-in slide-in-from-right duration-300 px-1 pt-2">
+          <div className="bg-white rounded-[2.5rem] shadow-2xl overflow-hidden">
+            <header className="px-8 py-7 flex items-center gap-4 bg-indigo-700 text-white">
+              <button onClick={() => { setSelectedOrder(null); setActiveMode('sub-list'); }} className="p-3.5 bg-white/15 rounded-2xl active:bg-white/30 transition-all">
+                <ArrowLeft size={22} />
+              </button>
+              <div className="flex-1 min-w-0">
+                <h3 className="text-2xl font-black uppercase tracking-tight leading-none truncate">{selectedOrder.customerName}</h3>
+                <p className="text-white/60 text-[10px] font-bold uppercase tracking-widest mt-1.5">{selectedOrder.scheduledDate} · {selectedOrder.customerPhone}</p>
+              </div>
+            </header>
+
+            <div className="p-8 space-y-6">
+              {subError && <p className="text-xs font-bold text-rose-600 bg-rose-50 border border-rose-100 rounded-2xl px-4 py-3">{subError}</p>}
+
+              {/* Customer info */}
+              <div className="bg-indigo-50 border border-indigo-100 rounded-[1.5rem] p-5 space-y-2">
+                <div className="flex items-center gap-2">
+                  <MapPin size={14} className="text-indigo-400 shrink-0" />
+                  <p className="text-sm font-bold text-slate-700">{selectedOrder.customerAddress}</p>
+                </div>
+                <div className="flex items-center gap-4">
+                  <span className="text-[10px] font-black text-indigo-600 uppercase bg-indigo-100 px-3 py-1 rounded-full">
+                    <Tag size={9} className="inline mr-1" />{selectedOrder.discountPercent}% Discount
+                  </span>
+                  <span className="text-[10px] font-bold text-slate-400">Base: ₹{selectedOrder.baseTotal.toLocaleString('en-IN', { minimumFractionDigits: 0 })}</span>
+                </div>
+              </div>
+
+              {/* Editable items */}
+              <div className="space-y-3">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Items — adjust qty if needed</label>
+                <div className="space-y-2">
+                  {deliveryItems.map((item, idx) => (
+                    <div key={idx} className="flex items-center gap-3 bg-slate-50 border border-slate-100 rounded-2xl px-5 py-4">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-black text-slate-900 uppercase truncate">{item.itemName}</p>
+                        <p className="text-[10px] font-bold text-indigo-500">₹{item.discountedUnitPrice}/unit</p>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button type="button" onClick={() => setDeliveryItems(prev => prev.map((it, i) => i === idx ? { ...it, qty: Math.max(1, it.qty - 1) } : it))}
+                          className="w-8 h-8 bg-white border-2 border-slate-200 rounded-xl text-slate-600 font-black flex items-center justify-center active:scale-95 transition-all text-sm"
+                        >-</button>
+                        <span className="w-8 text-center text-sm font-black text-slate-900">{item.qty}</span>
+                        <button type="button" onClick={() => setDeliveryItems(prev => prev.map((it, i) => i === idx ? { ...it, qty: it.qty + 1 } : it))}
+                          className="w-8 h-8 bg-white border-2 border-slate-200 rounded-xl text-slate-600 font-black flex items-center justify-center active:scale-95 transition-all text-sm"
+                        >+</button>
+                        <span className="w-16 text-right text-sm font-black text-slate-700">₹{(item.qty * item.discountedUnitPrice).toLocaleString('en-IN', { minimumFractionDigits: 0 })}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex items-center justify-between px-1 pt-1">
+                  <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Discounted Total</span>
+                  <span className="text-base font-black text-indigo-700">₹{deliveryItems.reduce((s, i) => s + i.qty * i.discountedUnitPrice, 0).toLocaleString('en-IN', { minimumFractionDigits: 0 })}</span>
+                </div>
+              </div>
+
+              {/* Notes */}
+              <div className="space-y-2">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Delivery Notes</label>
+                <textarea value={deliveryNotes} onChange={e => setDeliveryNotes(e.target.value)} placeholder="Note any changes or issues…" rows={2}
+                  className="w-full bg-slate-50 border-2 border-slate-100 focus:border-indigo-400 outline-none px-5 py-4 rounded-2xl text-sm font-medium text-slate-700 resize-none transition-all"
+                />
+              </div>
+
+              {/* Action buttons */}
+              <div className="grid grid-cols-2 gap-4">
+                <button onClick={() => handleMarkDelivered('skipped')} disabled={subSaving}
+                  className="h-[60px] bg-slate-100 text-slate-600 rounded-[1.5rem] font-black uppercase tracking-widest text-sm flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98] transition-transform"
+                >
+                  <XCircle size={20} /> Skip
+                </button>
+                <button onClick={() => handleMarkDelivered('delivered')} disabled={subSaving}
+                  className="h-[60px] bg-emerald-600 text-white rounded-[1.5rem] font-black uppercase tracking-widest text-sm flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98] transition-transform shadow-lg shadow-emerald-900/30"
+                >
+                  {subSaving ? <Loader2 size={20} className="animate-spin" /> : subSuccess ? <><CheckCircle2 size={20} /> Done!</> : <><Truck size={20} /> Delivered</>}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
 

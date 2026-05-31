@@ -170,6 +170,36 @@ service cloud.firestore {
       );
     }
 
+    // subscription_customers — crew can create; admin and linked crew can read/update/delete
+    match /subscription_customers/{docId} {
+      allow read: if canRead() ||
+        (isAuthenticated() && resource.data.ownerId == request.auth.uid);
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      allow update: if isDocOwner() || isLinkedToOwner() || (isAuthenticated() && resource.data.ownerId == request.auth.uid);
+      allow delete: if isDocOwner() || (isAuthenticated() && resource.data.ownerId == request.auth.uid);
+    }
+
+    // subscriptions — same crew-writable, admin-queryable pattern
+    match /subscriptions/{docId} {
+      allow read: if canRead() ||
+        (isAuthenticated() && resource.data.ownerId == request.auth.uid);
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      allow update: if isDocOwner() || isLinkedToOwner() || (isAuthenticated() && resource.data.ownerId == request.auth.uid);
+      allow delete: if isDocOwner() || (isAuthenticated() && resource.data.ownerId == request.auth.uid);
+    }
+
+    // subscription_orders — batch-created by admin on approval; crew updates status per delivery
+    match /subscription_orders/{docId} {
+      allow read: if canRead() ||
+        (isAuthenticated() && resource.data.ownerId == request.auth.uid);
+      allow create: if isAuthenticated() && (
+        request.resource.data.userId == request.auth.uid ||
+        request.resource.data.ownerId == request.auth.uid
+      );
+      allow update: if isDocOwner() || isLinkedToOwner() || (isAuthenticated() && resource.data.ownerId == request.auth.uid);
+      allow delete: if isDocOwner() || (isAuthenticated() && resource.data.ownerId == request.auth.uid);
+    }
+
     // Default rule for all other collections
     match /{collection}/{docId} {
       allow read: if canRead();

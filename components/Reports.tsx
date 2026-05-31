@@ -281,7 +281,7 @@ const Reports: React.FC<{ user: User }> = ({ user }) => {
                   </div>
                 </div>
                 <div className="bg-emerald-500 p-8 rounded-[2.5rem] text-white shadow-lg flex flex-col justify-center text-center">
-                  <p className="text-[10px] font-black text-emerald-100 uppercase tracking-widest mb-1">Gross Profitability</p>
+                  <p className="text-[10px] font-black text-emerald-100 uppercase tracking-widest mb-1">Net Revenue Yield %</p>
                   <h4 className="text-4xl font-black tracking-tighter">
                     {analytics.sales.totalRev > 0 ? (((analytics.sales.posNet + analytics.sales.onlineNet) / analytics.sales.totalRev) * 100).toFixed(1) : 0}%
                   </h4>

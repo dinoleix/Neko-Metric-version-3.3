@@ -1,4 +1,6 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase';
@@ -47,7 +49,8 @@ import {
   Utensils,
   Settings,
   AlertTriangle,
-  Lock
+  Lock,
+  Download
 } from 'lucide-react';
 
 type LookbackPeriod = '3M' | '6M' | '1Y' | 'LIFETIME' | 'SPECIFIC';
@@ -180,7 +183,9 @@ const PartnershipModel: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
 
     const storePayrolls = payrolls.filter(p => p.outletId === benchmarkStore && filterByLookback(p));
     const totalVerifiedLabour = storePayrolls.reduce((acc: number, p: MonthlyPayroll) => acc + p.totalAmount, 0);
-    const finalLabour = Math.max(totalVerifiedLabour, mappedLabourCost);
+    // BUG-13 fix: use payroll_entries when available (authoritative); fall back to CSV-classified labour
+    // Math.max was silently discarding the lower source; this makes the selection explicit
+    const finalLabour = totalVerifiedLabour > 0 ? totalVerifiedLabour : mappedLabourCost;
 
     return {
       cogsRatio: (totalCogs / totalSales) * 100,
@@ -270,6 +275,86 @@ const PartnershipModel: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
     if (margin > 0) return 'bg-orange-300 text-orange-950';
     return 'bg-rose-500 text-white animate-pulse';
   };
+
+  const exportSensitivityPDF = useCallback(() => {
+    const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+    const storeName = getOutletName(benchmarkStore);
+    const dateStr = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+
+    // Header
+    doc.setFillColor(238, 242, 255);
+    doc.rect(0, 0, 297, 38, 'F');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(16);
+    doc.setTextColor(49, 46, 129);
+    doc.text('INVESTOR SENSITIVITY MATRIX', 14, 15);
+    doc.setFontSize(8);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(100, 116, 139);
+    doc.text(`Benchmark: ${storeName}  |  Model: ${modelType.replace('_', ' ')}  |  Generated: ${dateStr}`, 14, 22);
+    doc.text(`Projected Sales: ₹${Math.round(projectedSales).toLocaleString()}  |  Projected Rent: ₹${Math.round(projectedRent).toLocaleString()}  |  Initial Investment: ₹${Number(initialInvestment).toLocaleString()}`, 14, 29);
+    doc.text(`COGS: ${benchmarkMetrics.cogsRatio.toFixed(1)}%  |  Labour: ${benchmarkMetrics.labourRatio.toFixed(1)}%  |  Ops: ${benchmarkMetrics.opsRatio.toFixed(1)}%  |  Payback Period: ${simulation.paybackMonths === Infinity ? 'N/A' : simulation.paybackMonths.toFixed(1) + ' months'}`, 14, 36);
+
+    const headers = [
+      'Monthly Sales',
+      `COGS (${benchmarkMetrics.cogsRatio.toFixed(1)}%)`,
+      `Labour (${benchmarkMetrics.labourRatio.toFixed(1)}%)`,
+      'Rent (Fixed)',
+      `Ops (${benchmarkMetrics.opsRatio.toFixed(1)}%)`,
+      'Net Profit',
+      'Partner Payout',
+      'Company Take',
+      'ROI Time',
+    ];
+
+    const rows = simulation.possibilities.map(pos => [
+      `₹${Math.round(pos.sales).toLocaleString()}`,
+      `₹${Math.round(pos.cogs).toLocaleString()}`,
+      `₹${Math.round(pos.labour).toLocaleString()}`,
+      `₹${Math.round(pos.rent).toLocaleString()}`,
+      `₹${Math.round(pos.ops).toLocaleString()}`,
+      `₹${Math.round(pos.netProfit).toLocaleString()}`,
+      `₹${Math.round(pos.partnerTake).toLocaleString()}`,
+      `₹${Math.round(pos.companyTake).toLocaleString()}`,
+      pos.payback ? `${pos.payback.toFixed(1)} mo` : 'No Payback',
+    ]);
+
+    autoTable(doc, {
+      head: [headers],
+      body: rows,
+      startY: 42,
+      styles: { fontSize: 8, cellPadding: 3, font: 'helvetica' },
+      headStyles: { fillColor: [79, 70, 229], textColor: 255, fontStyle: 'bold', halign: 'center' },
+      columnStyles: {
+        0: { fontStyle: 'bold', textColor: [30, 27, 75] },
+        5: { fontStyle: 'bold', textColor: [79, 70, 229], halign: 'center' },
+        6: { fontStyle: 'bold', textColor: [5, 150, 105], halign: 'center' },
+        7: { halign: 'center' },
+        8: { halign: 'center' },
+      },
+      didParseCell: (data) => {
+        if (data.section === 'body') {
+          const pos = simulation.possibilities[data.row.index];
+          const isTarget = pos && Math.abs(pos.sales - projectedSales) < 1;
+          if (isTarget) {
+            data.cell.styles.fillColor = [238, 242, 255];
+            data.cell.styles.fontStyle = 'bold';
+          }
+          if (data.column.index === 8 && pos?.payback === null) {
+            data.cell.styles.textColor = [239, 68, 68];
+          }
+        }
+      },
+      alternateRowStyles: { fillColor: [248, 250, 252] },
+    });
+
+    const finalY = (doc as any).lastAutoTable?.finalY ?? 42;
+    doc.setFontSize(7);
+    doc.setTextColor(148, 163, 184);
+    doc.text('Neko Metric  |  Confidential — For Investor Use Only', 14, finalY + 8);
+
+    doc.save(`Investor-Sensitivity-Matrix-${storeName.replace(/\s+/g, '-')}-${dateStr.replace(/\s/g, '-')}.pdf`);
+  }, [simulation, benchmarkMetrics, benchmarkStore, modelType, projectedSales, projectedRent, initialInvestment]);
 
   return (
     <div className="space-y-12 animate-in fade-in duration-700 pb-20">
@@ -481,11 +566,16 @@ const PartnershipModel: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
                        <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest mt-1">Projections based on {getOutletName(benchmarkStore)} proportional ratios</p>
                      </div>
                    </div>
-                   <div className="flex flex-wrap items-center gap-6 text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                      <span className="flex items-center gap-2"><Utensils size={12} className="text-emerald-500" /> Materials Ratio: {benchmarkMetrics.cogsRatio.toFixed(1)}%</span>
-                      <span className="flex items-center gap-2"><Users size={12} className="text-indigo-500" /> Labour Ratio: {benchmarkMetrics.labourRatio.toFixed(1)}%</span>
-                      <span className="flex items-center gap-2"><Settings size={12} className="text-pink-500" /> Utility Ratio: {benchmarkMetrics.opsRatio.toFixed(1)}%</span>
-                      {benchmarkMetrics.isVerified && <span className="flex items-center gap-2 bg-emerald-50 text-emerald-600 px-3 py-1 rounded-lg border border-emerald-100"><Lock size={12} /> Verified Snapshots</span>}
+                   <div className="flex flex-wrap items-center gap-6">
+                     <div className="flex flex-wrap items-center gap-6 text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                        <span className="flex items-center gap-2"><Utensils size={12} className="text-emerald-500" /> Materials Ratio: {benchmarkMetrics.cogsRatio.toFixed(1)}%</span>
+                        <span className="flex items-center gap-2"><Users size={12} className="text-indigo-500" /> Labour Ratio: {benchmarkMetrics.labourRatio.toFixed(1)}%</span>
+                        <span className="flex items-center gap-2"><Settings size={12} className="text-pink-500" /> Utility Ratio: {benchmarkMetrics.opsRatio.toFixed(1)}%</span>
+                        {benchmarkMetrics.isVerified && <span className="flex items-center gap-2 bg-emerald-50 text-emerald-600 px-3 py-1 rounded-lg border border-emerald-100"><Lock size={12} /> Verified Snapshots</span>}
+                     </div>
+                     <button onClick={exportSensitivityPDF} className="flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-md shadow-indigo-200 transition-all shrink-0">
+                       <Download size={13} /> Export PDF
+                     </button>
                    </div>
                  </div>
                  <div className="overflow-x-auto">

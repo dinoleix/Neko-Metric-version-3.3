@@ -278,7 +278,7 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
           const data = val as { category: SkuCategory; segment?: string };
           const safeId = itemName.trim().toUpperCase().replace(/[^a-zA-Z0-9]/g, '_');
           batch.set(doc(db, 'sku_mappings', `${user.uid}_sku_${safeId}`), {
-            itemName, category: data.category, segment: data.segment || '', userId: user.uid, updatedAt: Date.now()
+            itemName, category: data.category || 'UNMAPPED', segment: data.segment || '', userId: user.uid, updatedAt: Date.now()
           }, { merge: true });
         });
         await batch.commit();
@@ -437,15 +437,19 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
              <ShieldCheck size={14} className="text-indigo-500"/> Multi-layer Menu Normalization Suite
           </p>
         </div>
-        <div className="flex gap-3">
-          <button 
+        <div className="flex flex-col items-end gap-2">
+          {error && (
+            <p className="text-xs font-bold text-rose-600 bg-rose-50 border border-rose-100 rounded-xl px-4 py-2">{error}</p>
+          )}
+          <button
             onClick={() => {
+              setError('');
               if (activeTab === 'purchase' || activeTab === 'segments') handleSavePurchaseMapping();
               else if (activeTab === 'master-menu') handleSaveNormalization();
               else if (activeTab === 'product') handleSaveProductMappings();
               else if (activeTab === 'tiered-costs') handleSaveCosts();
-            }} 
-            disabled={saving || activeTab === 'servings'} 
+            }}
+            disabled={saving || activeTab === 'servings'}
             className={`flex items-center gap-2 px-8 py-4 rounded-2xl font-black uppercase text-[10px] tracking-widest shadow-xl transition-all ${activeTab === 'servings' ? 'hidden' : (success ? 'bg-emerald-500 text-white shadow-emerald-200' : 'bg-indigo-600 text-white shadow-indigo-200 hover:bg-indigo-700')}`}
           >
             {saving ? <Loader2 size={16} className="animate-spin" /> : (success ? <CheckCircle2 size={16} /> : <Save size={16} />)}
