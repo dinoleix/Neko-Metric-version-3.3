@@ -405,24 +405,39 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
   const parseCSV = (text: string) => {
     try {
       setError('');
-      const lines = text.split(/\r?\n/).filter(l => l.trim() !== '');
-      if (lines.length < 2) throw new Error("File must have at least a header and one row of data");
-      const parseLine = (line: string) => {
-        const result = [];
-        let current = '', inQuotes = false;
-        for (let i = 0; i < line.length; i++) {
-          const char = line[i];
-          if (char === '"') inQuotes = !inQuotes;
-          else if (char === ',' && !inQuotes) { result.push(current.trim()); current = ''; }
-          else { current += char; }
-        }
-        result.push(current.trim());
-        return result;
+      // Single-pass RFC-4180 parse: treats commas and newlines as separators only
+      // outside quotes, so quoted fields containing commas or line breaks
+      // (e.g. order instructions like "no boba\n") keep their row intact.
+      const records: string[][] = [];
+      let field = '', record: string[] = [], inQuotes = false;
+      const pushRecord = () => {
+        record.push(field.trim());
+        field = '';
+        if (record.length > 1 || record[0] !== '') records.push(record);
+        record = [];
       };
-      const headerRow = parseLine(lines[0]);
+      for (let i = 0; i < text.length; i++) {
+        const char = text[i];
+        if (inQuotes) {
+          if (char === '"') {
+            if (text[i + 1] === '"') { field += '"'; i++; } // escaped ""
+            else inQuotes = false;
+          } else field += char;
+        } else if (char === '"') {
+          inQuotes = true;
+        } else if (char === ',') {
+          record.push(field.trim()); field = '';
+        } else if (char === '\n' || char === '\r') {
+          if (char === '\r' && text[i + 1] === '\n') i++; // CRLF
+          pushRecord();
+        } else field += char;
+      }
+      if (field !== '' || record.length) pushRecord();
+
+      if (records.length < 2) throw new Error("File must have at least a header and one row of data");
+      const headerRow = records[0];
       setHeaders(headerRow);
-      const rows = lines.slice(1).map(line => {
-        const values = parseLine(line);
+      const rows = records.slice(1).map(values => {
         if (values.every(v => v === '')) return null;
         const obj: any = {};
         headerRow.forEach((h, i) => { obj[h] = values[i] || ''; });
