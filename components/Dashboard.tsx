@@ -242,31 +242,65 @@ const Dashboard: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOw
 
       // Snapshot Rollback Logic
       if (file.type === 'sales') {
-        for (const oId in outletImpacts) {
-          const impact = outletImpacts[oId];
-          const dYear = file.year.includes(' ') ? new Date(file.year).getFullYear().toString() : file.year;
-          const dMonth = (file.month && file.month !== "undefined") ? file.month : MONTH_NAMES[new Date(file.year).getMonth()];
-          const snapId = `${user.uid}_${oId}_${dYear}_${dMonth}`;
-          const snapRef = doc(db, 'sales_snapshots', snapId);
+        // Source of truth: which sales rows still exist after this file's records were deleted above.
+        const remainingSnap = await getDocs(query(collection(db, 'sales_summary'), where('userId', '==', dataOwnerId)));
+        const remainingRecords = remainingSnap.docs.map(d => d.data());
+
+        const dYear = file.year.includes(' ') ? new Date(file.year).getFullYear().toString() : file.year;
+        const dMonth = (file.month && file.month !== "undefined") ? file.month : MONTH_NAMES[new Date(file.year).getMonth()];
+
+        // Clean snapshots for every outlet touched by this file. Fall back to the file's own outlet
+        // so the snapshot is still cleaned even when no raw records were found (e.g. untagged records).
+        const affectedOutlets = new Set<string>(Object.keys(outletImpacts));
+        if (affectedOutlets.size === 0) affectedOutlets.add(file.outletId || 'GLOBAL');
+
+        for (const oId of affectedOutlets) {
+          const snapRef = doc(db, 'sales_snapshots', `${user.uid}_${oId}_${dYear}_${dMonth}`);
           const snapDoc = await getDoc(snapRef);
-          if (snapDoc.exists()) {
-            const data = snapDoc.data();
+          if (!snapDoc.exists()) continue;
+          const data = snapDoc.data();
+
+          // Does any sales row still belong to this outlet + month + year?
+          const sliceHasRecords = remainingRecords.some(r => {
+            if ((r.outletId || 'GLOBAL') !== oId) return false;
+            const parts = String(r.date || '').split('-');
+            return parts.length >= 3 && parts[0] === dYear && MONTH_NAMES[parseInt(parts[1]) - 1] === dMonth;
+          });
+
+          if (!sliceHasRecords) {
+            // No sales rows remain for this slice. Event revenue lives in the same doc, so if it
+            // exists we zero only the sales figures; otherwise remove the snapshot entirely so
+            // nothing lingers on the dashboard.
+            if (Number(data.eventRevenue || 0) > 0) {
+              await updateDoc(snapRef, {
+                posGoodGross: 0, posGoodNet: 0, posGoodTax: 0,
+                onlineGoodGross: 0, onlineGoodNet: 0, onlineGoodTax: 0, onlineGoodComm: 0, onlineGoodAds: 0,
+                settledOrderCount: 0, totalOrderCount: 0, cancelledOrderCount: 0,
+                dailyTrend: new Array(31).fill(0), lastUpdated: Date.now()
+              });
+            } else {
+              await deleteDoc(snapRef);
+            }
+          } else {
+            // Other sales files still feed this slice — roll back just this file's contribution.
+            const impact = outletImpacts[oId];
+            if (!impact) continue;
             const currentTrend = Array.isArray(data.dailyTrend) ? data.dailyTrend : new Array(31).fill(0);
             const newTrend = currentTrend.map((v: number, i: number) => Math.max(0, v - (impact.dayValues[i + 1] || 0)));
-            await updateDoc(snapRef, { 
-              posGoodGross: increment(-impact.posGoodGross), 
-              posGoodNet: increment(-impact.posGoodNet), 
-              posGoodTax: increment(-impact.posGoodTax), 
-              onlineGoodGross: increment(-impact.onlineGoodGross), 
-              onlineGoodNet: increment(-impact.onlineGoodNet), 
-              onlineGoodTax: increment(-impact.onlineGoodTax), 
-              onlineGoodComm: increment(-impact.onlineGoodComm), 
-              onlineGoodAds: increment(-impact.onlineGoodAds), 
-              settledOrderCount: increment(-impact.settledOrderCount), 
-              totalOrderCount: increment(-impact.totalOrderCount), 
-              cancelledOrderCount: increment(-impact.cancelledOrderCount), 
-              dailyTrend: newTrend, 
-              lastUpdated: Date.now() 
+            await updateDoc(snapRef, {
+              posGoodGross: increment(-impact.posGoodGross),
+              posGoodNet: increment(-impact.posGoodNet),
+              posGoodTax: increment(-impact.posGoodTax),
+              onlineGoodGross: increment(-impact.onlineGoodGross),
+              onlineGoodNet: increment(-impact.onlineGoodNet),
+              onlineGoodTax: increment(-impact.onlineGoodTax),
+              onlineGoodComm: increment(-impact.onlineGoodComm),
+              onlineGoodAds: increment(-impact.onlineGoodAds),
+              settledOrderCount: increment(-impact.settledOrderCount),
+              totalOrderCount: increment(-impact.totalOrderCount),
+              cancelledOrderCount: increment(-impact.cancelledOrderCount),
+              dailyTrend: newTrend,
+              lastUpdated: Date.now()
             });
           }
         }
