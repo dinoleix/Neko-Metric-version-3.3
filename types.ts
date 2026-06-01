@@ -511,6 +511,12 @@ export interface CogsAdjustment {
   drinkServingsAdjustment?: number;
   foodIngredientsAdjustment?: number;
   drinkIngredientsAdjustment?: number;
+  // Opening stock carried over from the previous month's closing (all four buckets).
+  // Optional + defaults to 0, so untouched records behave exactly as before.
+  foodIngredientsOpening?: number;
+  drinkIngredientsOpening?: number;
+  foodServingsOpening?: number;
+  drinkServingsOpening?: number;
   lastUpdated: number;
 }
 

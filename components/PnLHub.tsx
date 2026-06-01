@@ -100,8 +100,9 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
   
   // Stock Adjustment States (Split into buckets)
   const [isStockModalOpen, setIsStockModalOpen] = useState(false);
-  const [editingStock, setEditingStock] = useState<Record<string, { food: number, drinks: number, foodIngredients: number, drinkIngredients: number }>>({});
+  const [editingStock, setEditingStock] = useState<Record<string, { food: number, drinks: number, foodIngredients: number, drinkIngredients: number, foodIngredientsOpening: number, drinkIngredientsOpening: number, foodServingsOpening: number, drinkServingsOpening: number }>>({});
   const [isSavingStock, setIsSavingStock] = useState(false);
+  const [isCarrying, setIsCarrying] = useState(false);
   const [isFreezing, setIsFreezing] = useState(false);
 
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -203,14 +204,18 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
       ? availableOutlets.map(o => o.id)
       : selectedOutlets;
     
-    const initialValues: Record<string, { food: number, drinks: number, foodIngredients: number, drinkIngredients: number }> = {};
+    const initialValues: Record<string, { food: number, drinks: number, foodIngredients: number, drinkIngredients: number, foodIngredientsOpening: number, drinkIngredientsOpening: number, foodServingsOpening: number, drinkServingsOpening: number }> = {};
     currentFilterOutlets.forEach(oId => {
       const existing = adjustments.find(a => a.outletId === oId);
       initialValues[oId] = {
         food: existing?.foodServingsAdjustment || 0,
         drinks: existing?.drinkServingsAdjustment || 0,
         foodIngredients: existing?.foodIngredientsAdjustment || 0,
-        drinkIngredients: existing?.drinkIngredientsAdjustment || 0
+        drinkIngredients: existing?.drinkIngredientsAdjustment || 0,
+        foodIngredientsOpening: existing?.foodIngredientsOpening || 0,
+        drinkIngredientsOpening: existing?.drinkIngredientsOpening || 0,
+        foodServingsOpening: existing?.foodServingsOpening || 0,
+        drinkServingsOpening: existing?.drinkServingsOpening || 0
       };
     });
     setEditingStock(initialValues);
@@ -225,7 +230,7 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
       for (const outletId in editingStock) {
         const adjId = `${user.uid}_${outletId}_${selectedYear}_${selectedMonth}`;
         const adjRef = doc(db, 'cogs_adjustments', adjId);
-        const { food, drinks, foodIngredients, drinkIngredients } = editingStock[outletId];
+        const { food, drinks, foodIngredients, drinkIngredients, foodIngredientsOpening, drinkIngredientsOpening, foodServingsOpening, drinkServingsOpening } = editingStock[outletId];
         batch.set(adjRef, {
           userId: user.uid,
           outletId,
@@ -235,6 +240,10 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
           drinkServingsAdjustment: drinks,
           foodIngredientsAdjustment: foodIngredients,
           drinkIngredientsAdjustment: drinkIngredients,
+          foodIngredientsOpening,
+          drinkIngredientsOpening,
+          foodServingsOpening,
+          drinkServingsOpening,
           adjustmentAmount: food + drinks + foodIngredients + drinkIngredients, // Keep total for legacy dashboard support
           lastUpdated: Date.now()
         }, { merge: true });
@@ -247,6 +256,51 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
       alert("Failed to save closing stock.");
     } finally {
       setIsSavingStock(false);
+    }
+  };
+
+  // Pull the previous month's CLOSING ingredient stock into this month's OPENING fields.
+  // Ingredients only (packaging flows in via purchase files); values stay editable before saving.
+  const handleCarryForward = async () => {
+    if (readOnly) return;
+    setIsCarrying(true);
+    try {
+      const curIdx = MONTH_NAMES.indexOf(selectedMonth);
+      const prevIdx = (curIdx + 11) % 12;
+      const prevMonth = MONTH_NAMES[prevIdx];
+      const prevYear = curIdx === 0 ? (parseInt(selectedYear) - 1).toString() : selectedYear;
+
+      const prevSnap = await getDocs(query(
+        collection(db, 'cogs_adjustments'),
+        where('userId', '==', dataOwnerId),
+        where('year', '==', prevYear),
+        where('month', '==', prevMonth)
+      ));
+      const prevAdjustments = prevSnap.docs.map(d => d.data() as CogsAdjustment);
+
+      let foundAny = false;
+      const next = { ...editingStock };
+      Object.keys(next).forEach(oId => {
+        const prior = prevAdjustments.find(a => a.outletId === oId);
+        if (prior) foundAny = true;
+        next[oId] = {
+          ...next[oId],
+          foodIngredientsOpening: prior?.foodIngredientsAdjustment || 0,
+          drinkIngredientsOpening: prior?.drinkIngredientsAdjustment || 0,
+          foodServingsOpening: prior?.foodServingsAdjustment || 0,
+          drinkServingsOpening: prior?.drinkServingsAdjustment || 0
+        };
+      });
+      setEditingStock(next);
+
+      if (!foundAny) {
+        alert(`No closing stock found for ${prevMonth} ${prevYear}. Opening set to 0 — adjust manually if needed.`);
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Failed to pull opening stock from last month.");
+    } finally {
+      setIsCarrying(false);
     }
   };
 
@@ -314,7 +368,18 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
     const foodServingsAdj = adjustments.filter(a => currentFilterOutlets.includes(a.outletId)).reduce((acc, a) => acc + (a.foodServingsAdjustment || 0), 0);
     const drinkServingsAdj = adjustments.filter(a => currentFilterOutlets.includes(a.outletId)).reduce((acc, a) => acc + (a.drinkServingsAdjustment || 0), 0);
 
-    const adjustedCOGS = Math.max(0, rawCogs - cogsAdj);
+    // Opening stock carried over from prior month's closing (all four buckets).
+    // Defaults to 0, so months without an opening value behave identically to before.
+    const foodIngredientsOpening = adjustments.filter(a => currentFilterOutlets.includes(a.outletId)).reduce((acc, a) => acc + (a.foodIngredientsOpening || 0), 0);
+    const drinkIngredientsOpening = adjustments.filter(a => currentFilterOutlets.includes(a.outletId)).reduce((acc, a) => acc + (a.drinkIngredientsOpening || 0), 0);
+    const foodServingsOpening = adjustments.filter(a => currentFilterOutlets.includes(a.outletId)).reduce((acc, a) => acc + (a.foodServingsOpening || 0), 0);
+    const drinkServingsOpening = adjustments.filter(a => currentFilterOutlets.includes(a.outletId)).reduce((acc, a) => acc + (a.drinkServingsOpening || 0), 0);
+    const openingIngredients = foodIngredientsOpening + drinkIngredientsOpening;
+    const openingServings = foodServingsOpening + drinkServingsOpening;
+    const openingStock = openingIngredients + openingServings;
+
+    // Consumption = Opening + Purchases − Closing
+    const adjustedCOGS = Math.max(0, rawCogs + openingStock - cogsAdj);
 
     // 3. FIXED BURDEN
     let fixedPayroll = 0;
@@ -364,6 +429,8 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
       grossGoodRevenue, posGoodGross, onlineGoodGross, eventRevenue, posGoodTax, onlineGoodTax, onlineGoodComm, onlineGoodAds,
       posGoodNet, onlineGoodNet, netCashInflow, adjustedCOGS, cogsAdj, rawCogs, contributionMargin,
       foodIngredientsAdj, drinkIngredientsAdj, foodServingsAdj, drinkServingsAdj,
+      openingIngredients, foodIngredientsOpening, drinkIngredientsOpening,
+      openingServings, foodServingsOpening, drinkServingsOpening, openingStock,
       mappedOps, csvVariableLabour, fixedPayroll, totalPayroll, totalRent, unmappedExp, operatingBurn,
       netProfit, payrollValidated, isMonthFullyLocked,
       margins: {
@@ -419,7 +486,9 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
                 ? oAdj.adjustmentAmount
                 : (oAdj.foodIngredientsAdjustment || 0) + (oAdj.drinkIngredientsAdjustment || 0) + (oAdj.foodServingsAdjustment || 0) + (oAdj.drinkServingsAdjustment || 0))
             : 0;
-          const c = Math.max(0, rawC - adjTotal);
+          // Opening stock carried into this month adds to consumption: Opening + Purchases − Closing
+          const openingTotal = oAdj ? (oAdj.foodIngredientsOpening || 0) + (oAdj.drinkIngredientsOpening || 0) + (oAdj.foodServingsOpening || 0) + (oAdj.drinkServingsOpening || 0) : 0;
+          const c = Math.max(0, rawC + openingTotal - adjTotal);
           const rent = oRent?.currentRent || 0;
           // BUG-02 fix: use ?? not || so a payroll record with totalAmount=0 is respected; also guard e.currentSalary
           const labour = rawL + (oPay != null ? oPay.totalAmount : employees.filter(e => e.outletId === oId).reduce((s, e) => s + (e.currentSalary || 0), 0));
@@ -658,6 +727,12 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
                             </div>
                             <div className="space-y-2 px-6">
                                <div className="flex justify-between text-sm font-medium text-slate-500 italic"><span>Raw Material Inflow</span><span>₹{pnlData.rawCogs.toLocaleString()}</span></div>
+                               {pnlData.openingIngredients > 0 && (
+                                 <div className="flex justify-between text-sm font-black text-rose-600"><span>(+) Opening Stock (Ingredients)</span><span>+₹{pnlData.openingIngredients.toLocaleString()}</span></div>
+                               )}
+                               {pnlData.openingServings > 0 && (
+                                 <div className="flex justify-between text-sm font-black text-rose-600"><span>(+) Opening Stock (Packaging)</span><span>+₹{pnlData.openingServings.toLocaleString()}</span></div>
+                               )}
                                <div className="flex justify-between text-sm font-black text-emerald-600"><span>(-) Unused Stock Adjustment</span><span>-₹{pnlData.cogsAdj.toLocaleString()}</span></div>
                                <div className="pl-4 space-y-1 opacity-60">
                                   <div className="flex justify-between text-[10px] font-bold uppercase"><span>Food Ingredients</span><span>-₹{pnlData.foodIngredientsAdj.toLocaleString()}</span></div>
@@ -857,6 +932,9 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
                  <button onClick={() => setIsStockModalOpen(false)} className="p-2 bg-slate-50 rounded-xl text-slate-400 hover:text-slate-900"><X size={20}/></button>
               </header>
               <div className="p-8 space-y-8 max-h-[50vh] overflow-y-auto custom-scrollbar">
+                 <button onClick={handleCarryForward} disabled={isCarrying} className="w-full py-3.5 bg-amber-50 border border-amber-200 text-amber-700 rounded-2xl font-black uppercase text-[10px] tracking-widest flex items-center justify-center gap-2 hover:bg-amber-100 transition-all disabled:opacity-50 active:scale-[0.99]">
+                    {isCarrying ? <Loader2 size={14} className="animate-spin" /> : <ArrowDownCircle size={14} />} Pull Opening from Last Month's Closing
+                 </button>
                  <div className="space-y-6">
                     {Object.keys(editingStock).map(oId => (
                        <div key={oId} className="p-6 bg-slate-50 border border-slate-100 rounded-[2.5rem] space-y-4">
@@ -898,13 +976,59 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
                              </div>
                              <div className="space-y-1.5">
                                 <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5 px-1"><Grape size={10} className="text-rose-500" /> Drink Packaging (₹)</label>
-                                <input 
-                                  type="number" 
-                                  value={editingStock[oId].drinks} 
-                                  onChange={(e) => setEditingStock({...editingStock, [oId]: { ...editingStock[oId], drinks: parseFloat(e.target.value) || 0 }})} 
-                                  className="w-full bg-white border border-slate-200 px-4 py-3 rounded-xl font-black text-indigo-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-all shadow-sm" 
+                                <input
+                                  type="number"
+                                  value={editingStock[oId].drinks}
+                                  onChange={(e) => setEditingStock({...editingStock, [oId]: { ...editingStock[oId], drinks: parseFloat(e.target.value) || 0 }})}
+                                  className="w-full bg-white border border-slate-200 px-4 py-3 rounded-xl font-black text-indigo-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-all shadow-sm"
                                   placeholder="0.00"
                                 />
+                             </div>
+                          </div>
+
+                          <div className="pt-4 mt-2 border-t border-dashed border-slate-200 space-y-3">
+                             <p className="text-[9px] font-black text-amber-600 uppercase tracking-widest px-1">Opening Stock — carried from last month</p>
+                             <div className="grid grid-cols-2 gap-4">
+                                <div className="space-y-1.5">
+                                   <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5 px-1"><Utensils size={10} className="text-emerald-500" /> Food Ingredients Opening (₹)</label>
+                                   <input
+                                     type="number"
+                                     value={editingStock[oId].foodIngredientsOpening}
+                                     onChange={(e) => setEditingStock({...editingStock, [oId]: { ...editingStock[oId], foodIngredientsOpening: parseFloat(e.target.value) || 0 }})}
+                                     className="w-full bg-amber-50 border border-amber-200 px-4 py-3 rounded-xl font-black text-amber-700 outline-none focus:ring-2 focus:ring-amber-400 transition-all shadow-sm"
+                                     placeholder="0.00"
+                                   />
+                                </div>
+                                <div className="space-y-1.5">
+                                   <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5 px-1"><Coffee size={10} className="text-indigo-500" /> Drink Ingredients Opening (₹)</label>
+                                   <input
+                                     type="number"
+                                     value={editingStock[oId].drinkIngredientsOpening}
+                                     onChange={(e) => setEditingStock({...editingStock, [oId]: { ...editingStock[oId], drinkIngredientsOpening: parseFloat(e.target.value) || 0 }})}
+                                     className="w-full bg-amber-50 border border-amber-200 px-4 py-3 rounded-xl font-black text-amber-700 outline-none focus:ring-2 focus:ring-amber-400 transition-all shadow-sm"
+                                     placeholder="0.00"
+                                   />
+                                </div>
+                                <div className="space-y-1.5">
+                                   <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5 px-1"><Box size={10} className="text-amber-500" /> Food Packaging Opening (₹)</label>
+                                   <input
+                                     type="number"
+                                     value={editingStock[oId].foodServingsOpening}
+                                     onChange={(e) => setEditingStock({...editingStock, [oId]: { ...editingStock[oId], foodServingsOpening: parseFloat(e.target.value) || 0 }})}
+                                     className="w-full bg-amber-50 border border-amber-200 px-4 py-3 rounded-xl font-black text-amber-700 outline-none focus:ring-2 focus:ring-amber-400 transition-all shadow-sm"
+                                     placeholder="0.00"
+                                   />
+                                </div>
+                                <div className="space-y-1.5">
+                                   <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5 px-1"><Grape size={10} className="text-rose-500" /> Drink Packaging Opening (₹)</label>
+                                   <input
+                                     type="number"
+                                     value={editingStock[oId].drinkServingsOpening}
+                                     onChange={(e) => setEditingStock({...editingStock, [oId]: { ...editingStock[oId], drinkServingsOpening: parseFloat(e.target.value) || 0 }})}
+                                     className="w-full bg-amber-50 border border-amber-200 px-4 py-3 rounded-xl font-black text-amber-700 outline-none focus:ring-2 focus:ring-amber-400 transition-all shadow-sm"
+                                     placeholder="0.00"
+                                   />
+                                </div>
                              </div>
                           </div>
                        </div>
