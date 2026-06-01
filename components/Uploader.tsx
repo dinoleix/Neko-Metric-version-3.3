@@ -534,7 +534,7 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
         });
       }
       onSuccess();
-    } catch (err) { alert("Manual post failed."); } finally { setIsSaving(false); }
+    } catch (err: any) { console.error("Manual post failed:", err); alert(`Manual post failed: ${err?.code || err?.message || err}`); } finally { setIsSaving(false); }
   };
 
   const handlePostEvent = async () => {

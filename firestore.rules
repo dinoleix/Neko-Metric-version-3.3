@@ -202,7 +202,9 @@ service cloud.firestore {
 
     // Default rule for all other collections
     match /{collection}/{docId} {
-      allow read: if canRead();
+      // resource == null allows getDoc() on a not-yet-existing doc (no data to leak);
+      // without it, canRead() dereferences resource.data.userId on null and denies.
+      allow read: if resource == null || canRead();
       allow write: if isAuthenticated() && (
         (resource == null || resource.data.userId == request.auth.uid) &&
         (request.resource == null || request.resource.data.userId == request.auth.uid)
