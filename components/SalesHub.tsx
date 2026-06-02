@@ -410,6 +410,7 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
                <div className="mt-4 pt-4 border-t border-slate-50 space-y-2">
                  <div className="flex justify-between items-center text-[9px] font-black uppercase tracking-tight"><span className="text-slate-400 flex items-center gap-1"><ArrowDownRight size={10} className="text-orange-400" /> PLATFORM TAX</span><span className="text-slate-600">₹{analytics.onlineGoodTax.toLocaleString()}</span></div>
                  <div className="flex justify-between items-center text-[9px] font-black uppercase tracking-tight"><span className="text-slate-400 flex items-center gap-1"><ArrowDownRight size={10} className="text-orange-400" /> COMMISSIONS</span><span className="text-slate-600">₹{analytics.onlineGoodComm.toLocaleString()}</span></div>
+                 <div className="flex justify-between items-center text-[9px] font-black uppercase tracking-tight"><span className="text-slate-400 flex items-center gap-1"><ArrowDownRight size={10} className="text-orange-400" /> AD SPEND</span><span className="text-slate-600">₹{analytics.onlineGoodAds.toLocaleString()}</span></div>
                </div>
             </div>
             <div className="bg-slate-900 p-8 rounded-[2.5rem] text-white shadow-xl flex flex-col justify-between min-h-[180px] relative overflow-hidden">

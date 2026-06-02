@@ -389,7 +389,10 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
     const t = parseFloat(taxAmount) || 0;
     const c = parseFloat(platformComm) || 0;
     const a = parseFloat(adSpend) || 0;
-    return Math.max(0, s - t - c - a);
+    // No max(0) clamp: an ad-only adjustment (Gross left blank) must be able to
+    // produce a negative net delta so the ad spend actually reduces onlineGoodNet
+    // (and therefore the P&L) when layered onto a month already loaded via CSV.
+    return s - t - c - a;
   }, [netSales, taxAmount, platformComm, adSpend]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1327,7 +1330,7 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
                     <div className="absolute top-0 right-0 p-8 opacity-10 pointer-events-none"><Calculator size={150} /></div>
                     <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">Expected Payout</p>
                     <h4 className="text-4xl font-black text-emerald-400 tracking-tighter">₹{expectedPayout.toLocaleString()}</h4>
-                    <button onClick={handlePostOnlineManual} disabled={isSaving || !manualOutletId || !netSales} className={`w-full py-5 rounded-2xl font-black uppercase text-xs tracking-widest flex items-center justify-center gap-2 transition-all shadow-xl disabled:opacity-50 ${existingManualRecord ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-indigo-600 hover:bg-indigo-700'}`}>{isSaving ? <Loader2 size={18} className="animate-spin" /> : <Save size={18} />} {existingManualRecord ? 'Update' : 'Post'} Ledger</button>
+                    <button onClick={handlePostOnlineManual} disabled={isSaving || !manualOutletId || (!netSales && !taxAmount && !platformComm && !adSpend)} className={`w-full py-5 rounded-2xl font-black uppercase text-xs tracking-widest flex items-center justify-center gap-2 transition-all shadow-xl disabled:opacity-50 ${existingManualRecord ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-indigo-600 hover:bg-indigo-700'}`}>{isSaving ? <Loader2 size={18} className="animate-spin" /> : <Save size={18} />} {existingManualRecord ? 'Update' : 'Post'} Ledger</button>
                  </div>
               </div>
            </div>

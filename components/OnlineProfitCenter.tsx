@@ -673,6 +673,7 @@ const OnlineProfitCenter: React.FC<{ user: User; dataOwnerId: string }> = ({ use
                 { label: 'Net Sales (After Tax)', value: analytics.netSales, color: 'bg-indigo-500', width: `${(analytics.netSales / analytics.metrics.gross) * 100}%` },
                 { label: 'After Commission', value: analytics.netSales - analytics.metrics.commission, color: 'bg-indigo-400', width: `${((analytics.netSales - analytics.metrics.commission) / analytics.metrics.gross) * 100}%` },
                 { label: 'After GST & TDS', value: analytics.netSales - analytics.metrics.commission - analytics.metrics.gstOnComm - analytics.metrics.tds, color: 'bg-indigo-300', width: `${((analytics.netSales - analytics.metrics.commission - analytics.metrics.gstOnComm - analytics.metrics.tds) / analytics.metrics.gross) * 100}%` },
+                { label: 'After Ad Spend', value: analytics.netSales - analytics.metrics.commission - analytics.metrics.gstOnComm - analytics.metrics.tds - analytics.metrics.ads, color: 'bg-indigo-200', width: `${((analytics.netSales - analytics.metrics.commission - analytics.metrics.gstOnComm - analytics.metrics.tds - analytics.metrics.ads) / analytics.metrics.gross) * 100}%` },
                 { label: 'Realized Payout (Final)', value: analytics.netPayout, color: 'bg-emerald-500', width: `${(analytics.netPayout / analytics.metrics.gross) * 100}%` }
               ].map((step, i) => (
                 <div key={i} className="space-y-2">
