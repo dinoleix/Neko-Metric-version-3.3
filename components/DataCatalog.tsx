@@ -154,12 +154,20 @@ const DataCatalog: React.FC<{ user: User; dataOwnerId: string }> = ({ user, data
       const itemCosts = costsArr;
       const skuMappings = skuArr;
 
+      // Month range applied server-side so each slice only reads its own records
+      // (previously every slice fetched the full history of all six collections).
+      // online_order_details is excluded: its records mix orderDate/date fields,
+      // so a server-side range would silently drop rows — the client-side month
+      // filter below still handles it.
+      const mm = String(MONTHS.indexOf(month) + 1).padStart(2, '0');
+      const dateRange = [where('date', '>=', `${year}-${mm}-01`), where('date', '<=', `${year}-${mm}-31`)];
+
       const [sSnap, eSnap, pSnap, iSnap, evSnap, oSnap] = await Promise.all([
-        getDocs(query(collection(db, 'sales_summary'), ...constraints)),
-        getDocs(query(collection(db, 'expenses'), ...constraints)),
-        getDocs(query(collection(db, 'purchases'), ...constraints)),
-        getDocs(query(collection(db, 'item_sales'), ...constraints)),
-        getDocs(query(collection(db, 'events'), ...constraints)),
+        getDocs(query(collection(db, 'sales_summary'), ...constraints, ...dateRange)),
+        getDocs(query(collection(db, 'expenses'), ...constraints, ...dateRange)),
+        getDocs(query(collection(db, 'purchases'), ...constraints, ...dateRange)),
+        getDocs(query(collection(db, 'item_sales'), ...constraints, ...dateRange)),
+        getDocs(query(collection(db, 'events'), ...constraints, ...dateRange)),
         getDocs(query(collection(db, 'online_order_details'), ...constraints))
       ]);
 

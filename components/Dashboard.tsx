@@ -242,12 +242,20 @@ const Dashboard: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOw
 
       // Snapshot Rollback Logic
       if (file.type === 'sales') {
-        // Source of truth: which sales rows still exist after this file's records were deleted above.
-        const remainingSnap = await getDocs(query(collection(db, 'sales_summary'), where('userId', '==', dataOwnerId)));
-        const remainingRecords = remainingSnap.docs.map(d => d.data());
-
         const dYear = file.year.includes(' ') ? new Date(file.year).getFullYear().toString() : file.year;
         const dMonth = (file.month && file.month !== "undefined") ? file.month : MONTH_NAMES[new Date(file.year).getMonth()];
+
+        // Source of truth: which sales rows still exist after this file's records were deleted above.
+        // Only this file's month matters, so scope the read server-side when the month is parseable.
+        const monthIdx = MONTH_NAMES.indexOf(dMonth);
+        const monthScope = monthIdx >= 0
+          ? [
+              where('date', '>=', `${dYear}-${String(monthIdx + 1).padStart(2, '0')}-01`),
+              where('date', '<=', `${dYear}-${String(monthIdx + 1).padStart(2, '0')}-31`)
+            ]
+          : [];
+        const remainingSnap = await getDocs(query(collection(db, 'sales_summary'), where('userId', '==', dataOwnerId), ...monthScope));
+        const remainingRecords = remainingSnap.docs.map(d => d.data());
 
         // Clean snapshots for every outlet touched by this file. Fall back to the file's own outlet
         // so the snapshot is still cleaned even when no raw records were found (e.g. untagged records).
