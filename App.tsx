@@ -31,8 +31,7 @@ import VendorManagement from './components/VendorManagement';
 import CashFlowTracker from './components/CashFlowTracker';
 import HolidayRegistry from './components/HolidayRegistry';
 import OnlineProfitCenter from './components/OnlineProfitCenter';
-import SubscriptionHub from './components/SubscriptionHub';
-import { 
+import {
   LayoutDashboard, 
   LogOut, 
   UploadCloud, 
@@ -64,11 +63,10 @@ import {
   Wallet,
   Clock3,
   Banknote,
-  Store,
-  Star
+  Store
 } from 'lucide-react';
 
-type AppTab = 'exec-dashboard' | 'dashboard' | 'sales' | 'raw-verify' | 'items' | 'pnl' | 'cash-flow' | 'pnl-insights' | 'waste' | 'waste-v2' | 'integrity' | 'team' | 'rentals' | 'catalog' | 'upload' | 'category-settings' | 'expenses' | 'partnership' | 'crew-terminal' | 'users' | 'bank-management' | 'bank-audit' | 'holidays' | 'online-profit' | 'vendor-management' | 'subscription-hub';
+type AppTab = 'exec-dashboard' | 'dashboard' | 'sales' | 'raw-verify' | 'items' | 'pnl' | 'cash-flow' | 'pnl-insights' | 'waste' | 'waste-v2' | 'integrity' | 'team' | 'rentals' | 'catalog' | 'upload' | 'category-settings' | 'expenses' | 'partnership' | 'crew-terminal' | 'users' | 'bank-management' | 'bank-audit' | 'holidays' | 'online-profit' | 'vendor-management';
 
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
@@ -332,7 +330,6 @@ const App: React.FC = () => {
           <NavItem tab="expenses" icon={<Receipt size={18} />} label="Expense Hub" />
           <NavItem tab="items" icon={<ShoppingBag size={18} />} label="Item Insights" />
           <NavItem tab="online-profit" icon={<Globe size={18} />} label="Online Profit Center" />
-          {!isReadOnly && <NavItem tab="subscription-hub" icon={<Star size={18} />} label="Subscriptions" />}
           <NavItem tab="waste-v2" icon={<Zap size={18} />} label="Waste Radar" />
           <NavItem tab="pnl" icon={<PieChart size={18} />} label="P&L Command" />
           <NavItem tab="cash-flow" icon={<Banknote size={18} />} label="Cash Reality" />
@@ -425,7 +422,6 @@ const App: React.FC = () => {
           {activeTab === 'bank-management' && !isReadOnly && <BankManagement user={user} dataOwnerId={dataOwnerId} />}
           {activeTab === 'bank-audit' && !isReadOnly && <BankReconciliation user={user} dataOwnerId={dataOwnerId} />}
           {activeTab === 'vendor-management' && !isReadOnly && <VendorManagement user={user} dataOwnerId={dataOwnerId} />}
-          {activeTab === 'subscription-hub' && !isReadOnly && <SubscriptionHub user={user} dataOwnerId={dataOwnerId} />}
           {activeTab === 'upload' && !isReadOnly && <Uploader user={user} dataOwnerId={dataOwnerId} onSuccess={() => setActiveTab('exec-dashboard')} />}
           {activeTab === 'crew-terminal' && <CrewTerminal user={user} profile={userProfile} />}
           {activeTab === 'users' && isAdmin && <UserManagement user={user} />}

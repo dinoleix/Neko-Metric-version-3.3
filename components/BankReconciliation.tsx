@@ -24,6 +24,7 @@ import {
   BankAccount,
   PurchaseRecord,
   DailySalesLog,
+  SalesSummaryRecord,
   RECONCILIATION_CATEGORIES,
   MONTH_NAMES,
   YEAR_OPTIONS,
@@ -62,10 +63,42 @@ import {
   MessageSquare,
   AlignJustify,
   BarChart2,
-  List
+  List,
+  Wallet,
+  CreditCard,
+  Smartphone
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, PieChart, Pie, Cell, Legend } from 'recharts';
+
+// ─── Split-tender payment-mode parsing ──────────────────────────────────────
+// POS `paymentMode` can be a split-tender string like "Cash(500), UPI(46)" where the
+// embedded amounts sum to the order's net payable. Parse per-channel amounts out of it
+// rather than attributing the whole order to a single channel.
+type Channel = 'cash' | 'upi' | 'card' | 'other';
+
+const normalizeChannel = (label: string): Channel => {
+  const l = label.toLowerCase();
+  if (l.includes('cash')) return 'cash';
+  if (l.includes('upi')) return 'upi';
+  if (l.includes('card') || l.includes('credit') || l.includes('debit')) return 'card';
+  return 'other';
+};
+
+const parseTender = (paymentMode: string, fallbackAmount: number): Record<Channel, number> => {
+  const out: Record<Channel, number> = { cash: 0, upi: 0, card: 0, other: 0 };
+  const mode = paymentMode || '';
+  const re = /([A-Za-z][A-Za-z ]*?)\s*\(\s*([\d,.]+)\s*\)/g;
+  let matched = false;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(mode)) !== null) {
+    const amt = parseFloat(m[2].replace(/,/g, ''));
+    if (!isNaN(amt)) { out[normalizeChannel(m[1])] += amt; matched = true; }
+  }
+  // Plain string with no "(amount)" breakdown → attribute the order's amount to that channel.
+  if (!matched) out[normalizeChannel(mode)] += fallbackAmount || 0;
+  return out;
+};
 
 const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
   const [selectedMonth, setSelectedMonth] = useState(MONTH_NAMES[new Date().getMonth()]);
@@ -94,9 +127,11 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
   const [isBulkUpdating, setIsBulkUpdating] = useState(false);
   const [pushingId, setPushingId] = useState<string | null>(null);
   const [dailySalesLogs, setDailySalesLogs] = useState<DailySalesLog[]>([]);
-  const [activeView, setActiveView] = useState<'mapping' | 'delta' | 'analytics'>('mapping');
+  const [salesSummary, setSalesSummary] = useState<SalesSummaryRecord[]>([]);
+  const [activeView, setActiveView] = useState<'mapping' | 'delta' | 'channel-delta' | 'analytics'>('mapping');
   const [analyticsView, setAnalyticsView] = useState<'list' | 'hbar' | 'vbar' | 'donut'>('hbar');
   const [deltaOutletFilter, setDeltaOutletFilter] = useState<string>('all');
+  const [channelOutletFilter, setChannelOutletFilter] = useState<string>('all');
   const [commentingId, setCommentingId] = useState<string | null>(null);
   const [commentDraft, setCommentDraft] = useState<string>('');
 
@@ -151,6 +186,12 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
         });
         setDailySalesLogs(logs);
       } catch { setDailySalesLogs([]); }
+
+      // 5. Fetch POS sales summary (source of per-channel CSV figures via paymentMode)
+      try {
+        const salesSnap = await getDocs(query(collection(db, 'sales_summary'), where('userId', '==', dataOwnerId)));
+        setSalesSummary(salesSnap.docs.map(d => ({ id: d.id, ...d.data() } as SalesSummaryRecord)));
+      } catch { setSalesSummary([]); }
 
     } catch (err) {
       console.error("Reconciliation fetch error:", err);
@@ -251,6 +292,65 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
     const crewDates = Array.from(new Set([...Object.keys(deltaCardByDate), ...Object.keys(deltaUpiByDate)]));
     return Array.from(new Set([...creditDates, ...crewDates])).sort().reverse();
   }, [deltaCredits, deltaCardByDate, deltaUpiByDate]);
+
+  // ── Channel Delta: POS CSV (sales_summary) vs Crew (daily_sales_logs) per channel ──
+  const channelDelta = useMemo(() => {
+    const monthIdx = (MONTH_NAMES.indexOf(selectedMonth) + 1).toString().padStart(2, '0');
+    const datePrefix = `${selectedYear}-${monthIdx}`;
+
+    // CSV side: counter-only orders (exclude Zomato/Swiggy), parse split-tender amounts.
+    const csvByDate: Record<string, Record<Channel, number>> = {};
+    const unmapped: Record<string, number> = {}; // raw paymentMode → amount, for the 'other' bucket
+    salesSummary
+      .filter(r =>
+        (r.date || '').startsWith(datePrefix) &&
+        (!r.onlinePlatform || r.onlinePlatform.toLowerCase() === 'none') &&
+        (channelOutletFilter === 'all' || r.outletId === channelOutletFilter)
+      )
+      .forEach(r => {
+        const t = parseTender(r.paymentMode, r.revenue);
+        if (!csvByDate[r.date]) csvByDate[r.date] = { cash: 0, upi: 0, card: 0, other: 0 };
+        (['cash', 'upi', 'card', 'other'] as Channel[]).forEach(c => { csvByDate[r.date][c] += t[c]; });
+        if (t.other > 0) unmapped[r.paymentMode || '(blank)'] = (unmapped[r.paymentMode || '(blank)'] || 0) + t.other;
+      });
+
+    // Crew side: daily_sales_logs, same month/outlet.
+    const crewByDate: Record<string, { cash: number; upi: number; card: number }> = {};
+    dailySalesLogs
+      .filter(l => (l.date || '').startsWith(datePrefix) && (channelOutletFilter === 'all' || l.outletId === channelOutletFilter))
+      .forEach(l => {
+        if (!crewByDate[l.date]) crewByDate[l.date] = { cash: 0, upi: 0, card: 0 };
+        crewByDate[l.date].cash += Number(l.cash || 0);
+        crewByDate[l.date].upi += Number(l.upi || 0);
+        crewByDate[l.date].card += Number(l.card || 0);
+      });
+
+    const statusOf = (csv: number, crew: number): 'match' | 'close' | 'gap' | 'missing' => {
+      const delta = csv - crew;
+      if (csv === 0 && crew === 0) return 'match';
+      if (csv > 0 && crew === 0) return 'missing';
+      const base = Math.max(csv, 1);
+      const pct = Math.abs(delta) / base;
+      if (pct <= 0.03) return 'match';
+      if (pct <= 0.15) return 'close';
+      return 'gap';
+    };
+
+    const dates = Array.from(new Set([...Object.keys(csvByDate), ...Object.keys(crewByDate)])).sort().reverse();
+    const rows = dates.map(date => {
+      const csv = csvByDate[date] || { cash: 0, upi: 0, card: 0, other: 0 };
+      const crew = crewByDate[date] || { cash: 0, upi: 0, card: 0 };
+      const csvTotal = csv.cash + csv.upi + csv.card;
+      const crewTotal = crew.cash + crew.upi + crew.card;
+      return { date, csv, crew, status: statusOf(csvTotal, crewTotal) };
+    });
+
+    const csvTotals = rows.reduce((a, r) => ({ cash: a.cash + r.csv.cash, upi: a.upi + r.csv.upi, card: a.card + r.csv.card }), { cash: 0, upi: 0, card: 0 });
+    const crewTotals = rows.reduce((a, r) => ({ cash: a.cash + r.crew.cash, upi: a.upi + r.crew.upi, card: a.card + r.crew.card }), { cash: 0, upi: 0, card: 0 });
+    const otherTotal = Object.values(unmapped).reduce((s, v) => s + v, 0);
+
+    return { rows, csvTotals, crewTotals, unmapped, otherTotal };
+  }, [salesSummary, dailySalesLogs, selectedMonth, selectedYear, channelOutletFilter]);
 
   const toggleMark = (id: string) => {
     setMarkedCreditIds(prev => {
@@ -772,6 +872,12 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
           Sales Reconciliation Delta
         </button>
         <button
+          onClick={() => setActiveView('channel-delta')}
+          className={`px-6 py-2.5 rounded-[1.5rem] text-[10px] font-black uppercase tracking-widest transition-all ${activeView === 'channel-delta' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-600'}`}
+        >
+          Channel Delta
+        </button>
+        <button
           onClick={() => setActiveView('analytics')}
           className={`px-6 py-2.5 rounded-[1.5rem] text-[10px] font-black uppercase tracking-widest transition-all ${activeView === 'analytics' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-600'}`}
         >
@@ -955,6 +1061,185 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
                             {Math.abs(netDelta) < 1 ? <><Minus size={11} /> Balanced</> : netDelta > 0 ? <><TrendingUp size={11} /> +₹{Math.abs(netDelta).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</> : <><TrendingDown size={11} /> -₹{Math.abs(netDelta).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</>}
                           </span>
                         </td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── CHANNEL DELTA PANEL (POS CSV vs Crew, per channel) ─────────────── */}
+      {activeView === 'channel-delta' && (() => {
+        const { rows, csvTotals, crewTotals, unmapped, otherTotal } = channelDelta;
+        const fmt = (n: number) => `₹${Math.round(n).toLocaleString('en-IN')}`;
+        const channels: { key: Channel; label: string; icon: React.ReactNode; tint: string }[] = [
+          { key: 'cash', label: 'Cash', icon: <Wallet size={16} />, tint: 'text-slate-600 bg-slate-100' },
+          { key: 'upi', label: 'UPI', icon: <Smartphone size={16} />, tint: 'text-violet-600 bg-violet-50' },
+          { key: 'card', label: 'Card (Net)', icon: <CreditCard size={16} />, tint: 'text-indigo-600 bg-indigo-50' },
+        ];
+        const statusStyle: Record<string, { label: string; dot: string; bg: string; text: string }> = {
+          match:   { label: 'Match',   dot: 'bg-emerald-400', bg: 'bg-emerald-50', text: 'text-emerald-700' },
+          close:   { label: 'Close',   dot: 'bg-amber-400',   bg: 'bg-amber-50',   text: 'text-amber-700' },
+          gap:     { label: 'Gap',     dot: 'bg-rose-400',    bg: 'bg-rose-50',    text: 'text-rose-700' },
+          missing: { label: 'Missing', dot: 'bg-rose-600',    bg: 'bg-rose-100',   text: 'text-rose-800' },
+        };
+        const deltaCell = (csv: number, crew: number) => {
+          const d = csv - crew;
+          return <span className={`font-black ${Math.abs(d) < 1 ? 'text-slate-300' : d > 0 ? 'text-amber-600' : 'text-rose-500'}`}>{d === 0 ? '—' : `${d > 0 ? '+' : '-'}${fmt(Math.abs(d))}`}</span>;
+        };
+        const consolidatedCsv = csvTotals.cash + csvTotals.upi + csvTotals.card;
+        const consolidatedCrew = crewTotals.cash + crewTotals.upi + crewTotals.card;
+        const totalDelta = consolidatedCsv - consolidatedCrew;
+        return (
+          <div className="space-y-6">
+            {/* Consolidated totals strip */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {[
+                { label: 'Consolidated CSV Total', value: consolidatedCsv, cls: 'text-slate-900' },
+                { label: 'Consolidated Crew Total', value: consolidatedCrew, cls: 'text-slate-900' },
+                { label: 'Total Delta', value: totalDelta, cls: Math.abs(totalDelta) < 1 ? 'text-emerald-600' : totalDelta > 0 ? 'text-amber-600' : 'text-rose-500', signed: true },
+              ].map(({ label, value, cls, signed }) => (
+                <div key={label} className="bg-white border border-slate-100 rounded-[2rem] px-7 py-5 shadow-sm">
+                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">{label}</p>
+                  <p className={`text-2xl font-black tracking-tighter ${cls}`}>{signed ? (value >= 0 ? '+' : '-') : ''}{fmt(Math.abs(value))}</p>
+                </div>
+              ))}
+            </div>
+
+            {/* Monthly per-channel summary */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {channels.map(ch => {
+                const csv = csvTotals[ch.key as 'cash' | 'upi' | 'card'];
+                const crew = crewTotals[ch.key as 'cash' | 'upi' | 'card'];
+                const d = csv - crew;
+                return (
+                  <div key={ch.key} className="bg-white border border-slate-100 rounded-[2rem] p-6 shadow-sm">
+                    <div className="flex items-center gap-3 mb-4">
+                      <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${ch.tint}`}>{ch.icon}</div>
+                      <p className="text-xs font-black text-slate-500 uppercase tracking-widest">{ch.label}</p>
+                    </div>
+                    <div className="flex items-end justify-between gap-2">
+                      <div>
+                        <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">CSV</p>
+                        <p className="text-lg font-black text-slate-900 tracking-tighter">{fmt(csv)}</p>
+                      </div>
+                      <div>
+                        <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Crew</p>
+                        <p className="text-lg font-black text-slate-900 tracking-tighter">{fmt(crew)}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Delta</p>
+                        <p className={`text-lg font-black tracking-tighter ${Math.abs(d) < 1 ? 'text-emerald-600' : d > 0 ? 'text-amber-600' : 'text-rose-500'}`}>{d >= 0 ? '+' : '-'}{fmt(Math.abs(d))}</p>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Daily table */}
+            <div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-sm overflow-hidden">
+              <div className="px-8 py-5 bg-slate-50 border-b border-slate-100 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-indigo-100 text-indigo-600 rounded-xl"><Scale size={18} /></div>
+                  <div>
+                    <h3 className="font-black text-slate-800 uppercase tracking-tight text-sm">Channel Delta — POS CSV vs Crew</h3>
+                    <p className="text-[10px] text-slate-400 font-medium uppercase tracking-widest mt-0.5">Counter sales only (online excluded) · {selectedMonth} {selectedYear}</p>
+                  </div>
+                </div>
+                <select
+                  value={channelOutletFilter}
+                  onChange={e => setChannelOutletFilter(e.target.value)}
+                  className="text-[9px] font-black uppercase tracking-widest bg-white border border-slate-200 text-slate-500 rounded-xl px-3 py-2 cursor-pointer transition-colors hover:border-indigo-300"
+                >
+                  <option value="all">All Stores</option>
+                  {MASTER_OUTLETS.map(o => (
+                    <option key={o.id} value={o.id}>{o.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              {otherTotal > 0 && (
+                <div className="px-8 py-3 bg-amber-50 border-b border-amber-100 flex items-start gap-2">
+                  <Info size={14} className="text-amber-600 mt-0.5 shrink-0" />
+                  <p className="text-[11px] font-bold text-amber-700">
+                    {fmt(otherTotal)} in unmapped payment modes not counted in Cash/UPI/Card:{' '}
+                    {Object.entries(unmapped).map(([mode, amt]) => `${mode} (${fmt(amt as number)})`).join(', ')}
+                  </p>
+                </div>
+              )}
+
+              {rows.length === 0 ? (
+                <div className="py-20 text-center">
+                  <Scale size={40} className="mx-auto text-slate-200 mb-4" />
+                  <p className="text-slate-400 font-black uppercase text-xs tracking-widest">No data for this period</p>
+                  <p className="text-slate-300 text-xs font-medium mt-2">Upload a POS sales CSV or have crew log sales to compare</p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-right whitespace-nowrap">
+                    <thead>
+                      <tr className="border-b border-slate-100">
+                        <th className="text-left px-6 py-3 text-[9px] font-black text-slate-400 uppercase tracking-widest">Date</th>
+                        {['Cash', 'UPI', 'Card (Net)'].map(h => (
+                          <th key={h} colSpan={3} className="px-6 py-3 text-[9px] font-black text-slate-500 uppercase tracking-widest border-l border-slate-100">{h}</th>
+                        ))}
+                        <th className="px-6 py-3 text-[9px] font-black text-slate-500 uppercase tracking-widest border-l border-slate-100">Total Δ</th>
+                        <th className="px-6 py-3 text-[9px] font-black text-slate-400 uppercase tracking-widest border-l border-slate-100">Status</th>
+                      </tr>
+                      <tr className="border-b border-slate-100 bg-slate-50/50">
+                        <th className="px-6 py-2"></th>
+                        {['cash', 'upi', 'card'].map(c => (
+                          <React.Fragment key={c}>
+                            <th className="px-4 py-2 text-[8px] font-black text-slate-400 uppercase tracking-widest border-l border-slate-100">CSV</th>
+                            <th className="px-4 py-2 text-[8px] font-black text-slate-400 uppercase tracking-widest">Crew</th>
+                            <th className="px-4 py-2 text-[8px] font-black text-slate-400 uppercase tracking-widest">Δ</th>
+                          </React.Fragment>
+                        ))}
+                        <th className="border-l border-slate-100"></th>
+                        <th className="border-l border-slate-100"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map(row => {
+                        const s = statusStyle[row.status];
+                        const dayName = new Date(row.date + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' });
+                        return (
+                          <tr key={row.date} className="border-b border-slate-50 hover:bg-slate-50 transition-colors">
+                            <td className="text-left px-6 py-3 text-xs font-black text-slate-800">{dayName}</td>
+                            {(['cash', 'upi', 'card'] as const).map(c => (
+                              <React.Fragment key={c}>
+                                <td className="px-4 py-3 text-xs font-bold text-slate-700 border-l border-slate-50">{row.csv[c] ? fmt(row.csv[c]) : '—'}</td>
+                                <td className="px-4 py-3 text-xs font-bold text-slate-500">{row.crew[c] ? fmt(row.crew[c]) : '—'}</td>
+                                <td className="px-4 py-3 text-xs">{deltaCell(row.csv[c], row.crew[c])}</td>
+                              </React.Fragment>
+                            ))}
+                            <td className="px-6 py-3 text-xs border-l border-slate-50">{deltaCell(row.csv.cash + row.csv.upi + row.csv.card, row.crew.cash + row.crew.upi + row.crew.card)}</td>
+                            <td className="px-6 py-3 text-center border-l border-slate-50">
+                              <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${s.bg} ${s.text}`}>
+                                <span className={`w-1.5 h-1.5 rounded-full ${s.dot}`} />
+                                {s.label}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                    <tfoot>
+                      <tr className="bg-slate-50 font-black">
+                        <td className="text-left px-6 py-4 text-[10px] uppercase tracking-widest text-slate-500">Totals</td>
+                        {(['cash', 'upi', 'card'] as const).map(c => (
+                          <React.Fragment key={c}>
+                            <td className="px-4 py-4 text-xs text-slate-800 border-l border-slate-100">{fmt(csvTotals[c])}</td>
+                            <td className="px-4 py-4 text-xs text-slate-600">{fmt(crewTotals[c])}</td>
+                            <td className="px-4 py-4 text-xs">{deltaCell(csvTotals[c], crewTotals[c])}</td>
+                          </React.Fragment>
+                        ))}
+                        <td className="px-6 py-4 text-xs border-l border-slate-100">{deltaCell(consolidatedCsv, consolidatedCrew)}</td>
+                        <td className="border-l border-slate-100"></td>
                       </tr>
                     </tfoot>
                   </table>

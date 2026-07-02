@@ -774,75 +774,6 @@ export interface CategorizationRule {
   lastUsedAt: number;
 }
 
-// ─── Subscription Module ───────────────────────────────────────────────────────
-
-export type SubscriptionStatus = 'pending_approval' | 'active' | 'paused' | 'cancelled' | 'completed';
-export type OrderDeliveryStatus = 'scheduled' | 'confirmed' | 'delivered' | 'skipped';
-export type DeliveryDay = 'MON' | 'TUE' | 'WED' | 'THU' | 'FRI' | 'SAT' | 'SUN';
-
-export interface SubscriptionLineItem {
-  itemName: string;
-  qty: number;
-  unitPrice: number;
-  discountedUnitPrice: number;
-}
-
-export interface SubscriptionCustomer {
-  id?: string;
-  userId: string;
-  ownerId: string;
-  name: string;
-  phone: string;
-  address: string;
-  notes?: string;
-  createdAt: number;
-  updatedAt: number;
-}
-
-export interface Subscription {
-  id?: string;
-  userId: string;
-  ownerId: string;
-  customerId: string;
-  customerName: string;
-  customerPhone: string;
-  customerAddress: string;
-  outletId: string;
-  startDate: string;
-  endDate: string;
-  deliveryDays: DeliveryDay[];
-  discountPercent: number;
-  defaultItems: SubscriptionLineItem[];
-  totalDeliveries: number;
-  completedDeliveries: number;
-  status: SubscriptionStatus;
-  notes?: string;
-  createdAt: number;
-  updatedAt: number;
-}
-
-export interface SubscriptionOrder {
-  id?: string;
-  subscriptionId: string;
-  customerId: string;
-  customerName: string;
-  customerPhone: string;
-  customerAddress: string;
-  userId: string;
-  ownerId: string;
-  outletId: string;
-  scheduledDate: string;
-  status: OrderDeliveryStatus;
-  items: SubscriptionLineItem[];
-  baseTotal: number;
-  discountedTotal: number;
-  discountPercent: number;
-  notes?: string;
-  deliveredAt?: number;
-  createdAt: number;
-  updatedAt: number;
-}
-
 export interface LoanProfile {
   id?: string;
   userId: string;
@@ -865,6 +796,23 @@ export interface CashFlowSnapshot {
   realCashLeft: number;
   mappings?: Record<string, string>; // transactionId -> loanProfileId
   updatedAt: number;
+}
+
+// A debt repayment made in cash (e.g. paying a lender from a store's 10k access
+// bank) that never appears in a bank statement import. Surfaced in Cash Reality
+// alongside bank-sourced obligations; deducts from the source 10k bank balance.
+export interface CashObligation {
+  id?: string;
+  userId: string;
+  date: string;                       // YYYY-MM-DD (IST)
+  amount: number;
+  category: LoanProfile['category'];  // inherited from the mapped lender
+  loanProfileId: string;              // the lender being repaid
+  bankAccountId: string;              // source 10k access bank
+  bankTxnId?: string;                 // linked bank_transactions ledger line (for history + cleanup)
+  outletId?: string;                  // store the 10k bank belongs to
+  description?: string;
+  createdAt: number;
 }
 
 export const RECONCILIATION_CATEGORIES = [

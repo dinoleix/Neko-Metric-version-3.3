@@ -9,10 +9,12 @@ import {
   doc,
   setDoc,
   deleteDoc,
-  addDoc
+  addDoc,
+  updateDoc,
+  increment
 } from 'firebase/firestore';
 import { db } from '../firebase';
-import { CashFlowSnapshot, PnLMonthlySnapshot, MONTH_NAMES, BankTransaction, LoanProfile } from '../types';
+import { CashFlowSnapshot, PnLMonthlySnapshot, MONTH_NAMES, BankTransaction, LoanProfile, BankAccount, CashObligation } from '../types';
 import {
   Banknote,
   Save,
@@ -41,6 +43,8 @@ const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
   const [loading, setLoading] = useState(false);
   const [loanProfiles, setLoanProfiles] = useState<LoanProfile[]>([]);
   const [periodBTs, setPeriodBTs] = useState<BankTransaction[]>([]);
+  const [cashBanks, setCashBanks] = useState<BankAccount[]>([]);
+  const [periodCashObs, setPeriodCashObs] = useState<CashObligation[]>([]);
 
   // Mapping state: transactionId -> loanProfileId
   const [mappings, setMappings] = useState<Record<string, string>>({});
@@ -51,6 +55,15 @@ const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
   const [isAddingProfile, setIsAddingProfile] = useState(false);
   const [newProfileName, setNewProfileName] = useState('');
   const [newProfileCategory, setNewProfileCategory] = useState<LoanProfile['category']>('LOAN_EMI');
+
+  // Cash payment form
+  const [isAddingCash, setIsAddingCash] = useState(false);
+  const [cashLoanProfileId, setCashLoanProfileId] = useState('');
+  const [cashBankId, setCashBankId] = useState('');
+  const [cashAmount, setCashAmount] = useState('');
+  const [cashDate, setCashDate] = useState('');
+  const [cashNote, setCashNote] = useState('');
+  const [isSavingCash, setIsSavingCash] = useState(false);
 
   const years = useMemo(() => {
     const current = new Date().getFullYear();
@@ -89,6 +102,25 @@ const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
       });
       setPeriodBTs(transactions);
 
+      // 3b. Fetch the 10k access (extra-cash) bank accounts — the source for cash repayments
+      const cashBankQuery = query(collection(db, 'bank_accounts'), where('userId', '==', dataOwnerId));
+      const cashBankRes = await getDocs(cashBankQuery);
+      setCashBanks(
+        cashBankRes.docs
+          .map(d => ({ id: d.id, ...d.data() } as BankAccount))
+          .filter(b => b.accountType === '10kcash')
+      );
+
+      // 3c. Fetch manual cash obligations (lender payments made in cash) for this period
+      const cashObQuery = query(collection(db, 'cash_obligations'), where('userId', '==', dataOwnerId));
+      const cashObRes = await getDocs(cashObQuery);
+      setPeriodCashObs(
+        cashObRes.docs.map(d => ({ id: d.id, ...d.data() } as CashObligation)).filter(c => {
+          const d = new Date(c.date + 'T00:00:00'); // force local (IST) parse to avoid UTC midnight shift
+          return d.getFullYear().toString() === selectedYear && MONTH_NAMES[d.getMonth()] === selectedMonth;
+        })
+      );
+
       // 4. Fetch Cash Flow Snapshot (Mappings) — use deterministic ID
       const snapId = `${dataOwnerId}_${selectedYear}_${selectedMonth}`;
       const snapRef = doc(db, 'cash_flow_snapshots', snapId);
@@ -118,13 +150,20 @@ const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
   }, [pnlSnaps]);
 
   const totalObligationsBreakdown = useMemo(() => {
-    const loanEmi = periodBTs.filter(t => t.category === 'LOAN_EMI').reduce((acc, t) => acc + t.amount, 0);
-    const interestOnly = periodBTs.filter(t => t.category === 'INTEREST_ONLY').reduce((acc, t) => acc + t.amount, 0);
-    const capex = periodBTs.filter(t => t.category === 'CAPEX_REPAYMENT').reduce((acc, t) => acc + t.amount, 0);
-    const creditCard = periodBTs.filter(t => t.category === 'CREDIT CARD PAYMENT').reduce((acc, t) => acc + t.amount, 0);
-    const personal = periodBTs.filter(t => t.category === 'PERSONAL').reduce((acc, t) => acc + t.amount, 0);
+    // Cash repayments share the same debt categories as bank transactions, so they
+    // fold into the same per-category and per-lender totals.
+    const sumByCat = (cat: LoanProfile['category']) =>
+      periodBTs.filter(t => t.category === cat).reduce((acc, t) => acc + t.amount, 0) +
+      periodCashObs.filter(c => c.category === cat).reduce((acc, c) => acc + c.amount, 0);
 
-    // Profile-wise breakdown
+    const loanEmi = sumByCat('LOAN_EMI');
+    const interestOnly = sumByCat('INTEREST_ONLY');
+    const capex = sumByCat('CAPEX_REPAYMENT');
+    const creditCard = sumByCat('CREDIT CARD PAYMENT');
+    const personal = sumByCat('PERSONAL');
+
+    // Profile-wise breakdown — bank txns use the mapping table; cash obligations
+    // already carry their lender id directly.
     const byProfile: Record<string, number> = {};
     periodBTs.forEach(t => {
       const pId = mappings[t.id!];
@@ -132,10 +171,15 @@ const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
         byProfile[pId] = (byProfile[pId] || 0) + t.amount;
       }
     });
+    periodCashObs.forEach(c => {
+      if (c.loanProfileId) {
+        byProfile[c.loanProfileId] = (byProfile[c.loanProfileId] || 0) + c.amount;
+      }
+    });
 
     const total = loanEmi + interestOnly + capex + creditCard + personal;
     return { loanEmi, interestOnly, capex, creditCard, personal, total, byProfile };
-  }, [periodBTs, mappings]);
+  }, [periodBTs, periodCashObs, mappings]);
 
   const realCashLeft = totalNetProfit - totalObligationsBreakdown.total;
 
@@ -218,6 +262,92 @@ const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
       fetchData();
     } catch (err) {
       console.error(err);
+    }
+  };
+
+  const handleAddCashPayment = async () => {
+    const amount = parseFloat(cashAmount) || 0;
+    if (!cashLoanProfileId) { alert("Select which lender you paid."); return; }
+    if (!cashBankId) { alert("Select the source 10k access bank."); return; }
+    if (amount <= 0) { alert("Enter a valid amount."); return; }
+    if (!cashDate) { alert("Pick the payment date."); return; }
+
+    const profile = loanProfiles.find(p => p.id === cashLoanProfileId);
+    const bank = cashBanks.find(b => b.id === cashBankId);
+    if (!profile || !bank) { alert("Lender or bank not found."); return; }
+
+    setIsSavingCash(true);
+    try {
+      const now = Date.now();
+      // Mirror the cash outflow as a bank ledger line so it shows in the account's
+      // Transaction History (same pattern as CrewTerminal purchases).
+      const txnRef = await addDoc(collection(db, 'bank_transactions'), {
+        userId: user.uid,
+        ownerId: user.uid,
+        bankAccountId: cashBankId,
+        date: cashDate,
+        description: `Cash Loan Payment: ${profile.name}${cashNote.trim() ? ` — ${cashNote.trim()}` : ''}`,
+        amount,
+        type: 'debit',
+        category: profile.category,
+        referenceNo: `CASH-${now}`,
+        isVerified: false,
+        isReconciled: false,
+        createdAt: now
+      });
+
+      const obligation: CashObligation = {
+        userId: user.uid,
+        date: cashDate,
+        amount,
+        category: profile.category,
+        loanProfileId: cashLoanProfileId,
+        bankAccountId: cashBankId,
+        bankTxnId: txnRef.id,
+        outletId: bank.outletId || '',
+        description: cashNote.trim(),
+        createdAt: now
+      };
+      await addDoc(collection(db, 'cash_obligations'), obligation);
+      // Deduct the cash from the source 10k bank's running balance
+      await updateDoc(doc(db, 'bank_accounts', cashBankId), {
+        balance: increment(-amount),
+        updatedAt: now
+      });
+
+      setCashLoanProfileId('');
+      setCashBankId('');
+      setCashAmount('');
+      setCashNote('');
+      setIsAddingCash(false);
+      fetchData();
+    } catch (err) {
+      console.error("Failed to record cash payment:", err);
+      alert("Failed to record cash payment.");
+    } finally {
+      setIsSavingCash(false);
+    }
+  };
+
+  const handleDeleteCashPayment = async (ob: CashObligation) => {
+    if (!confirm("Delete this cash payment? The amount will be added back to the source 10k bank balance.")) return;
+    try {
+      await deleteDoc(doc(db, 'cash_obligations', ob.id!));
+      // Remove the mirrored bank ledger line
+      if (ob.bankTxnId) {
+        await deleteDoc(doc(db, 'bank_transactions', ob.bankTxnId)).catch(e => console.error("Ledger line delete failed:", e));
+      }
+      // Restore the cash to the source 10k bank's running balance
+      if (ob.bankAccountId) {
+        await updateDoc(doc(db, 'bank_accounts', ob.bankAccountId), {
+          balance: increment(ob.amount),
+          updatedAt: Date.now()
+        }).catch(e => console.error("Balance restore failed:", e));
+      }
+      fetchData();
+    } catch (err) {
+      console.error("Failed to delete cash payment:", err);
+      alert("Failed to delete cash payment.");
     }
   };
 
@@ -570,6 +700,140 @@ const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
                      </button>
                   </div>
                 ))}
+              </div>
+           </div>
+
+           {/* Cash Payments (from 10k access bank) */}
+           <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm space-y-6">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-emerald-50 rounded-xl flex items-center justify-center text-emerald-600"><Banknote size={20} /></div>
+                  <div>
+                    <h3 className="text-lg font-black text-slate-900 uppercase tracking-tight">Cash Payments</h3>
+                    <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mt-0.5">Lender repayments paid in cash</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => { const next = !isAddingCash; setIsAddingCash(next); if (next && !cashDate) setCashDate(new Date().toISOString().slice(0, 10)); }}
+                  className="p-2 bg-slate-900 text-white rounded-xl hover:scale-105 transition-all"
+                >
+                  <Plus size={18} />
+                </button>
+              </div>
+
+              <AnimatePresence>
+                {isAddingCash && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    className="overflow-hidden space-y-4 pt-2 border-t border-slate-100"
+                  >
+                    <div className="space-y-4 p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                      {cashBanks.length === 0 ? (
+                        <p className="text-[10px] font-bold text-rose-400 uppercase text-center py-2">No 10k access bank found. Add a 10kcash account in Bank Management first.</p>
+                      ) : loanProfiles.length === 0 ? (
+                        <p className="text-[10px] font-bold text-rose-400 uppercase text-center py-2">Add a lender in the Loan Library above first.</p>
+                      ) : (
+                        <>
+                          <div className="space-y-1.5">
+                            <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Lender Paid</label>
+                            <select
+                              value={cashLoanProfileId}
+                              onChange={e => setCashLoanProfileId(e.target.value)}
+                              className="w-full bg-white border border-slate-200 px-4 py-3 rounded-xl font-bold text-slate-900 text-sm outline-none"
+                            >
+                              <option value="">-- Select Lender --</option>
+                              {loanProfiles.map(p => (
+                                <option key={p.id} value={p.id}>{p.name} ({p.category.replace('_', ' ')})</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="space-y-1.5">
+                            <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Source 10k Bank (Store)</label>
+                            <select
+                              value={cashBankId}
+                              onChange={e => setCashBankId(e.target.value)}
+                              className="w-full bg-white border border-slate-200 px-4 py-3 rounded-xl font-bold text-slate-900 text-sm outline-none"
+                            >
+                              <option value="">-- Select 10k Bank --</option>
+                              {cashBanks.map(b => (
+                                <option key={b.id} value={b.id}>{b.name}{typeof b.balance === 'number' ? ` — ₹${b.balance.toLocaleString()}` : ''}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="grid grid-cols-2 gap-3">
+                            <div className="space-y-1.5">
+                              <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Amount</label>
+                              <input
+                                type="number"
+                                value={cashAmount}
+                                onChange={e => setCashAmount(e.target.value)}
+                                placeholder="₹0"
+                                className="w-full bg-white border border-slate-200 px-4 py-3 rounded-xl font-bold text-slate-900 text-sm outline-none focus:ring-2 focus:ring-emerald-600"
+                              />
+                            </div>
+                            <div className="space-y-1.5">
+                              <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Date</label>
+                              <input
+                                type="date"
+                                value={cashDate}
+                                onChange={e => setCashDate(e.target.value)}
+                                className="w-full bg-white border border-slate-200 px-4 py-3 rounded-xl font-bold text-slate-900 text-sm outline-none"
+                              />
+                            </div>
+                          </div>
+                          <div className="space-y-1.5">
+                            <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Note (optional)</label>
+                            <input
+                              type="text"
+                              value={cashNote}
+                              onChange={e => setCashNote(e.target.value)}
+                              placeholder="e.g. June EMI in cash"
+                              className="w-full bg-white border border-slate-200 px-4 py-3 rounded-xl font-bold text-slate-900 text-sm outline-none"
+                            />
+                          </div>
+                          <button
+                            onClick={handleAddCashPayment}
+                            disabled={isSavingCash}
+                            className="w-full py-3 bg-emerald-600 text-white rounded-xl font-black uppercase text-[10px] tracking-widest shadow-lg shadow-emerald-200 disabled:opacity-50"
+                          >
+                            {isSavingCash ? 'Saving...' : 'Record Cash Payment'}
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              <div className="space-y-3">
+                {periodCashObs.length === 0 && !isAddingCash && (
+                   <p className="text-center py-6 text-[11px] font-bold text-slate-300 uppercase italic">No cash payments logged for {selectedMonth}.</p>
+                )}
+                {periodCashObs.map(ob => {
+                  const lender = loanProfiles.find(p => p.id === ob.loanProfileId);
+                  const bank = cashBanks.find(b => b.id === ob.bankAccountId);
+                  return (
+                    <div key={ob.id} className="flex items-center justify-between p-4 bg-emerald-50/40 rounded-2xl border border-emerald-100/50 hover:border-emerald-200 transition-all group">
+                       <div className="min-w-0">
+                          <h4 className="text-[11px] font-black text-slate-900 uppercase tracking-tight truncate">{lender?.name || 'Unknown Lender'}</h4>
+                          <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest mt-1 block truncate">
+                            {new Date(ob.date + 'T00:00:00').toLocaleDateString()} · {bank?.name || 'Cash'}{ob.description ? ` · ${ob.description}` : ''}
+                          </span>
+                       </div>
+                       <div className="flex items-center gap-2 flex-shrink-0">
+                          <span className="text-[11px] font-black text-emerald-700">₹{ob.amount.toLocaleString()}</span>
+                          <button
+                            onClick={() => handleDeleteCashPayment(ob)}
+                            className="p-2 text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-all"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                       </div>
+                    </div>
+                  );
+                })}
               </div>
            </div>
         </div>
