@@ -3,6 +3,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, limit } from 'firebase/firestore';
 import { db } from '../firebase';
+import { getCachedCollection } from '../referenceCache';
 import { SalesMonthlySnapshot, DailySalesLog, StoreRental, SkuMapping, SkuCategory, getOutletName, YEAR_OPTIONS, MONTH_NAMES } from '../types';
 import { 
   TrendingUp,
@@ -83,10 +84,12 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
     setError('');
     try {
       const snapQ = query(collection(db, 'sales_snapshots'), where('userId', '==', dataOwnerId));
-      const rentQ = query(collection(db, 'rentals'), where('userId', '==', dataOwnerId));
-      const [sSnap, rSnap] = await Promise.all([getDocs(snapQ), getDocs(rentQ)]);
+      const [sSnap, rentArr] = await Promise.all([
+        getDocs(snapQ),
+        getCachedCollection<StoreRental>('rentals', dataOwnerId)
+      ]);
       setSnapshots(sSnap.docs.map(d => ({ ...d.data(), id: d.id } as SalesMonthlySnapshot)));
-      setRentals(rSnap.docs.map(d => ({ id: d.id, ...d.data() } as StoreRental)));
+      setRentals(rentArr);
 
       // Query daily_sales_logs separately — permissions may vary until rules are deployed
       try {

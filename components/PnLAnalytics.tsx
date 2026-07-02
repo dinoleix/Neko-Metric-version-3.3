@@ -3,6 +3,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase';
+import { getCachedCollection } from '../referenceCache';
 import { 
   SalesMonthlySnapshot, 
   ExpenseMonthlySnapshot,
@@ -107,14 +108,13 @@ const PnLAnalytics: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
 
   const fetchPrerequisites = async () => {
     try {
-      const constraints = [where('userId', '==', dataOwnerId)];
       const settingsRef = doc(db, 'category_settings', dataOwnerId);
-      const [rent, setSnap, skuSnap, costs, normSnap] = await Promise.all([
-        getDocs(query(collection(db, 'rentals'), ...constraints)),
+      const [rent, setSnap, sku, costs, norm] = await Promise.all([
+        getCachedCollection<StoreRental>('rentals', dataOwnerId),
         getDoc(settingsRef),
-        getDocs(query(collection(db, 'sku_mappings'), ...constraints)),
-        getDocs(query(collection(db, 'item_costs'), ...constraints)),
-        getDocs(query(collection(db, 'menu_normalization'), ...constraints))
+        getCachedCollection<SkuMapping>('sku_mappings', dataOwnerId),
+        getCachedCollection<ItemCost>('item_costs', dataOwnerId),
+        getCachedCollection<MenuNormalization>('menu_normalization', dataOwnerId)
       ]);
 
       if (setSnap.exists()) {
@@ -124,19 +124,17 @@ const PnLAnalytics: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
         if (data.opsKeywords) setOpsKeywords(data.opsKeywords.map(k => k.trim().toUpperCase()));
       }
 
-      setRentals(rent.docs.map(d => d.data() as StoreRental));
-      setItemCosts(costs.docs.map(d => d.data() as ItemCost));
-      
+      setRentals(rent);
+      setItemCosts(costs);
+
       const normMap: Record<string, string> = {};
-      normSnap.docs.forEach(d => {
-        const data = d.data() as MenuNormalization;
+      norm.forEach(data => {
         normMap[data.sourceName.trim().toUpperCase()] = data.masterName;
       });
       setNormalizationMap(normMap);
 
       const mappingObj: Record<string, { category: SkuCategory, segment?: string }> = {};
-      skuSnap.docs.forEach(d => {
-        const data = d.data() as SkuMapping;
+      sku.forEach(data => {
         mappingObj[data.itemName.trim().toUpperCase()] = { category: data.category, segment: data.segment };
       });
       setSkuMappings(mappingObj);

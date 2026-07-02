@@ -3,7 +3,8 @@ import React, { useState, useEffect } from 'react';
 import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, addDoc, doc, deleteDoc, writeBatch, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase';
-import { Holiday, StoreRental, MASTER_OUTLETS } from '../types';
+import { getCachedCollection } from '../referenceCache';
+import { Holiday, StoreRental, MASTER_OUTLETS, istDateString } from '../types';
 import { ai } from '../geminiService';
 import { Type } from "@google/genai";
 import { 
@@ -30,7 +31,7 @@ const HolidayRegistry: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
 
   // Form state
   const [newName, setNewName] = useState('');
-  const [newDate, setNewDate] = useState(new Date().toISOString().split('T')[0]);
+  const [newDate, setNewDate] = useState(istDateString());
   const [newType, setNewType] = useState<'public' | 'regional' | 'custom'>('public');
   const [newRegion, setNewRegion] = useState('');
 
@@ -44,9 +45,8 @@ const HolidayRegistry: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
       setHolidays(hList.sort((a, b) => a.date.localeCompare(b.date)));
 
       // Fetch Outlets for region context
-      const oQuery = query(collection(db, 'rentals'), where('userId', '==', dataOwnerId));
-      const oSnap = await getDocs(oQuery);
-      setOutlets(oSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as StoreRental)));
+      const rentArr = await getCachedCollection<StoreRental>('rentals', dataOwnerId);
+      setOutlets(rentArr);
     } catch (err) {
       console.error("Error fetching data:", err);
     } finally {

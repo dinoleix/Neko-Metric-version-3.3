@@ -1,86 +1,24 @@
 
 import { WeatherData, WeatherForecast } from './types';
-import { collection, query, where, getDocs, addDoc, updateDoc, doc, limit, orderBy } from 'firebase/firestore';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { db } from './firebase';
-import { Type } from "@google/genai";
-import { ai } from './geminiService';
 
 const API_KEY = import.meta.env.VITE_OPENWEATHER_API_KEY;
 const BASE_URL = 'https://api.openweathermap.org/data/2.5';
 
-export const fetchWeatherSimulated = async (lat: number, lon: number): Promise<Partial<WeatherData>> => {
-  try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: `Simulate the current weather for coordinates (${lat}, ${lon}). 
-      Return JSON with: temp (number in Celsius), condition (string: "Clear", "Clouds", "Rain", "Drizzle", "Thunderstorm", "Snow", "Mist"), 
-      humidity (number 0-100), windSpeed (number m/s), precipitation (number mm).`,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            temp: { type: Type.NUMBER },
-            condition: { type: Type.STRING },
-            humidity: { type: Type.NUMBER },
-            windSpeed: { type: Type.NUMBER },
-            precipitation: { type: Type.NUMBER }
-          },
-          required: ["temp", "condition", "humidity", "windSpeed", "precipitation"]
-        }
-      }
-    });
+// One cached weather doc per user+outlet. A deterministic ID means the cache is
+// always 1 read to check and 1 write to refresh, and the collection never grows.
+const weatherDocRef = (userId: string, outletId: string) =>
+  doc(db, 'weather', `${userId}_${outletId}`);
 
-    const data = JSON.parse(response.text);
-    return {
-      ...data,
-      icon: '01d', // Default sun icon for simulation
-      updatedAt: Date.now()
-    };
-  } catch (err) {
-    console.error("Gemini Weather Simulation failed:", err);
-    throw err;
-  }
-};
-
-export const fetchForecastSimulated = async (lat: number, lon: number): Promise<WeatherForecast[]> => {
-  try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: `Simulate a 5-day weather forecast for coordinates (${lat}, ${lon}). 
-      Return JSON array of 5 objects with: date (YYYY-MM-DD), temp (number), condition (string), icon (string: "01d"), precipitation (number), humidity (number).`,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              date: { type: Type.STRING },
-              temp: { type: Type.NUMBER },
-              condition: { type: Type.STRING },
-              icon: { type: Type.STRING },
-              precipitation: { type: Type.NUMBER },
-              humidity: { type: Type.NUMBER }
-            },
-            required: ["date", "temp", "condition", "icon", "precipitation", "humidity"]
-          }
-        }
-      }
-    });
-    return JSON.parse(response.text);
-  } catch (err) {
-    console.error("Gemini Forecast Simulation failed:", err);
-    return [];
-  }
-};
+export type CachedWeather = WeatherData & { forecast?: WeatherForecast[] };
 
 export const fetchForecastFromAPI = async (lat: number, lon: number): Promise<WeatherForecast[]> => {
-  if (!API_KEY) return fetchForecastSimulated(lat, lon);
+  if (!API_KEY) return [];
 
   try {
     const response = await fetch(`${BASE_URL}/forecast?lat=${lat}&lon=${lon}&appid=${API_KEY}&units=metric`);
-    if (!response.ok) return fetchForecastSimulated(lat, lon);
+    if (!response.ok) return [];
 
     const data = await response.json();
     const dailyData: Record<string, any[]> = {};
@@ -97,7 +35,7 @@ export const fetchForecastFromAPI = async (lat: number, lon: number): Promise<We
       const avgTemp = items.reduce((acc, i) => acc + i.main.temp, 0) / items.length;
       const avgHum = items.reduce((acc, i) => acc + i.main.humidity, 0) / items.length;
       const totalRain = items.reduce((acc, i) => acc + (i.rain ? i.rain['3h'] || 0 : 0), 0);
-      
+
       // Find most frequent condition
       const conditions = items.map(i => i.weather[0].main);
       const mostFrequent = conditions.sort((a, b) =>
@@ -114,31 +52,27 @@ export const fetchForecastFromAPI = async (lat: number, lon: number): Promise<We
       };
     });
   } catch (err) {
-    return fetchForecastSimulated(lat, lon);
+    console.error("Error fetching forecast from OpenWeather:", err);
+    return [];
   }
 };
 
-export const fetchWeatherFromAPI = async (lat: number, lon: number): Promise<Partial<WeatherData>> => {
+export const fetchWeatherFromAPI = async (lat: number, lon: number): Promise<Partial<WeatherData> | null> => {
   if (!API_KEY) {
-    console.warn("Weather API Key missing. Falling back to Gemini simulation.");
-    return fetchWeatherSimulated(lat, lon);
+    console.warn("Weather API Key missing — weather unavailable.");
+    return null;
   }
 
   try {
     const response = await fetch(`${BASE_URL}/weather?lat=${lat}&lon=${lon}&appid=${API_KEY}&units=metric`);
-    
+
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       const errorMessage = errorData.message || response.statusText || 'Unknown error';
       console.error(`Weather API Error (${response.status}): ${errorMessage}`);
-      
-      if (response.status === 401) {
-        console.warn("Invalid OpenWeather API Key. Falling back to Gemini simulation.");
-        return fetchWeatherSimulated(lat, lon);
-      }
-      throw new Error(`WEATHER_API_FAILURE: ${errorMessage}`);
+      return null;
     }
-    
+
     const data = await response.json();
     return {
       temp: data.main.temp,
@@ -151,34 +85,24 @@ export const fetchWeatherFromAPI = async (lat: number, lon: number): Promise<Par
     };
   } catch (err) {
     console.error("Error fetching from OpenWeather:", err);
-    // Final fallback to simulation for any network error
-    return fetchWeatherSimulated(lat, lon);
+    return null;
   }
 };
 
-export const getLatestWeather = async (outletId: string, userId: string): Promise<WeatherData | null> => {
+export const getLatestWeather = async (outletId: string, userId: string): Promise<CachedWeather | null> => {
   try {
-    const q = query(
-      collection(db, 'weather'),
-      where('outletId', '==', outletId),
-      where('userId', '==', userId),
-      limit(20) // Get a few and sort in memory
-    );
-    const snap = await getDocs(q);
-    if (snap.empty) return null;
-    
-    // Sort in memory to find latest
-    const docs = snap.docs.map(d => ({ id: d.id, ...d.data() } as WeatherData));
-    return docs.sort((a, b) => b.updatedAt - a.updatedAt)[0];
+    const snap = await getDoc(weatherDocRef(userId, outletId));
+    if (!snap.exists()) return null;
+    return { id: snap.id, ...snap.data() } as CachedWeather;
   } catch (err) {
     console.error("Error fetching weather from DB:", err);
     return null;
   }
 };
 
-export const saveWeatherToDB = async (weather: Omit<WeatherData, 'id'>) => {
+export const saveWeatherToDB = async (weather: Omit<CachedWeather, 'id'>) => {
   try {
-    await addDoc(collection(db, 'weather'), weather);
+    await setDoc(weatherDocRef(weather.userId, weather.outletId), weather, { merge: true });
   } catch (err) {
     console.error("Error saving weather:", err);
   }

@@ -3,6 +3,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, orderBy, limit, doc, getDoc, increment, writeBatch, deleteDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../firebase';
+import { getCachedCollection } from '../referenceCache';
 import { 
   SalesSummaryRecord, 
   ItemSalesRecord, 
@@ -88,12 +89,12 @@ const RawSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, data
     const fetchPrerequisites = async () => {
       try {
         const setRef = doc(db, 'category_settings', dataOwnerId);
-        const [setSnap, rSnap] = await Promise.all([
+        const [setSnap, rentArr] = await Promise.all([
           getDoc(setRef),
-          getDocs(query(collection(db, 'rentals'), where('userId', '==', dataOwnerId)))
+          getCachedCollection<StoreRental>('rentals', dataOwnerId)
         ]);
         if (setSnap.exists()) setSettings(setSnap.data() as CategorySettings);
-        setRentals(rSnap.docs.map(d => d.data() as StoreRental));
+        setRentals(rentArr);
       } catch (err) { console.error(err); }
     };
     fetchPrerequisites();

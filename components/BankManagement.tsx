@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import type { User } from 'firebase/auth';
 import { collection, query, getDocs, addDoc, doc, deleteDoc, updateDoc, where, orderBy } from 'firebase/firestore';
 import { db } from '../firebase';
+import { getCachedCollection } from '../referenceCache';
 import { BankAccount, SalesLedgerEntry, BankTransaction, MASTER_OUTLETS, getOutletName, StoreRental } from '../types';
 import { Star } from 'lucide-react';
 import {
@@ -58,14 +59,9 @@ const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
   const fetchAccounts = async () => {
     setLoading(true);
     try {
-      // Fetch Active Outlets from Store Hub (Rentals)
-      const rentalsQ = query(
-        collection(db, 'rentals'),
-        where('userId', '==', dataOwnerId),
-        where('status', '==', 'active')
-      );
-      const rentalsSnap = await getDocs(rentalsQ);
-      const activeIds = new Set(rentalsSnap.docs.map(d => (d.data() as StoreRental).outletId));
+      // Fetch Active Outlets from Store Hub (Rentals) — cached, filtered client-side
+      const rentArr = await getCachedCollection<StoreRental>('rentals', dataOwnerId);
+      const activeIds = new Set(rentArr.filter(r => r.status === 'active').map(r => r.outletId));
       setActiveOutletIds(activeIds);
 
       const q = query(
@@ -180,15 +176,14 @@ const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
     setLoadingLedger(true);
     try {
       // Two queries for bank_transactions: admin-written (userId) and crew-written (ownerId).
-      // Deduplicate by document ID so overlapping results aren't doubled.
+      // All scoped to this account server-side; deduplicate by document ID.
       const [salesSnap, txByUser, txByOwner] = await Promise.all([
-        getDocs(query(collection(db, 'sales_ledger'), where('ownerId', '==', dataOwnerId))),
-        getDocs(query(collection(db, 'bank_transactions'), where('userId', '==', dataOwnerId))),
-        getDocs(query(collection(db, 'bank_transactions'), where('ownerId', '==', dataOwnerId))),
+        getDocs(query(collection(db, 'sales_ledger'), where('ownerId', '==', dataOwnerId), where('bankAccountId', '==', accId))),
+        getDocs(query(collection(db, 'bank_transactions'), where('userId', '==', dataOwnerId), where('bankAccountId', '==', accId))),
+        getDocs(query(collection(db, 'bank_transactions'), where('ownerId', '==', dataOwnerId), where('bankAccountId', '==', accId))),
       ]);
 
       const fromSales = salesSnap.docs
-        .filter(d => d.data().bankAccountId === accId)
         .map(d => {
           const e = d.data() as SalesLedgerEntry;
           return { id: d.id, description: e.description, date: e.date, amount: e.amount, type: 'credit' as const, createdAt: e.createdAt, channel: e.channel, source: 'sales_ledger' as const };
@@ -199,7 +194,7 @@ const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
       txByOwner.docs.forEach(d => txDocMap.set(d.id, d));
 
       const fromTx = Array.from(txDocMap.values())
-        .filter(d => d.data().bankAccountId === accId && !d.data()._fileId)
+        .filter(d => !d.data()._fileId)
         .map(d => {
           const e = d.data() as BankTransaction;
           return { id: d.id, description: e.description, date: e.date, amount: e.amount, type: e.type, createdAt: e.createdAt, source: 'bank_transactions' as const };
@@ -232,12 +227,11 @@ const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
     setLoadingLedger(true);
     try {
       const [salesSnap, txByUser, txByOwner] = await Promise.all([
-        getDocs(query(collection(db, 'sales_ledger'), where('ownerId', '==', dataOwnerId))),
-        getDocs(query(collection(db, 'bank_transactions'), where('userId', '==', dataOwnerId))),
-        getDocs(query(collection(db, 'bank_transactions'), where('ownerId', '==', dataOwnerId))),
+        getDocs(query(collection(db, 'sales_ledger'), where('ownerId', '==', dataOwnerId), where('bankAccountId', '==', acc.id))),
+        getDocs(query(collection(db, 'bank_transactions'), where('userId', '==', dataOwnerId), where('bankAccountId', '==', acc.id))),
+        getDocs(query(collection(db, 'bank_transactions'), where('ownerId', '==', dataOwnerId), where('bankAccountId', '==', acc.id))),
       ]);
       const fromSales = salesSnap.docs
-        .filter(d => d.data().bankAccountId === acc.id)
         .map(d => {
           const e = d.data() as SalesLedgerEntry;
           return { id: d.id, description: e.description, date: e.date, amount: e.amount, type: 'credit' as const, createdAt: e.createdAt, channel: e.channel, source: 'sales_ledger' as const };
@@ -246,7 +240,7 @@ const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
       txByUser.docs.forEach(d => txDocMap.set(d.id, d));
       txByOwner.docs.forEach(d => txDocMap.set(d.id, d));
       const fromTx = Array.from(txDocMap.values())
-        .filter(d => d.data().bankAccountId === acc.id && !d.data()._fileId)
+        .filter(d => !d.data()._fileId)
         .map(d => {
           const e = d.data() as BankTransaction;
           return { id: d.id, description: e.description, date: e.date, amount: e.amount, type: e.type, createdAt: e.createdAt, source: 'bank_transactions' as const };

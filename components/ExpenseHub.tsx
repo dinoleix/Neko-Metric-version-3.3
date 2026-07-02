@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase';
+import { getCachedCollection } from '../referenceCache';
 import { 
   ExpenseMonthlySnapshot, 
   StoreRental, 
@@ -110,11 +111,11 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
       // Fetch data for selected year and the one before it to support cross-year trajectory analysis
       const yearRange = [yearInt.toString(), (yearInt - 1).toString()];
       const settingsRef = doc(db, 'category_settings', dataOwnerId);
-      const [snapSnap, rSnap, empSnap, paySnap, adjSnap, bankSnap, setSnap] = await Promise.all([
+      const [snapSnap, rentArr, empArr, payArr, adjSnap, bankSnap, setSnap] = await Promise.all([
         getDocs(query(collection(db, 'expense_snapshots'), where('userId', '==', dataOwnerId), where('year', 'in', yearRange))),
-        getDocs(query(collection(db, 'rentals'), where('userId', '==', dataOwnerId))),
-        getDocs(query(collection(db, 'employees'), where('userId', '==', dataOwnerId))),
-        getDocs(query(collection(db, 'monthly_payrolls'), where('userId', '==', dataOwnerId))),
+        getCachedCollection<StoreRental>('rentals', dataOwnerId),
+        getCachedCollection<Employee>('employees', dataOwnerId),
+        getCachedCollection<MonthlyPayroll>('monthly_payrolls', dataOwnerId),
         getDocs(query(collection(db, 'cogs_adjustments'), where('userId', '==', dataOwnerId))),
         getDocs(query(collection(db, 'bank_statement_imports'), where('userId', '==', dataOwnerId), where('isVerified', '==', true))),
         getDoc(settingsRef)
@@ -129,9 +130,9 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
       }
 
       setSnapshots(snapSnap.docs.map(d => ({ ...d.data(), id: d.id } as ExpenseMonthlySnapshot)));
-      setRentals(rSnap.docs.map(d => ({ ...d.data(), id: d.id } as StoreRental)));
-      setEmployees(empSnap.docs.map(d => ({ ...d.data(), id: d.id } as Employee)));
-      setMonthlyPayrolls(paySnap.docs.map(d => ({ ...d.data(), id: d.id } as MonthlyPayroll)));
+      setRentals(rentArr);
+      setEmployees(empArr);
+      setMonthlyPayrolls(payArr);
       setAdjustments(adjSnap.docs.map(d => ({ ...d.data(), id: d.id } as CogsAdjustment)));
       setBankTxns(bankSnap.docs.map(d => ({ ...d.data(), id: d.id } as BankTransaction)));
     } catch (err: any) {

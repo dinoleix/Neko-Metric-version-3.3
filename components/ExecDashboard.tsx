@@ -42,6 +42,7 @@ import {
   CloudSun
 } from 'lucide-react';
 import WeatherWidget from './WeatherWidget';
+import { getCachedCollection } from '../referenceCache';
 
 const ExecDashboard: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
   const [salesSnaps, setSalesSnaps] = useState<SalesMonthlySnapshot[]>([]);
@@ -56,20 +57,20 @@ const ExecDashboard: React.FC<{ user: User; dataOwnerId: string }> = ({ user, da
     setLoading(true);
     try {
       const constraints = [where('userId', '==', dataOwnerId)];
-      const [sSnap, eSnap, aSnap, empSnap, rentSnap, paySnap] = await Promise.all([
+      const [sSnap, eSnap, aSnap, empArr, rentArr, payArr] = await Promise.all([
         getDocs(query(collection(db, 'sales_snapshots'), ...constraints)),
         getDocs(query(collection(db, 'expense_snapshots'), ...constraints)),
         getDocs(query(collection(db, 'cogs_adjustments'), ...constraints)),
-        getDocs(query(collection(db, 'employees'), ...constraints)),
-        getDocs(query(collection(db, 'rentals'), ...constraints)),
-        getDocs(query(collection(db, 'monthly_payrolls'), ...constraints))
+        getCachedCollection<Employee>('employees', dataOwnerId),
+        getCachedCollection<StoreRental>('rentals', dataOwnerId),
+        getCachedCollection<MonthlyPayroll>('monthly_payrolls', dataOwnerId)
       ]);
       setSalesSnaps(sSnap.docs.map(d => d.data() as SalesMonthlySnapshot));
       setExpenseSnaps(eSnap.docs.map(d => d.data() as ExpenseMonthlySnapshot));
       setAdjustments(aSnap.docs.map(d => d.data() as CogsAdjustment));
-      setEmployees(empSnap.docs.map(d => d.data() as Employee));
-      setRentals(rentSnap.docs.map(d => ({ id: d.id, ...d.data() } as StoreRental)));
-      setPayrolls(paySnap.docs.map(d => d.data() as MonthlyPayroll));
+      setEmployees(empArr);
+      setRentals(rentArr);
+      setPayrolls(payArr);
     } catch (err) {
       console.error(err);
     } finally {

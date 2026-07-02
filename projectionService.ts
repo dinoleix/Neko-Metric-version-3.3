@@ -3,7 +3,7 @@ import { Type } from "@google/genai";
 import { ai } from './geminiService';
 import { collection, query, where, getDocs, limit, orderBy } from 'firebase/firestore';
 import { db } from './firebase';
-import { SalesProjection, SalesMonthlySnapshot, Holiday, WeatherForecast, MONTH_NAMES } from './types';
+import { SalesProjection, SalesMonthlySnapshot, Holiday, WeatherForecast, MONTH_NAMES, istDateString } from './types';
 import { fetchForecastFromAPI } from './weatherService';
 
 export const generateSalesProjection = async (
@@ -13,10 +13,9 @@ export const generateSalesProjection = async (
   lon: number
 ): Promise<SalesProjection> => {
   try {
-    // 1. Fetch Context Data
-    const now = new Date();
-    const startDate = now.toISOString().split('T')[0];
-    const endDate = new Date(now.getTime() + 5 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    // 1. Fetch Context Data (dates in IST — see istDateString in types.ts)
+    const startDate = istDateString(0);
+    const endDate = istDateString(5);
 
     // Historical Sales (Last 3 months)
     // BUG-14 fix: increased limit from 24 to 60 (5 years) so in-memory sort always catches the most recent months

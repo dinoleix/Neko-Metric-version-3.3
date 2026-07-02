@@ -833,3 +833,18 @@ export const BANK_STATEMENT_TARGET_FIELDS = [
   { id: 'balance', label: 'Balance', required: false },
   { id: 'referenceNo', label: 'Ref/UTR Number', required: false },
 ];
+
+// ---------------------------------------------------------------------------
+// IST date helpers — all business dates in this app are Indian Standard Time.
+// Never use `new Date().toISOString()` directly for a "today"-style default:
+// UTC lags IST by 5h30m, so evenings/mornings shift the date by one day.
+// ---------------------------------------------------------------------------
+
+/** Date object shifted so its UTC fields read as IST wall-clock time. */
+export const istNow = (): Date => new Date(Date.now() + 5.5 * 60 * 60 * 1000);
+
+/** YYYY-MM-DD in IST, offset by the given number of days (0 = today). */
+export const istDateString = (offsetDays = 0): string => {
+  const d = new Date(Date.now() + (5.5 * 60 * 60 + offsetDays * 24 * 60 * 60) * 1000);
+  return d.toISOString().split('T')[0];
+};

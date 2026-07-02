@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase';
+import { getCachedCollection } from '../referenceCache';
 import { 
   ItemMonthlySnapshot, 
   ExpenseMonthlySnapshot,
@@ -77,11 +78,11 @@ const WasteManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
       const constraints = [where('userId', '==', dataOwnerId)];
       const settingsRef = doc(db, 'category_settings', dataOwnerId);
 
-      const [iSnap, eSnap, cSnap, skuSnap, adjSnap, setSnap] = await Promise.all([
+      const [iSnap, eSnap, costsArr, skuArr, adjSnap, setSnap] = await Promise.all([
         getDocs(query(collection(db, 'item_snapshots'), ...constraints, where('year', '==', selectedYear))),
         getDocs(query(collection(db, 'expense_snapshots'), ...constraints, where('year', '==', selectedYear))),
-        getDocs(query(collection(db, 'item_costs'), ...constraints)),
-        getDocs(query(collection(db, 'sku_mappings'), ...constraints)),
+        getCachedCollection<ItemCost>('item_costs', dataOwnerId),
+        getCachedCollection<SkuMapping>('sku_mappings', dataOwnerId),
         getDocs(query(collection(db, 'cogs_adjustments'), ...constraints, where('year', '==', selectedYear))),
         getDoc(settingsRef)
       ]);
@@ -94,12 +95,11 @@ const WasteManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
 
       setItemSnapshots(iSnap.docs.map(d => d.data() as ItemMonthlySnapshot));
       setExpenseSnapshots(eSnap.docs.map(d => d.data() as ExpenseMonthlySnapshot));
-      setItemCosts(cSnap.docs.map(d => d.data() as ItemCost));
+      setItemCosts(costsArr);
       setAdjustments(adjSnap.docs.map(d => d.data() as CogsAdjustment));
 
       const mappingObj: Record<string, SkuCategory> = {};
-      skuSnap.docs.forEach(d => {
-        const data = d.data() as SkuMapping;
+      skuArr.forEach(data => {
         mappingObj[data.itemName] = data.category;
       });
       setSkuMappings(mappingObj);

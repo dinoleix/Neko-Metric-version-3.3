@@ -5,6 +5,7 @@ import autoTable from 'jspdf-autotable';
 import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase';
+import { getCachedCollection } from '../referenceCache';
 import {
   ItemMonthlySnapshot,
   ExpenseMonthlySnapshot,
@@ -177,17 +178,15 @@ const WasteManagementV2: React.FC<{ user: User; dataOwnerId: string }> = ({ user
 
   const fetchPrerequisites = async () => {
     try {
-      const constraints = [where('userId', '==', dataOwnerId)];
-      const [cSnap, skuSnap, rSnap, normSnap] = await Promise.all([
-        getDocs(query(collection(db, 'item_costs'), ...constraints)),
-        getDocs(query(collection(db, 'sku_mappings'), ...constraints)),
-        getDocs(query(collection(db, 'rentals'), ...constraints)),
-        getDocs(query(collection(db, 'menu_normalization'), ...constraints))
+      const [costsArr, skuArr, rentArr, normArr] = await Promise.all([
+        getCachedCollection<ItemCost>('item_costs', dataOwnerId),
+        getCachedCollection<SkuMapping>('sku_mappings', dataOwnerId),
+        getCachedCollection<StoreRental>('rentals', dataOwnerId),
+        getCachedCollection<MenuNormalization>('menu_normalization', dataOwnerId)
       ]);
-      
+
       const latestCostsMap = new Map<string, ItemCost>();
-      cSnap.docs.forEach(d => {
-        const data = d.data() as ItemCost;
+      costsArr.forEach(data => {
         const key = (data.itemName || '').trim().toUpperCase();
         const existing = latestCostsMap.get(key);
         if (!existing || (data.updatedAt > existing.updatedAt)) {
@@ -195,18 +194,16 @@ const WasteManagementV2: React.FC<{ user: User; dataOwnerId: string }> = ({ user
         }
       });
       setItemCosts(Array.from(latestCostsMap.values()));
-      setRentals(rSnap.docs.map(d => ({ id: d.id, ...d.data() } as StoreRental)));
-      
+      setRentals(rentArr);
+
       const nMap: Record<string, string> = {};
-      normSnap.docs.forEach(d => {
-        const data = d.data() as MenuNormalization;
+      normArr.forEach(data => {
         nMap[data.sourceName.trim().toUpperCase()] = data.masterName.trim().toUpperCase();
       });
       setNormalizationMap(nMap);
 
       const mappingObj: Record<string, { category: SkuCategory, segment?: string }> = {};
-      skuSnap.docs.forEach(d => {
-        const data = d.data() as SkuMapping;
+      skuArr.forEach(data => {
         mappingObj[data.itemName.trim().toUpperCase()] = { category: data.category, segment: data.segment };
       });
       setSkuMappings(mappingObj);

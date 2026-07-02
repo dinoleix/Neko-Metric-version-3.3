@@ -3,6 +3,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, writeBatch, doc, setDoc, getDoc, increment, arrayUnion } from 'firebase/firestore';
 import { db } from '../firebase';
+import { getCachedCollection } from '../referenceCache';
 import { 
   FileMetadata, 
   SalesMonthlySnapshot, 
@@ -128,12 +129,12 @@ const DataCatalog: React.FC<{ user: User; dataOwnerId: string }> = ({ user, data
       const constraints = isGlobal ? baseConstraints : [...baseConstraints, where('outletId', '==', outletId)];
 
       const settingsRef = doc(db, 'category_settings', dataOwnerId);
-      const [setSnap, aliasSnap, costsSnap, rentSnap, skuMapSnap] = await Promise.all([
+      const [setSnap, aliasArr, costsArr, rentArr, skuArr] = await Promise.all([
         getDoc(settingsRef),
-        getDocs(query(collection(db, 'platform_item_mappings'), where('userId', '==', dataOwnerId))),
-        getDocs(query(collection(db, 'item_costs'), where('userId', '==', dataOwnerId))),
-        getDocs(query(collection(db, 'rentals'), where('userId', '==', dataOwnerId))),
-        getDocs(query(collection(db, 'sku_mappings'), where('userId', '==', dataOwnerId)))
+        getCachedCollection('platform_item_mappings', dataOwnerId),
+        getCachedCollection<ItemCost>('item_costs', dataOwnerId),
+        getCachedCollection<StoreRental>('rentals', dataOwnerId),
+        getCachedCollection<SkuMapping>('sku_mappings', dataOwnerId)
       ]);
 
       let cogsKeywords = DEFAULT_COGS;
@@ -145,14 +146,13 @@ const DataCatalog: React.FC<{ user: User; dataOwnerId: string }> = ({ user, data
       }
 
       const aliasMap: Record<string, string> = {};
-      aliasSnap.docs.forEach(d => {
-        const data = d.data() as PlatformItemMapping;
+      aliasArr.forEach((data: PlatformItemMapping) => {
         aliasMap[data.platformItemName] = data.posItemName;
       });
 
-      const rentals = rentSnap.docs.map(d => d.data() as StoreRental);
-      const itemCosts = costsSnap.docs.map(d => d.data() as ItemCost);
-      const skuMappings = skuMapSnap.docs.map(d => d.data() as SkuMapping);
+      const rentals = rentArr;
+      const itemCosts = costsArr;
+      const skuMappings = skuArr;
 
       const [sSnap, eSnap, pSnap, iSnap, evSnap, oSnap] = await Promise.all([
         getDocs(query(collection(db, 'sales_summary'), ...constraints)),

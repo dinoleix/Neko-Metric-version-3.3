@@ -3,6 +3,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, orderBy, limit, doc, updateDoc } from 'firebase/firestore';
 import { db } from '../firebase';
+import { getCachedCollection } from '../referenceCache';
 import { 
   SalesMonthlySnapshot, 
   ItemMonthlySnapshot, 
@@ -190,33 +191,30 @@ const OnlineProfitCenter: React.FC<{ user: User; dataOwnerId: string }> = ({ use
         where('month', '==', selectedMonth)
       ];
 
-      const [sSnap, iSnap, rSnap, cSnap, skuSnap, normSnap, allSSnap] = await Promise.all([
-        getDocs(query(collection(db, 'sales_snapshots'), ...constraints)),
+      // Note: month-scoped sales_snapshots are derived in memory from allSSnap,
+      // so we only fetch the full snapshot set once here.
+      const [iSnap, rentArr, costsArr, skuArr, normArr, allSSnap] = await Promise.all([
         getDocs(query(collection(db, 'item_snapshots'), ...constraints)),
-        getDocs(query(collection(db, 'rentals'), where('userId', '==', dataOwnerId))),
-        getDocs(query(collection(db, 'item_costs'), where('userId', '==', dataOwnerId))),
-        getDocs(query(collection(db, 'sku_mappings'), where('userId', '==', dataOwnerId))),
-        getDocs(query(collection(db, 'menu_normalization'), where('userId', '==', dataOwnerId))),
+        getCachedCollection<StoreRental>('rentals', dataOwnerId),
+        getCachedCollection<ItemCost>('item_costs', dataOwnerId),
+        getCachedCollection<SkuMapping>('sku_mappings', dataOwnerId),
+        getCachedCollection<MenuNormalization>('menu_normalization', dataOwnerId),
         getDocs(query(collection(db, 'sales_snapshots'), where('userId', '==', dataOwnerId)))
       ]);
 
-      // We still keep month-specific snaps for overview
-      // but use allSSnap for velocity
       setAllSalesSnaps(allSSnap.docs.map(d => d.data() as SalesMonthlySnapshot));
       setItemSnaps(iSnap.docs.map(d => d.data() as ItemMonthlySnapshot));
-      setRentals(rSnap.docs.map(d => ({ id: d.id, ...d.data() } as StoreRental)));
-      setItemCosts(cSnap.docs.map(d => d.data() as ItemCost));
-      
+      setRentals(rentArr);
+      setItemCosts(costsArr);
+
       const nMap: Record<string, string> = {};
-      normSnap.docs.forEach(d => {
-        const data = d.data() as MenuNormalization;
+      normArr.forEach(data => {
         nMap[data.sourceName.trim().toUpperCase()] = data.masterName.trim().toUpperCase();
       });
       setNormalizationMap(nMap);
 
       const mappingObj: Record<string, any> = {};
-      skuSnap.docs.forEach(d => {
-        const data = d.data() as SkuMapping;
+      skuArr.forEach(data => {
         mappingObj[data.itemName.trim().toUpperCase()] = data;
       });
       setSkuMappings(mappingObj);

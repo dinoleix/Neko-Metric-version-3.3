@@ -3,7 +3,8 @@ import React, { useState, useEffect, useMemo } from 'react';
 import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, addDoc, doc, updateDoc, arrayUnion, deleteDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
-import { Employee, SalaryHistory, StoreRental, MonthlyPayroll, MASTER_OUTLETS, getOutletName, YEAR_OPTIONS, MONTH_NAMES } from '../types';
+import { invalidateCached } from '../referenceCache';
+import { Employee, SalaryHistory, StoreRental, MonthlyPayroll, MASTER_OUTLETS, getOutletName, YEAR_OPTIONS, MONTH_NAMES, istDateString } from '../types';
 import { 
   Users, 
   Plus, 
@@ -51,12 +52,12 @@ const Team: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId
   // New Employee Form
   const [newName, setNewName] = useState('');
   const [newOutlet, setNewOutlet] = useState('');
-  const [newDate, setNewDate] = useState(new Date().toISOString().split('T')[0]);
+  const [newDate, setNewDate] = useState(istDateString());
   const [newSalary, setNewSalary] = useState('');
 
   // Increment Form
   const [incAmount, setIncAmount] = useState('');
-  const [incDate, setIncDate] = useState(new Date().toISOString().split('T')[0]);
+  const [incDate, setIncDate] = useState(istDateString());
   const [incReason, setIncReason] = useState('');
 
   const fetchData = async () => {
@@ -139,7 +140,8 @@ const Team: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId
       }
 
       await batch.commit();
-      
+      invalidateCached('monthly_payrolls', user.uid);
+
       setMonthlyPayrolls(prev => {
         const filtered = prev.filter(p => !(p.month === payrollTargetMonth && p.year === payrollTargetYear));
         return [...filtered, ...newLogs];
@@ -178,6 +180,7 @@ const Team: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId
         userId: user.uid
       };
       await addDoc(collection(db, 'employees'), employee);
+      invalidateCached('employees', user.uid);
       setIsAdding(false);
       setNewName(''); setNewSalary(''); setNewOutlet('');
       fetchData();
@@ -191,6 +194,7 @@ const Team: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId
       const newHistory: SalaryHistory = { date: incDate, amount: amount, reason: incReason };
       const employeeRef = doc(db, 'employees', selectedEmployee.id);
       await updateDoc(employeeRef, { currentSalary: amount, history: arrayUnion(newHistory) });
+      invalidateCached('employees', user.uid);
       setIncAmount(''); setIncReason('');
       fetchData();
       setSelectedEmployee({ ...selectedEmployee, currentSalary: amount, history: [...selectedEmployee.history, newHistory] });
@@ -201,6 +205,7 @@ const Team: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId
     if (!confirm("Remove this employee record?")) return;
     try {
       await deleteDoc(doc(db, 'employees', id));
+      invalidateCached('employees', user.uid);
       setSelectedEmployee(null);
       fetchData();
     } catch (err) { console.error(err); }

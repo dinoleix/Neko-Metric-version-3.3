@@ -1,9 +1,10 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import type { User } from 'firebase/auth';
-import { collection, query, getDocs, getDoc, where, addDoc, doc, deleteDoc, updateDoc, setDoc, orderBy } from 'firebase/firestore';
+import { collection, query, getDocs, getDoc, where, addDoc, doc, deleteDoc, updateDoc, setDoc, orderBy, increment, runTransaction } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, storage } from '../firebase';
+import { getCachedCollection, invalidateCached } from '../referenceCache';
 import {
   DailyCounterEntry,
   DailySalesLog,
@@ -23,7 +24,9 @@ import {
   ServingOption,
   WasteEntry,
   WasteLineItem,
-  WasteType
+  WasteType,
+  istNow,
+  istDateString
 } from '../types';
 import ProductCatalog from './ProductCatalog';
 import {
@@ -126,11 +129,7 @@ const compressImage = (file: File, maxWidth: number = 1200): Promise<Blob> => {
 
 // Returns today's date in YYYY-MM-DD format using IST (UTC+5:30) so the default
 // is never off by one day for users in India regardless of local timezone.
-const istToday = (): string => {
-  const now = new Date();
-  const ist = new Date(now.getTime() + 5.5 * 60 * 60 * 1000);
-  return ist.toISOString().split('T')[0];
-};
+const istToday = (): string => istDateString(0);
 
 const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, profile }) => {
   const [activeMode, setActiveMode] = useState<'landing' | 'view' | 'add' | 'edit' | 'daily-sales' | 'transfer-10k' | 'record-waste'>('landing');
@@ -231,8 +230,8 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
 
   const fetchServingOptions = async () => {
     const ownerId = profile.ownerId || user.uid;
-    const snap = await getDocs(query(collection(db, 'serving_options'), where('userId', '==', ownerId)));
-    setServingOptions(snap.docs.map(d => ({ id: d.id, ...d.data() } as ServingOption)));
+    const options = await getCachedCollection<ServingOption>('serving_options', ownerId);
+    setServingOptions(options);
   };
 
   const resetWasteForm = () => {
@@ -300,11 +299,10 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
       // Use ownerId if available (for crew), otherwise fallback to current user.uid (for admin)
       const ownerId = profile.ownerId || user.uid;
 
-      // Fetch Bank Accounts — no where filter (rules use get() calls that break collection queries)
-      const bankSnap = await getDocs(collection(db, 'bank_accounts'));
+      // Fetch only this business's bank accounts (rules deny broader reads)
+      const bankSnap = await getDocs(query(collection(db, 'bank_accounts'), where('userId', '==', ownerId)));
       const fetchedAllAccounts = bankSnap.docs
-        .map(d => ({ id: d.id, ...d.data() } as BankAccount))
-        .filter(a => a.userId === ownerId);
+        .map(d => ({ id: d.id, ...d.data() } as BankAccount));
       setAllBankAccounts(fetchedAllAccounts);
 
       // Filter by assigned outlet if available
@@ -314,36 +312,35 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
 
       setBankAccounts(filteredBankAccounts);
 
-      // Fetch vendors
-      const vendorSnap = await getDocs(collection(db, 'vendors'));
-      setVendors(vendorSnap.docs.map(d => ({ id: d.id, ...d.data() } as Vendor)).sort((a, b) => a.name.localeCompare(b.name)));
+      // Fetch this business's vendors (all vendor docs carry ownerId) — cached
+      const vendorArr = await getCachedCollection<Vendor>('vendors', ownerId, 'ownerId');
+      setVendors([...vendorArr].sort((a, b) => a.name.localeCompare(b.name)));
 
       let start: string;
       let end: string = istToday();
       const todayIst = istToday(); // IST-safe date string
 
+      // All presets are computed in IST (istNow shifts UTC fields to IST wall-clock)
       switch (datePreset) {
         case 'yesterday':
-          const yest = new Date();
-          yest.setDate(yest.getDate() - 1);
-          start = yest.toISOString().split('T')[0];
+          start = istDateString(-1);
           end = start;
           break;
-        case 'this-week':
-          const startOfWeek = new Date();
-          const day = startOfWeek.getDay(); // 0 is Sun, 1 is Mon
-          const diff = startOfWeek.getDate() - day + (day === 0 ? -6 : 1); // Adjust for Monday start
-          startOfWeek.setDate(diff);
-          start = startOfWeek.toISOString().split('T')[0];
+        case 'this-week': {
+          const nowIst = istNow();
+          const day = nowIst.getUTCDay(); // 0 is Sun, 1 is Mon
+          const daysSinceMonday = day === 0 ? 6 : day - 1;
+          start = istDateString(-daysSinceMonday);
           break;
-        case 'last-week':
-          const prevWeekStart = new Date();
-          prevWeekStart.setDate(prevWeekStart.getDate() - prevWeekStart.getDay() - 6);
-          const prevWeekEnd = new Date(prevWeekStart);
-          prevWeekEnd.setDate(prevWeekStart.getDate() + 6);
-          start = prevWeekStart.toISOString().split('T')[0];
-          end = prevWeekEnd.toISOString().split('T')[0];
+        }
+        case 'last-week': {
+          const nowIst = istNow();
+          const day = nowIst.getUTCDay();
+          const daysSinceMonday = day === 0 ? 6 : day - 1;
+          start = istDateString(-daysSinceMonday - 7);
+          end = istDateString(-daysSinceMonday - 1);
           break;
+        }
         case 'this-month':
           start = todayIst.slice(0, 8) + '01'; // first day of current IST month
           break;
@@ -356,19 +353,18 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
           break;
       }
 
-      // FIX: Simplifed query to avoid composite index requirement. 
-      // Date filtering is moved to client-side.
+      // Date range is applied server-side so we only pay for the docs we show.
+      // Needs the (userId ASC, date ASC) composite index in firestore.indexes.json.
       const q = query(
         collection(db, 'crew_entries'),
-        where('userId', '==', user.uid)
+        where('userId', '==', user.uid),
+        where('date', '>=', start),
+        where('date', '<=', end)
       );
-      
+
       const snap = await getDocs(q);
-      const allDocs = snap.docs.map(d => ({ id: d.id, ...d.data() } as DailyCounterEntry));
-      
-      // Perform client-side date range filtering to bypass index error
-      const filteredByDate = allDocs.filter(entry => entry.date >= start && entry.date <= end);
-      
+      const filteredByDate = snap.docs.map(d => ({ id: d.id, ...d.data() } as DailyCounterEntry));
+
       setEntries(filteredByDate.sort((a, b) => b.createdAt - a.createdAt));
     } catch (err) {
       console.error("Fetch entries error:", err);
@@ -386,7 +382,8 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
 
   const loadCatalogProducts = async () => {
     try {
-      const snap = await getDocs(collection(db, 'products'));
+      const ownerId = profile.ownerId || user.uid;
+      const snap = await getDocs(query(collection(db, 'products'), where('ownerId', '==', ownerId)));
       setCatalogProducts(
         snap.docs.map(d => ({ id: d.id, ...d.data() } as Product))
           .sort((a, b) => a.name.localeCompare(b.name))
@@ -403,7 +400,8 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
   }, [user, datePreset, customStartDate, customEndDate]);
 
   useEffect(() => {
-    if (activeMode === 'view') fetchEntries();
+    // 'view' is already covered by the [user, datePreset, ...] effect and by the
+    // explicit fetchEntries() after every submit/delete — no need to refetch here.
     if (activeMode === 'daily-sales') fetchDsLogs();
     if (activeMode === 'record-waste') fetchServingOptions();
   }, [activeMode]);
@@ -471,15 +469,18 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     const [yr, mo, dy] = entryDate.split('-');
     const dateCode = `${dy}${mo}${yr.slice(2)}`;
     const storeCode = getOutletCode(entryOutletId);
+    const ownerId = profile.ownerId || user.uid;
 
-    // Query by userId (matches security rules), filter outlet+date client-side
-    const q = query(collection(db, 'crew_entries'), where('userId', '==', user.uid));
-    const snap = await getDocs(q);
-    const sameDayCount = snap.docs.filter(d => {
-      const data = d.data();
-      return data.outletId === entryOutletId && data.date === entryDate;
-    }).length;
-    const seq = (sameDayCount + 1).toString().padStart(3, '0');
+    // Atomic per-outlet-per-day counter: 1 read + 1 write instead of scanning all
+    // crew_entries, and concurrent submissions can't mint the same number.
+    const counterRef = doc(db, 'bill_counters', `${ownerId}_${storeCode}_${dateCode}`);
+    const seqNum = await runTransaction(db, async (txn) => {
+      const counterSnap = await txn.get(counterRef);
+      const next = (counterSnap.exists() ? (counterSnap.data().seq || 0) : 0) + 1;
+      txn.set(counterRef, { userId: ownerId, seq: next, updatedAt: Date.now() }, { merge: true });
+      return next;
+    });
+    const seq = seqNum.toString().padStart(3, '0');
 
     return `${prefix}-${storeCode}-${dateCode}-${seq}`;
   };
@@ -561,10 +562,9 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
         const accountType = entryType === 'expense' ? 'cash' : 'digital';
 
         // Re-fetch live bank accounts to avoid stale React state
-        const liveBankSnap = await getDocs(collection(db, 'bank_accounts'));
+        const liveBankSnap = await getDocs(query(collection(db, 'bank_accounts'), where('userId', '==', ownerId)));
         const liveBankAccounts = liveBankSnap.docs
-          .map(d => ({ id: d.id, ...d.data() } as BankAccount))
-          .filter(a => a.userId === ownerId);
+          .map(d => ({ id: d.id, ...d.data() } as BankAccount));
 
         const targetAcc =
           liveBankAccounts.find(a => a.outletId === outletId && a.isPrimary === true && a.accountType === accountType) ||
@@ -593,9 +593,9 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
 
           if (deduction !== 0) {
             const now = Date.now();
-            const safeBalance = (typeof targetAcc.balance === 'number' && !isNaN(targetAcc.balance)) ? targetAcc.balance : 0;
+            // increment() is atomic — concurrent submissions can't lose a deduction
             await updateDoc(doc(db, 'bank_accounts', targetAcc.id!), {
-              balance: safeBalance - deduction,
+              balance: increment(-deduction),
               updatedAt: now,
             });
             await addDoc(collection(db, 'bank_transactions'), {
@@ -707,16 +707,14 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
       const ownerId = profile.ownerId || user.uid;
 
       if (!dsExistingId) {
-        // Query by submitter UID (security-rule safe), filter outlet+date client-side
+        // Equality-only filter (no composite index needed); outlet checked client-side
         const dupQ = query(
           collection(db, 'daily_sales_logs'),
-          where('userId', '==', user.uid)
+          where('userId', '==', user.uid),
+          where('date', '==', dsDate)
         );
         const dupSnap = await getDocs(dupQ);
-        const existing = dupSnap.docs.find(d => {
-          const data = d.data();
-          return data.outletId === dsOutletId && data.date === dsDate;
-        });
+        const existing = dupSnap.docs.find(d => d.data().outletId === dsOutletId);
         if (existing) {
           setDsExistingId(existing.id);
           setDsDuplicateWarning(true);
@@ -764,7 +762,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
 
           if (cashAcc && cashDelta !== 0) {
             routingOps.push(updateDoc(doc(db, 'bank_accounts', cashAcc.id!), {
-              balance: cashAcc.balance + cashDelta, updatedAt: now,
+              balance: increment(cashDelta), updatedAt: now,
             }));
             routingOps.push(addDoc(collection(db, 'sales_ledger'), {
               bankAccountId: cashAcc.id!, bankAccountName: cashAcc.name,
@@ -775,7 +773,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
           }
           if (digitalAcc && digitalDelta !== 0) {
             routingOps.push(updateDoc(doc(db, 'bank_accounts', digitalAcc.id!), {
-              balance: digitalAcc.balance + digitalDelta, updatedAt: now,
+              balance: increment(digitalDelta), updatedAt: now,
             }));
             if (cardDelta !== 0) {
               routingOps.push(addDoc(collection(db, 'sales_ledger'), {
@@ -823,7 +821,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
           if (cashAcc && cash > 0) {
             routingOps.push(
               updateDoc(doc(db, 'bank_accounts', cashAcc.id!), {
-                balance: cashAcc.balance + cash,
+                balance: increment(cash),
                 updatedAt: now,
               })
             );
@@ -845,7 +843,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
           if (digitalAcc && (card > 0 || upi > 0)) {
             routingOps.push(
               updateDoc(doc(db, 'bank_accounts', digitalAcc.id!), {
-                balance: digitalAcc.balance + card + upi,
+                balance: increment(card + upi),
                 updatedAt: now,
               })
             );
@@ -944,17 +942,28 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
       }
     } catch {}
 
-    // Dual query: new entries have ownerId, old entries (pre-ownerId field) are found by userId
-    // Each query is isolated — if one fails due to rules, the other still runs
+    // Dual query: new entries have ownerId, old entries (pre-ownerId field) are found by userId.
+    // Both are scoped server-side to this outlet + month so a rebuild costs a handful of reads
+    // instead of the full history. Each query is isolated — if one fails, the other still runs.
+    const monthStart = `${yearStr}-${monthStr}-01`;
+    const monthEnd = `${yearStr}-${monthStr}-31`;
     let byOwnerDocs: any[] = [];
     let byUserDocs: any[] = [];
     try {
-      const snap = await getDocs(query(collection(db, 'crew_entries'), where('ownerId', '==', ownerId)));
+      const snap = await getDocs(query(collection(db, 'crew_entries'),
+        where('ownerId', '==', ownerId),
+        where('outletId', '==', entryOutletId),
+        where('date', '>=', monthStart),
+        where('date', '<=', monthEnd)));
       byOwnerDocs = snap.docs;
       console.log('[Rebuild] byOwner OK:', snap.size);
     } catch (e) { console.warn('[Rebuild] byOwner failed:', e); }
     try {
-      const snap = await getDocs(query(collection(db, 'crew_entries'), where('userId', '==', user.uid)));
+      const snap = await getDocs(query(collection(db, 'crew_entries'),
+        where('userId', '==', user.uid),
+        where('outletId', '==', entryOutletId),
+        where('date', '>=', monthStart),
+        where('date', '<=', monthEnd)));
       byUserDocs = snap.docs;
       console.log('[Rebuild] byUser OK:', snap.size);
     } catch (e) { console.warn('[Rebuild] byUser failed:', e); }
@@ -1054,6 +1063,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
         setVendors(prev => [...prev, { id: ref.id, ...data }].sort((a, b) => a.name.localeCompare(b.name)));
         setSelectedVendorId(ref.id);
       }
+      invalidateCached('vendors', ownerId);
       resetVendorForm();
     } catch (err) { console.error(err); } finally { setVSaving(false); }
   };
@@ -1069,6 +1079,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     setDeletingVendorId(id);
     try {
       await deleteDoc(doc(db, 'vendors', id));
+      invalidateCached('vendors', profile.ownerId || user.uid);
       setVendors(prev => prev.filter(v => v.id !== id));
     } catch (err) { console.error(err); } finally { setDeletingVendorId(null); }
   };
@@ -1083,8 +1094,8 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
       if (entry && entry.status === 'paid') {
         const ownerId = profile.ownerId || user.uid;
         const accountType = entry.type === 'expense' ? 'cash' : 'digital';
-        const liveBankSnap = await getDocs(collection(db, 'bank_accounts'));
-        const liveAccounts = liveBankSnap.docs.map(d => ({ id: d.id, ...d.data() } as BankAccount)).filter(a => a.userId === ownerId);
+        const liveBankSnap = await getDocs(query(collection(db, 'bank_accounts'), where('userId', '==', ownerId)));
+        const liveAccounts = liveBankSnap.docs.map(d => ({ id: d.id, ...d.data() } as BankAccount));
         const targetAcc = liveAccounts.find(a => a.outletId === entry.outletId && a.isPrimary && a.accountType === accountType)
           || liveAccounts.find(a => a.outletId === entry.outletId && a.accountType === accountType)
           || liveAccounts.find(a => a.outletId === entry.outletId);
@@ -1092,7 +1103,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
           const now = Date.now();
           const safeBalance = (typeof targetAcc.balance === 'number' && !isNaN(targetAcc.balance)) ? targetAcc.balance : 0;
           await updateDoc(doc(db, 'bank_accounts', targetAcc.id!), {
-            balance: safeBalance + entry.amount,
+            balance: increment(entry.amount),
             updatedAt: now,
           });
           await addDoc(collection(db, 'bank_transactions'), {
@@ -1172,10 +1183,10 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
 
       await Promise.all([
         updateDoc(doc(db, 'bank_accounts', primaryCashAccount.id!), {
-          balance: primaryCashAccount.balance - amt, updatedAt: now,
+          balance: increment(-amt), updatedAt: now,
         }),
         updateDoc(doc(db, 'bank_accounts', tenKAccount.id!), {
-          balance: tenKAccount.balance + amt, updatedAt: now,
+          balance: increment(amt), updatedAt: now,
         }),
         addDoc(collection(db, 'bank_transactions'), {
           userId: user.uid, ownerId, bankAccountId: primaryCashAccount.id!,

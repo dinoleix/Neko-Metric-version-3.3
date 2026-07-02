@@ -3,6 +3,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import type { User } from 'firebase/auth';
 import { doc, getDoc, setDoc, collection, query, where, getDocs, writeBatch, deleteDoc, addDoc } from 'firebase/firestore';
 import { db } from '../firebase';
+import { invalidateCached } from '../referenceCache';
 import { ai } from '../geminiService';
 import { 
   DEFAULT_COGS, 
@@ -263,8 +264,9 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
         });
         await batch.commit();
       }
+      invalidateCached('menu_normalization', user.uid);
       setSuccess(true); setTimeout(() => setSuccess(false), 3000);
-      fetchData(); 
+      fetchData();
     } catch (err) { setError("Normalization save failed."); } finally { setSaving(false); }
   };
 
@@ -283,6 +285,7 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
         });
         await batch.commit();
       }
+      invalidateCached('sku_mappings', user.uid);
       setSuccess(true); setTimeout(() => setSuccess(false), 3000);
     } catch (err) { setError("Product mapping failed."); } finally { setSaving(false); }
   };
@@ -318,8 +321,9 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
         
         await batch.commit();
       }
-      
-      setSuccess(true); 
+      invalidateCached('item_costs', user.uid);
+
+      setSuccess(true);
       setTimeout(() => setSuccess(false), 3000);
       fetchData(); // Force re-fetch to update local state with newest documents
     } catch (err) { 
@@ -814,8 +818,10 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
                             const data = { name: newServingName.toUpperCase(), items: newServingItems, totalCost, userId: user.uid, updatedAt: Date.now() };
                             if (editingServingId) {
                               await setDoc(doc(db, 'serving_options', editingServingId), data, { merge: true });
+                              invalidateCached('serving_options', user.uid);
                             } else {
                               await addDoc(collection(db, 'serving_options'), data);
+                              invalidateCached('serving_options', user.uid);
                             }
                             resetServingForm();
                             fetchData(); 
@@ -838,7 +844,7 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
                         <button onClick={() => onEditServing(opt)} className="p-2 text-indigo-400 hover:text-indigo-600 bg-white rounded-lg shadow-sm border border-indigo-50">
                           <Edit3 size={16}/>
                         </button>
-                        <button onClick={async () => { if(confirm("Permanently delete this template?")) { await deleteDoc(doc(db, 'serving_options', opt.id!)); fetchData(); } }} className="p-2 text-rose-300 hover:text-rose-500 bg-white rounded-lg shadow-sm border border-rose-50">
+                        <button onClick={async () => { if(confirm("Permanently delete this template?")) { await deleteDoc(doc(db, 'serving_options', opt.id!)); invalidateCached('serving_options', user.uid); fetchData(); } }} className="p-2 text-rose-300 hover:text-rose-500 bg-white rounded-lg shadow-sm border border-rose-50">
                           <Trash2 size={16}/>
                         </button>
                       </div>

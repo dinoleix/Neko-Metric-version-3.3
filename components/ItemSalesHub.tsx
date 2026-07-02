@@ -3,6 +3,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, doc, setDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
+import { getCachedCollection } from '../referenceCache';
 import { 
   ItemMonthlySnapshot, 
   StoreRental, 
@@ -135,13 +136,13 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
         constraints.push(where('year', 'in', Array.from(years)));
       }
 
-      const [snap, rSnap, cSnap, skuSnap, servingSnap, normSnap] = await Promise.all([
+      const [snap, rentalsArr, costsArr, skuArr, servingArr, normArr] = await Promise.all([
         getDocs(query(collection(db, 'item_snapshots'), ...constraints)),
-        getDocs(query(collection(db, 'rentals'), where('userId', '==', dataOwnerId))),
-        getDocs(query(collection(db, 'item_costs'), where('userId', '==', dataOwnerId))),
-        getDocs(query(collection(db, 'sku_mappings'), where('userId', '==', dataOwnerId))),
-        getDocs(query(collection(db, 'serving_options'), where('userId', '==', dataOwnerId))),
-        getDocs(query(collection(db, 'menu_normalization'), where('userId', '==', dataOwnerId)))
+        getCachedCollection<StoreRental>('rentals', dataOwnerId),
+        getCachedCollection<ItemCost>('item_costs', dataOwnerId),
+        getCachedCollection<SkuMapping>('sku_mappings', dataOwnerId),
+        getCachedCollection<ServingOption>('serving_options', dataOwnerId),
+        getCachedCollection<MenuNormalization>('menu_normalization', dataOwnerId)
       ]);
 
       let fetchedSnaps = snap.docs.map(d => ({ ...d.data(), id: d.id } as ItemMonthlySnapshot));
@@ -158,20 +159,18 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
       }
 
       setSnapshots(fetchedSnaps);
-      setRentals(rSnap.docs.map(d => ({ id: d.id, ...d.data() } as StoreRental)));
-      setItemCosts(cSnap.docs.map(d => ({ ...d.data(), id: d.id } as ItemCost)));
-      setServingOptions(servingSnap.docs.map(d => ({ id: d.id, ...d.data() } as ServingOption)));
-      
+      setRentals(rentalsArr);
+      setItemCosts(costsArr);
+      setServingOptions(servingArr);
+
       const normMap: Record<string, string> = {};
-      normSnap.docs.forEach(d => {
-        const data = d.data() as MenuNormalization;
+      normArr.forEach(data => {
         normMap[data.sourceName.trim().toUpperCase()] = data.masterName.trim().toUpperCase();
       });
       setNormalizationMap(normMap);
 
       const mappingObj: Record<string, { category: SkuCategory, segment?: string }> = {};
-      skuSnap.docs.forEach(d => {
-        const data = d.data() as SkuMapping;
+      skuArr.forEach(data => {
         mappingObj[data.itemName.trim().toUpperCase()] = { category: data.category, segment: data.segment };
       });
       setSkuMappings(mappingObj);

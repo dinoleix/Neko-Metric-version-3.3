@@ -3,6 +3,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, doc, getDoc, setDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
+import { getCachedCollection } from '../referenceCache';
 import { 
   SalesMonthlySnapshot, 
   ExpenseMonthlySnapshot, 
@@ -126,14 +127,13 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
         where('month', '==', selectedMonth)
       ];
 
-      const globalConstraints = [where('userId', '==', dataOwnerId)];
       const settingsRef = doc(db, 'category_settings', dataOwnerId);
 
       const [sSnaps, eSnaps, emp, rent, adj, pay, setSnap, pnlSnap] = await Promise.all([
         getDocs(query(collection(db, 'sales_snapshots'), ...periodConstraints)),
         getDocs(query(collection(db, 'expense_snapshots'), ...periodConstraints)),
-        getDocs(query(collection(db, 'employees'), ...globalConstraints)),
-        getDocs(query(collection(db, 'rentals'), ...globalConstraints)),
+        getCachedCollection<Employee>('employees', dataOwnerId),
+        getCachedCollection<StoreRental>('rentals', dataOwnerId),
         getDocs(query(collection(db, 'cogs_adjustments'), ...periodConstraints)),
         getDocs(query(collection(db, 'monthly_payrolls'), ...periodConstraints)),
         getDoc(settingsRef),
@@ -149,8 +149,8 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
       
       setSalesSnaps(sSnaps.docs.map(d => d.data() as SalesMonthlySnapshot));
       setExpenseSnaps(eSnaps.docs.map(d => d.data() as ExpenseMonthlySnapshot));
-      setEmployees(emp.docs.map(d => d.data() as Employee));
-      setRentals(rent.docs.map(d => ({ id: d.id, ...d.data() } as StoreRental)));
+      setEmployees(emp);
+      setRentals(rent);
       setAdjustments(adj.docs.map(d => d.data() as CogsAdjustment));
       setMonthlyPayrolls(pay.docs.map(d => d.data() as MonthlyPayroll));
       setExistingPnLSnaps(pnlSnap.docs.map(d => d.data() as PnLMonthlySnapshot));

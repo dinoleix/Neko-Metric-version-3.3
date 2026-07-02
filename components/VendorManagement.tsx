@@ -1,8 +1,9 @@
 
 import React, { useState, useEffect } from 'react';
 import type { User } from 'firebase/auth';
-import { collection, getDocs, addDoc, doc, deleteDoc, updateDoc } from 'firebase/firestore';
+import { collection, getDocs, addDoc, doc, deleteDoc, updateDoc, query, where } from 'firebase/firestore';
 import { db } from '../firebase';
+import { getCachedCollection, invalidateCached } from '../referenceCache';
 import { Vendor } from '../types';
 import {
   Store, Plus, Trash2, Edit2, Save, X, Loader2, CheckCircle2,
@@ -27,8 +28,8 @@ const VendorManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
   const fetchVendors = async () => {
     setLoading(true);
     try {
-      const snap = await getDocs(collection(db, 'vendors'));
-      setVendors(snap.docs.map(d => ({ id: d.id, ...d.data() } as Vendor)).sort((a, b) => a.name.localeCompare(b.name)));
+      const vendorArr = await getCachedCollection<Vendor>('vendors', dataOwnerId, 'ownerId');
+      setVendors([...vendorArr].sort((a, b) => a.name.localeCompare(b.name)));
     } catch (err) { console.error(err); } finally { setLoading(false); }
   };
 
@@ -63,6 +64,7 @@ const VendorManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
       } else {
         await addDoc(collection(db, 'vendors'), data);
       }
+      invalidateCached('vendors', dataOwnerId);
       resetForm();
       await fetchVendors();
     } catch (err) { console.error(err); } finally { setSaving(false); }
@@ -71,6 +73,7 @@ const VendorManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
   const handleDelete = async (id: string) => {
     if (!confirm('Delete this vendor?')) return;
     await deleteDoc(doc(db, 'vendors', id));
+    invalidateCached('vendors', dataOwnerId);
     setVendors(prev => prev.filter(v => v.id !== id));
   };
 

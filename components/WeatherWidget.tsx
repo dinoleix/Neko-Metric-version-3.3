@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { Cloud, Sun, CloudRain, Wind, Thermometer, Droplets, Loader2, AlertCircle, ChevronDown, ChevronUp } from 'lucide-react';
-import { WeatherData, StoreRental, WeatherForecast } from '../types';
+import { WeatherData, StoreRental, WeatherForecast, istDateString } from '../types';
 import { fetchWeatherFromAPI, getLatestWeather, saveWeatherToDB, fetchForecastFromAPI } from '../weatherService';
 
 interface WeatherWidgetProps {
@@ -14,7 +14,6 @@ const WeatherWidget: React.FC<WeatherWidgetProps> = ({ outlet, userId }) => {
   const [forecast, setForecast] = useState<WeatherForecast[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [isSimulated, setIsSimulated] = useState(false);
   const [showForecast, setShowForecast] = useState(false);
 
   const loadWeather = async () => {
@@ -26,37 +25,45 @@ const WeatherWidget: React.FC<WeatherWidgetProps> = ({ outlet, userId }) => {
 
     setLoading(true);
     setError(null);
-    setIsSimulated(false);
     try {
-      // 1. Try to get cached weather from DB (valid for 1 hour)
+      // 1. Cached weather doc (1 read) covers both weather and forecast for 1 hour
       const cached = await getLatestWeather(outlet.outletId, userId);
       const oneHourAgo = Date.now() - (60 * 60 * 1000);
 
       if (cached && cached.updatedAt > oneHourAgo) {
         setWeather(cached);
+        setForecast(cached.forecast || []);
       } else {
-        // 2. Fetch fresh from API (or fallback to Gemini)
-        const fresh = await fetchWeatherFromAPI(outlet.latitude, outlet.longitude);
-        
-        // Check if it was a simulation (no icon or specific flag)
-        const isSim = !import.meta.env.VITE_OPENWEATHER_API_KEY || fresh.icon === '01d';
-        setIsSimulated(isSim);
+        // 2. Refresh both from the API in one go, then cache them together
+        const [fresh, fData] = await Promise.all([
+          fetchWeatherFromAPI(outlet.latitude, outlet.longitude),
+          fetchForecastFromAPI(outlet.latitude, outlet.longitude)
+        ]);
 
-        const newWeather: Omit<WeatherData, 'id'> = {
+        if (!fresh) {
+          // API unavailable — show stale cache if we have one rather than nothing
+          if (cached) {
+            setWeather(cached);
+            setForecast(cached.forecast || []);
+          } else {
+            setError("FETCH_FAILED");
+          }
+          return;
+        }
+
+        const newWeather = {
           ...fresh as any,
-          date: new Date().toISOString().split('T')[0],
+          date: istDateString(),
           outletId: outlet.outletId,
           userId: userId,
           isForecast: false,
-          updatedAt: Date.now()
+          updatedAt: Date.now(),
+          forecast: fData
         };
         await saveWeatherToDB(newWeather);
-        setWeather({ ...newWeather, id: 'temp' } as WeatherData);
+        setWeather(newWeather as WeatherData);
+        setForecast(fData);
       }
-
-      // Fetch forecast separately (not cached for simplicity in this version)
-      const fData = await fetchForecastFromAPI(outlet.latitude, outlet.longitude);
-      setForecast(fData);
     } catch (err: any) {
       setError(err.message || "FETCH_FAILED");
     } finally {
@@ -98,11 +105,6 @@ const WeatherWidget: React.FC<WeatherWidgetProps> = ({ outlet, userId }) => {
         onClick={() => setShowForecast(!showForecast)}
         className="flex items-center gap-6 px-6 py-4 bg-white rounded-3xl border border-slate-100 shadow-sm hover:shadow-md transition-all group relative cursor-pointer"
       >
-        {isSimulated && (
-          <div className="absolute -top-2 -right-2 px-2 py-0.5 bg-indigo-600 text-[8px] font-black text-white rounded-full uppercase tracking-widest shadow-lg">
-            AI Simulated
-          </div>
-        )}
         <div className="flex items-center gap-3">
           <div className="p-2 bg-slate-50 rounded-xl group-hover:bg-indigo-50 transition-colors">
             {getIcon(weather.condition)}

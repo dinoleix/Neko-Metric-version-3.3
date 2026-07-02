@@ -4,6 +4,7 @@ import { type User } from 'firebase/auth';
 import { collection, addDoc, writeBatch, doc, setDoc, getDoc, increment, getDocs, query, where, arrayUnion, limit } from 'firebase/firestore';
 import { ref, uploadBytes } from 'firebase/storage';
 import { db, storage } from '../firebase';
+import { getCachedCollection } from '../referenceCache';
 import { ai } from '../geminiService';
 import { 
   FileType, 
@@ -28,7 +29,8 @@ import {
   EventRecord,
   MenuNormalization,
   YEAR_OPTIONS,
-  MONTH_NAMES
+  MONTH_NAMES,
+  istDateString
 } from '../types';
 import { GenerateContentResponse } from "@google/genai";
 import { 
@@ -100,7 +102,7 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
   const [isCheckingExisting, setIsCheckingExisting] = useState(false);
 
   const [eventName, setEventName] = useState('');
-  const [eventDate, setEventDate] = useState(new Date().toISOString().split('T')[0]);
+  const [eventDate, setEventDate] = useState(istDateString());
   const [eventRevenue, setEventRevenue] = useState('');
   const [eventCosts, setEventCosts] = useState('');
   const [eventDesc, setEventDesc] = useState('');
@@ -125,9 +127,8 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
 
   useEffect(() => {
     const fetchSettings = async () => {
-      const q = query(collection(db, 'rentals'), where('userId', '==', dataOwnerId));
-      const rentalsSnap = await getDocs(q);
-      setRentals(rentalsSnap.docs.map(d => d.data() as StoreRental));
+      const rentArr = await getCachedCollection<StoreRental>('rentals', dataOwnerId);
+      setRentals(rentArr);
 
       const bankQ = query(collection(db, 'bank_accounts'), where('userId', '==', dataOwnerId));
       const bankSnap = await getDocs(bankQ);

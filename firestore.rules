@@ -21,10 +21,20 @@ service cloud.firestore {
         exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
     }
+    // Doc carries the caller's uid in its ownerId field (crew-created docs)
+    function isFieldOwner() {
+      return isAuthenticated() && resource.data.ownerId == request.auth.uid;
+    }
+    // Caller is linked (via their profile's ownerId) to the doc's ownerId field
+    function isLinkedViaOwnerField() {
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.ownerId == resource.data.ownerId;
+    }
 
-    // Users collection — any authenticated user can read profiles (needed for UserManagement)
+    // Users collection — own profile only; admins can read all (UserManagement)
     match /users/{userId} {
-      allow read: if isAuthenticated();
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
       allow write: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
     }
 
@@ -54,9 +64,9 @@ service cloud.firestore {
       allow delete: if isDocOwner();
     }
 
-    // bank_accounts — any authenticated user can read; writes restricted to owner/crew
+    // bank_accounts — owner and linked crew/viewers only (balances are sensitive)
     match /bank_accounts/{accountId} {
-      allow read: if isAuthenticated();
+      allow read: if canRead();
       allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
       allow update: if isDocOwner() || isLinkedToOwner();
       allow delete: if isDocOwner();
@@ -97,23 +107,23 @@ service cloud.firestore {
         (isAuthenticated() && resource.data.ownerId == request.auth.uid);
     }
 
-    // vendors — any authenticated user can read; writes restricted to owner
+    // vendors — owner's business only (docs always carry ownerId; query by it)
     match /vendors/{docId} {
-      allow read: if isAuthenticated();
+      allow read: if canRead() || isFieldOwner() || isLinkedViaOwnerField();
       allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
-      allow update: if isDocOwner() || isLinkedToOwner() || (isAuthenticated() && resource.data.ownerId == request.auth.uid);
-      allow delete: if isDocOwner() || (isAuthenticated() && resource.data.ownerId == request.auth.uid);
+      allow update: if isDocOwner() || isLinkedToOwner() || isFieldOwner();
+      allow delete: if isDocOwner() || isFieldOwner();
     }
 
-    // products — any authenticated user can read; writes restricted to owner
+    // products — owner's business only (docs always carry ownerId; query by it)
     match /products/{docId} {
-      allow read: if isAuthenticated();
+      allow read: if canRead() || isFieldOwner() || isLinkedViaOwnerField();
       allow create: if isAuthenticated() && (
         request.resource.data.userId == request.auth.uid ||
         request.resource.data.ownerId == request.auth.uid
       );
-      allow update: if isDocOwner() || isLinkedToOwner() || (isAuthenticated() && resource.data.ownerId == request.auth.uid);
-      allow delete: if isDocOwner() || (isAuthenticated() && resource.data.ownerId == request.auth.uid);
+      allow update: if isDocOwner() || isLinkedToOwner() || isFieldOwner();
+      allow delete: if isDocOwner() || isFieldOwner();
     }
 
     // crew_entries — crew writes with their own userId + admin's ownerId; admin queries by ownerId
@@ -151,6 +161,17 @@ service cloud.firestore {
       allow delete: if isDocOwner();
     }
 
+    // bill_counters — per-outlet-per-day bill number sequence; doc carries the
+    // admin's UID in userId so both the admin and linked crew can bump it
+    match /bill_counters/{counterId} {
+      allow read: if resource == null || canRead();
+      allow write: if isAuthenticated() && (
+        request.resource.data.userId == request.auth.uid ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.ownerId == request.resource.data.userId)
+      );
+    }
+
     // cash_flow_snapshots — admin-only; keyed by ownerId_year_month
     match /cash_flow_snapshots/{snapId} {
       allow read: if isAuthenticated() && (
@@ -161,9 +182,9 @@ service cloud.firestore {
       );
     }
 
-    // loan_profiles — admin-only
+    // loan_profiles — owner and linked users only
     match /loan_profiles/{profileId} {
-      allow read: if isAuthenticated();
+      allow read: if canRead();
       allow write: if isAuthenticated() && (
         resource == null ? request.resource.data.userId == request.auth.uid
                         : resource.data.userId == request.auth.uid

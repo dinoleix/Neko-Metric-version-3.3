@@ -3,7 +3,8 @@ import React, { useState, useEffect, useMemo } from 'react';
 import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, addDoc, doc, updateDoc, arrayUnion, deleteDoc, deleteField } from 'firebase/firestore';
 import { db } from '../firebase';
-import { StoreRental, RentalHistory, MASTER_OUTLETS, getOutletName, StoreTier } from '../types';
+import { invalidateCached } from '../referenceCache';
+import { StoreRental, RentalHistory, MASTER_OUTLETS, getOutletName, StoreTier, istDateString } from '../types';
 // COMMENT: Added Loader2 to lucide-react imports
 import { 
   Building2, 
@@ -39,7 +40,7 @@ const Rentals: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwne
   // New Rental Form
   const [newStoreName, setNewStoreName] = useState('');
   const [newOutletId, setNewOutletId] = useState('');
-  const [newStartDate, setNewStartDate] = useState(new Date().toISOString().split('T')[0]);
+  const [newStartDate, setNewStartDate] = useState(istDateString());
   const [newBaseRent, setNewBaseRent] = useState('');
   const [newTier, setNewTier] = useState<StoreTier>('TIER_1');
   const [newAddress, setNewAddress] = useState('');
@@ -48,12 +49,12 @@ const Rentals: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwne
 
   // Increment Form
   const [incAmount, setIncAmount] = useState('');
-  const [incDate, setIncDate] = useState(new Date().toISOString().split('T')[0]);
+  const [incDate, setIncDate] = useState(istDateString());
   const [incReason, setIncReason] = useState('');
 
   // Status Change State
   const [pendingStatus, setPendingStatus] = useState<'active' | 'closed'>('active');
-  const [pendingCloseDate, setPendingCloseDate] = useState(new Date().toISOString().split('T')[0]);
+  const [pendingCloseDate, setPendingCloseDate] = useState(istDateString());
   const [pendingTier, setPendingTier] = useState<StoreTier>('TIER_1');
   const [pendingAddress, setPendingAddress] = useState('');
   const [pendingLat, setPendingLat] = useState('');
@@ -95,6 +96,7 @@ const Rentals: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwne
         userId: user.uid
       };
       await addDoc(collection(db, 'rentals'), rental);
+      invalidateCached('rentals', dataOwnerId);
       setIsAdding(false);
       setNewStoreName(''); setNewOutletId(''); setNewBaseRent(''); setNewTier('TIER_1');
       setNewAddress(''); setNewLat(''); setNewLng('');
@@ -117,6 +119,7 @@ const Rentals: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwne
         currentRent: amount,
         history: arrayUnion(newHistory)
       });
+      invalidateCached('rentals', dataOwnerId);
       setIncAmount(''); setIncReason('');
       fetchRentals();
       setSelectedRental({
@@ -141,6 +144,7 @@ const Rentals: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwne
       };
       
       await updateDoc(rentalRef, updates);
+      invalidateCached('rentals', dataOwnerId);
       fetchRentals();
       setSelectedRental({ ...selectedRental, ...updates });
     } catch (err) { 
@@ -153,6 +157,7 @@ const Rentals: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwne
     if (!confirm("Wipe store record? This will NOT delete sales data, but will affect visibility filters.")) return;
     try {
       await deleteDoc(doc(db, 'rentals', id));
+      invalidateCached('rentals', dataOwnerId);
       setSelectedRental(null);
       fetchRentals();
     } catch (err) { console.error(err); }
@@ -178,7 +183,7 @@ const Rentals: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwne
   useEffect(() => {
     if (selectedRental) {
       setPendingStatus(selectedRental.status);
-      setPendingCloseDate(selectedRental.closeDate || new Date().toISOString().split('T')[0]);
+      setPendingCloseDate(selectedRental.closeDate || istDateString());
       setPendingTier(selectedRental.tier || 'TIER_1');
       setPendingAddress(selectedRental.address || '');
       setPendingLat(selectedRental.latitude?.toString() || '');
