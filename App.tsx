@@ -1,36 +1,45 @@
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, Suspense, lazy } from 'react';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import type { User } from 'firebase/auth';
 import { doc, getDoc, setDoc, collection, query, where, onSnapshot } from 'firebase/firestore';
 import { auth, db } from './firebase';
 import { UserRole, UserProfile, BankAccount, getOutletName } from './types';
 import Login from './components/Login';
-import Dashboard from './components/Dashboard';
-import Uploader from './components/Uploader';
-import SalesHub from './components/SalesHub';
-import RawSalesHub from './components/RawSalesHub';
-import ExpenseHub from './components/ExpenseHub';
-import ItemSalesHub from './components/ItemSalesHub';
-import PnLHub from './components/PnLHub';
-import PnLAnalytics from './components/PnLAnalytics';
-import WasteManagement from './components/WasteManagement';
-import WasteManagementV2 from './components/WasteManagementV2';
-import IntegrityAudit from './components/IntegrityAudit';
-import Team from './components/Team';
-import Rentals from './components/Rentals';
-import DataCatalog from './components/DataCatalog';
-import CategorySettings from './components/CategorySettings';
-import PartnershipModel from './components/PartnershipModel';
-import ExecDashboard from './components/ExecDashboard';
-import CrewTerminal from './components/CrewTerminal';
-import UserManagement from './components/UserManagement';
-import BankManagement from './components/BankManagement';
-import BankReconciliation from './components/BankReconciliation';
-import VendorManagement from './components/VendorManagement';
-import CashFlowTracker from './components/CashFlowTracker';
-import HolidayRegistry from './components/HolidayRegistry';
-import OnlineProfitCenter from './components/OnlineProfitCenter';
+
+// Tabs are lazy-loaded so the initial bundle only ships the active screen;
+// each import below becomes its own chunk fetched on first visit to that tab.
+const Dashboard = lazy(() => import('./components/Dashboard'));
+const Uploader = lazy(() => import('./components/Uploader'));
+const SalesHub = lazy(() => import('./components/SalesHub'));
+const RawSalesHub = lazy(() => import('./components/RawSalesHub'));
+const ExpenseHub = lazy(() => import('./components/ExpenseHub'));
+const ItemSalesHub = lazy(() => import('./components/ItemSalesHub'));
+const PnLHub = lazy(() => import('./components/PnLHub'));
+const PnLAnalytics = lazy(() => import('./components/PnLAnalytics'));
+const WasteManagement = lazy(() => import('./components/WasteManagement'));
+const WasteManagementV2 = lazy(() => import('./components/WasteManagementV2'));
+const IntegrityAudit = lazy(() => import('./components/IntegrityAudit'));
+const Team = lazy(() => import('./components/Team'));
+const Rentals = lazy(() => import('./components/Rentals'));
+const DataCatalog = lazy(() => import('./components/DataCatalog'));
+const CategorySettings = lazy(() => import('./components/CategorySettings'));
+const PartnershipModel = lazy(() => import('./components/PartnershipModel'));
+const ExecDashboard = lazy(() => import('./components/ExecDashboard'));
+const CrewTerminal = lazy(() => import('./components/CrewTerminal'));
+const UserManagement = lazy(() => import('./components/UserManagement'));
+const BankManagement = lazy(() => import('./components/BankManagement'));
+const BankReconciliation = lazy(() => import('./components/BankReconciliation'));
+const VendorManagement = lazy(() => import('./components/VendorManagement'));
+const CashFlowTracker = lazy(() => import('./components/CashFlowTracker'));
+const HolidayRegistry = lazy(() => import('./components/HolidayRegistry'));
+const OnlineProfitCenter = lazy(() => import('./components/OnlineProfitCenter'));
+
+const TabLoader: React.FC = () => (
+  <div className="flex items-center justify-center py-24">
+    <div className="w-8 h-8 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin" />
+  </div>
+);
 import {
   LayoutDashboard, 
   LogOut, 
@@ -266,7 +275,9 @@ const App: React.FC = () => {
            </div>
         </header>
         <main className="p-4 md:p-10 max-w-4xl mx-auto">
-           <CrewTerminal user={user} profile={userProfile} />
+           <Suspense fallback={<TabLoader />}>
+             <CrewTerminal user={user} profile={userProfile} />
+           </Suspense>
         </main>
       </div>
     );
@@ -399,6 +410,7 @@ const App: React.FC = () => {
             </div>
           )}
 
+          <Suspense fallback={<TabLoader />}>
           {activeTab === 'exec-dashboard' && <ExecDashboard user={user} dataOwnerId={dataOwnerId} />}
           {activeTab === 'dashboard' && !isReadOnly && <Dashboard user={user} dataOwnerId={dataOwnerId} />}
           {activeTab === 'sales' && <SalesHub user={user} dataOwnerId={dataOwnerId} />}
@@ -425,6 +437,7 @@ const App: React.FC = () => {
           {activeTab === 'upload' && !isReadOnly && <Uploader user={user} dataOwnerId={dataOwnerId} onSuccess={() => setActiveTab('exec-dashboard')} />}
           {activeTab === 'crew-terminal' && <CrewTerminal user={user} profile={userProfile} />}
           {activeTab === 'users' && isAdmin && <UserManagement user={user} />}
+          </Suspense>
         </div>
       </main>
     </div>
