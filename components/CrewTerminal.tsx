@@ -1106,8 +1106,13 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
       setCatalogProducts(prev =>
         [...prev, { ...data, id: ref.id } as unknown as Product].sort((a, b) => a.name.localeCompare(b.name))
       );
-      // Auto-select it in the bill builder if it belongs to the current category
-      if (cat === category) setBillProductId(ref.id);
+      // Auto-select it in whichever form is active: the purchase bill builder,
+      // or the expense/edit product picker (which auto-fills description + price)
+      if (entryType === 'purchase' && activeMode !== 'edit') {
+        if (cat === category) setBillProductId(ref.id);
+      } else if (!category || cat === category) {
+        setSelectedProductId(ref.id);
+      }
       resetNewProductForm();
     } catch (err) {
       console.error('Error creating product:', err);
@@ -2425,7 +2430,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
               ) : (
                 <>
                   {/* ── EXPENSE FORM (or edit mode) ─────────────────── */}
-                  {entryType === 'purchase' && activeMode === 'edit' && (
+                  {(entryType === 'expense' || activeMode === 'edit') && (
                     <div className="space-y-4">
                       {/* Vendor */}
                       <div className="space-y-2">
@@ -2444,22 +2449,78 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
                       {/* Product — auto-fills description, price, qty */}
                       <div className="space-y-2">
                         <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Product (Optional)</label>
-                        <div className="relative">
-                          <Package className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={18} />
-                          <select
-                            value={selectedProductId}
-                            onChange={e => setSelectedProductId(e.target.value)}
-                            className="w-full h-14 bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none pl-12 pr-8 rounded-2xl text-sm font-bold text-slate-700 appearance-none uppercase transition-all"
+                        <div className="flex gap-2.5">
+                          <div className="relative flex-1">
+                            <Package className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={18} />
+                            <select
+                              value={selectedProductId}
+                              onChange={e => setSelectedProductId(e.target.value)}
+                              className="w-full h-14 bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none pl-12 pr-8 rounded-2xl text-sm font-bold text-slate-700 appearance-none uppercase transition-all"
+                            >
+                              <option value="">-- Select Product --</option>
+                              {catalogProducts.filter(p => !category || p.category === category).map(p => (
+                                <option key={p.id} value={p.id!}>
+                                  {p.name}{p.pricePerUnit != null ? ` — ₹${p.pricePerUnit}${p.unit ? `/${p.unit}` : ''}` : ''}
+                                </option>
+                              ))}
+                            </select>
+                            <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={16} />
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (showNewProductForm) { resetNewProductForm(); }
+                              else { setNpCategory(category); setShowNewProductForm(true); }
+                            }}
+                            className={`h-14 w-14 flex items-center justify-center rounded-2xl shrink-0 active:scale-95 transition-all ${showNewProductForm ? 'bg-slate-100 text-slate-500 hover:bg-slate-200' : 'bg-indigo-600 text-white hover:bg-indigo-700'}`}
+                            title={showNewProductForm ? 'Cancel new product' : 'Add new product'}
                           >
-                            <option value="">-- Select Product --</option>
-                            {catalogProducts.filter(p => !category || p.category === category).map(p => (
-                              <option key={p.id} value={p.id!}>
-                                {p.name}{p.pricePerUnit != null ? ` — ₹${p.pricePerUnit}${p.unit ? `/${p.unit}` : ''}` : ''}
-                              </option>
-                            ))}
-                          </select>
-                          <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={16} />
+                            {showNewProductForm ? <X size={18} /> : <Plus size={20} />}
+                          </button>
                         </div>
+                        {/* Inline new-product form */}
+                        {showNewProductForm && (
+                          <div className="rounded-2xl border border-indigo-200 bg-white p-3.5 space-y-3">
+                            <p className="text-xs font-semibold text-indigo-600">New product</p>
+                            <input
+                              type="text" value={npName} onChange={e => setNpName(e.target.value)}
+                              placeholder="Product name"
+                              autoFocus
+                              className="w-full h-11 bg-slate-50 border border-slate-200 focus:border-indigo-400 focus:bg-white focus:ring-4 focus:ring-indigo-500/10 outline-none px-4 rounded-xl text-sm font-semibold text-slate-800 uppercase transition-all"
+                            />
+                            <div className="relative">
+                              <select
+                                value={npCategory} onChange={e => setNpCategory(e.target.value)}
+                                className="w-full h-11 bg-slate-50 border border-slate-200 focus:border-indigo-400 focus:bg-white focus:ring-4 focus:ring-indigo-500/10 outline-none px-4 pr-9 rounded-xl text-sm font-medium text-slate-700 appearance-none transition-all"
+                              >
+                                <option value="">Select category</option>
+                                {allCategories.map(cat => <option key={cat} value={cat}>{cat}</option>)}
+                              </select>
+                              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={15} />
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                              <input
+                                type="number" step="0.01" min="0"
+                                value={npPrice} onChange={e => setNpPrice(e.target.value)}
+                                placeholder="Price / unit (₹)"
+                                className="w-full h-11 bg-slate-50 border border-slate-200 focus:border-indigo-400 focus:bg-white focus:ring-4 focus:ring-indigo-500/10 outline-none px-4 rounded-xl text-sm font-semibold text-slate-800 transition-all"
+                              />
+                              <input
+                                type="text" value={npUnit} onChange={e => setNpUnit(e.target.value)}
+                                placeholder="Unit (kg, pc…)"
+                                className="w-full h-11 bg-slate-50 border border-slate-200 focus:border-indigo-400 focus:bg-white focus:ring-4 focus:ring-indigo-500/10 outline-none px-4 rounded-xl text-sm font-medium text-slate-700 transition-all"
+                              />
+                            </div>
+                            <button
+                              type="button"
+                              disabled={npSaving || !npName.trim() || !(npCategory || category)}
+                              onClick={handleNewProductSave}
+                              className="w-full h-11 bg-indigo-600 text-white rounded-xl text-sm font-semibold disabled:opacity-40 flex items-center justify-center gap-2 hover:bg-indigo-700 active:scale-[0.98] transition-all"
+                            >
+                              {npSaving ? <Loader2 size={16} className="animate-spin" /> : <><Check size={16} /> Save product</>}
+                            </button>
+                          </div>
+                        )}
                       </div>
                     </div>
                   )}
