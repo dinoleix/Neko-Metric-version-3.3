@@ -126,6 +126,14 @@ service cloud.firestore {
       allow delete: if isDocOwner() || isFieldOwner();
     }
 
+    // crew_categories — custom terminal categories; admin-only writes, crew read-only
+    match /crew_categories/{docId} {
+      allow read: if canRead() || isFieldOwner() || isLinkedViaOwnerField();
+      allow create: if isAuthenticated() && request.resource.data.ownerId == request.auth.uid;
+      allow update: if isFieldOwner();
+      allow delete: if isFieldOwner();
+    }
+
     // crew_entries — crew writes with their own userId + admin's ownerId; admin queries by ownerId
     match /crew_entries/{docId} {
       allow read: if canRead() ||

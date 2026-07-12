@@ -20,6 +20,7 @@ import {
   BankAccount,
   Vendor,
   Product,
+  CrewCategory,
   BillItem,
   ServingOption,
   WasteEntry,
@@ -73,13 +74,6 @@ import {
 const ALL_CREW_CATEGORIES = Array.from(
   new Set([...CREW_PURCHASE_CATEGORIES, ...CREW_EXPENSE_CATEGORIES])
 ).sort();
-
-const CATEGORIES = {
-  purchase: ALL_CREW_CATEGORIES,
-  expense: ALL_CREW_CATEGORIES,
-};
-
-const ALL_CATEGORIES = ALL_CREW_CATEGORIES;
 
 const STATUS_CONFIG: Record<EntryStatus, { label: string, color: string, bg: string, icon: any }> = {
   paid: { label: 'Paid', color: 'text-emerald-500', bg: 'bg-emerald-500/10', icon: CheckCircle2 },
@@ -191,6 +185,17 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
   const [npPrice, setNpPrice] = useState('');
   const [npUnit, setNpUnit] = useState('');
   const [npSaving, setNpSaving] = useState(false);
+
+  // Crew-added categories (crew_categories collection), merged with the hardcoded lists
+  const [customCategories, setCustomCategories] = useState<string[]>([]);
+  const [showNewCategoryForm, setShowNewCategoryForm] = useState(false);
+  const [ncName, setNcName] = useState('');
+  const [ncSaving, setNcSaving] = useState(false);
+
+  const allCategories = useMemo(
+    () => Array.from(new Set([...ALL_CREW_CATEGORIES, ...customCategories])).sort(),
+    [customCategories]
+  );
 
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [selectedVendorId, setSelectedVendorId] = useState('');
@@ -402,6 +407,13 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
   };
 
   useEffect(() => { loadCatalogProducts(); }, []);
+
+  useEffect(() => {
+    const ownerId = profile.ownerId || user.uid;
+    getCachedCollection<CrewCategory>('crew_categories', ownerId, 'ownerId')
+      .then(cats => setCustomCategories(cats.map(c => c.name)))
+      .catch(err => console.error('[Categories] failed to load:', err));
+  }, []);
 
   useEffect(() => {
     fetchEntries();
@@ -1035,6 +1047,39 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     }
   };
 
+  // Adds a crew category and selects it in the form. New categories start in the
+  // UNCATEGORIZED COGS bucket until the admin maps them in Category Settings.
+  const handleNewCategorySave = async () => {
+    const name = ncName.trim().toUpperCase();
+    if (!name) return;
+    if (allCategories.includes(name)) {
+      setCategory(name);
+      setNcName('');
+      setShowNewCategoryForm(false);
+      return;
+    }
+    setNcSaving(true);
+    try {
+      const ownerId = profile.ownerId || user.uid;
+      await addDoc(collection(db, 'crew_categories'), {
+        name,
+        ownerId,
+        userId: user.uid,
+        createdAt: Date.now(),
+      });
+      invalidateCached('crew_categories', ownerId);
+      setCustomCategories(prev => [...prev, name]);
+      setCategory(name);
+      setNcName('');
+      setShowNewCategoryForm(false);
+    } catch (err) {
+      console.error('Error creating category:', err);
+      alert('Could not create category. Check connection.');
+    } finally {
+      setNcSaving(false);
+    }
+  };
+
   const resetNewProductForm = () => {
     setNpName(''); setNpCategory(''); setNpPrice(''); setNpUnit('');
     setShowNewProductForm(false);
@@ -1456,7 +1501,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
                   className="w-full h-11 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white focus:ring-4 focus:ring-indigo-500/10 outline-none pl-10 pr-8 rounded-xl text-sm font-medium text-slate-700 appearance-none transition-all"
                 >
                   <option value="all">All categories</option>
-                  {ALL_CATEGORIES.map(cat => <option key={cat} value={cat}>{cat}</option>)}
+                  {allCategories.map(cat => <option key={cat} value={cat}>{cat}</option>)}
                 </select>
                 <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={15} />
               </div>
@@ -2083,16 +2128,51 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
                   {/* Category */}
                   <div>
                     <label className="block text-xs font-medium text-slate-500 mb-1.5 ml-0.5">Category</label>
-                    <div className="relative">
-                      <select
-                        required value={category} onChange={e => setCategory(e.target.value)}
-                        className="w-full h-12 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white focus:ring-4 focus:ring-indigo-500/10 outline-none px-4 pr-10 rounded-xl text-sm font-semibold text-slate-700 appearance-none transition-all"
-                      >
-                        <option value="">Select category</option>
-                        {CATEGORIES['purchase'].map(cat => <option key={cat} value={cat}>{cat}</option>)}
-                      </select>
-                      <ChevronDown className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={16} />
+                    <div className="flex gap-2.5">
+                      <div className="relative flex-1">
+                        <select
+                          required value={category} onChange={e => setCategory(e.target.value)}
+                          className="w-full h-12 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white focus:ring-4 focus:ring-indigo-500/10 outline-none px-4 pr-10 rounded-xl text-sm font-semibold text-slate-700 appearance-none transition-all"
+                        >
+                          <option value="">Select category</option>
+                          {allCategories.map(cat => <option key={cat} value={cat}>{cat}</option>)}
+                        </select>
+                        <ChevronDown className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={16} />
+                      </div>
+                      {profile.role === 'admin' && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (showNewCategoryForm) { setNcName(''); setShowNewCategoryForm(false); }
+                            else setShowNewCategoryForm(true);
+                          }}
+                          className={`h-12 w-12 flex items-center justify-center rounded-xl shrink-0 active:scale-95 transition-all ${showNewCategoryForm ? 'bg-slate-100 text-slate-500 hover:bg-slate-200' : 'bg-indigo-50 text-indigo-600 hover:bg-indigo-100'}`}
+                          title={showNewCategoryForm ? 'Cancel new category' : 'Add new category'}
+                        >
+                          {showNewCategoryForm ? <X size={18} /> : <Plus size={20} />}
+                        </button>
+                      )}
                     </div>
+                    {/* Inline new-category form (admin only) */}
+                    {profile.role === 'admin' && showNewCategoryForm && (
+                      <div className="flex gap-2 mt-2.5">
+                        <input
+                          type="text" value={ncName} onChange={e => setNcName(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleNewCategorySave(); } }}
+                          placeholder="New category name"
+                          autoFocus
+                          className="flex-1 h-12 bg-white border border-indigo-200 focus:border-indigo-400 focus:ring-4 focus:ring-indigo-500/10 outline-none px-4 rounded-xl text-sm font-semibold text-slate-800 uppercase transition-all"
+                        />
+                        <button
+                          type="button"
+                          disabled={ncSaving || !ncName.trim()}
+                          onClick={handleNewCategorySave}
+                          className="h-12 px-5 bg-indigo-600 text-white rounded-xl text-sm font-semibold disabled:opacity-40 flex items-center justify-center gap-2 hover:bg-indigo-700 active:scale-[0.98] transition-all shrink-0"
+                        >
+                          {ncSaving ? <Loader2 size={16} className="animate-spin" /> : <><Check size={16} /> Save</>}
+                        </button>
+                      </div>
+                    )}
                   </div>
 
                   {/* Product + Qty + Price + Add */}
@@ -2154,7 +2234,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
                               value={npCategory} onChange={e => setNpCategory(e.target.value)}
                               className="w-full h-11 bg-slate-50 border border-slate-200 focus:border-indigo-400 focus:bg-white focus:ring-4 focus:ring-indigo-500/10 outline-none px-4 pr-9 rounded-xl text-sm font-medium text-slate-700 appearance-none transition-all"
                             >
-                              {ALL_CATEGORIES.map(cat => <option key={cat} value={cat}>{cat}</option>)}
+                              {allCategories.map(cat => <option key={cat} value={cat}>{cat}</option>)}
                             </select>
                             <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={15} />
                           </div>
@@ -2420,7 +2500,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
                         className="w-full h-[74px] bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none px-6 rounded-2xl text-base font-black text-slate-700 appearance-none uppercase transition-all"
                       >
                         <option value="">-- Pick Category --</option>
-                        {CATEGORIES[entryType].map(cat => <option key={cat} value={cat}>{cat}</option>)}
+                        {allCategories.map(cat => <option key={cat} value={cat}>{cat}</option>)}
                       </select>
                     </div>
                   </div>

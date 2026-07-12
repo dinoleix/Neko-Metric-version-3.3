@@ -380,6 +380,15 @@ export interface Product {
   createdAt: number;
 }
 
+// Crew-added categories, merged with the hardcoded CREW_* lists in the terminal dropdowns
+export interface CrewCategory {
+  id?: string;
+  name: string;
+  ownerId: string;
+  userId: string;
+  createdAt: number;
+}
+
 export interface SalesAnalytics {
   id?: string;
   userId: string;
