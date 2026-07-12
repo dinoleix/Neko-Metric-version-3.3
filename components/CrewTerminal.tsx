@@ -184,6 +184,14 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
   const [billQty, setBillQty] = useState('');
   const [billPrice, setBillPrice] = useState('');
 
+  // Inline new-product form (crew can add a missing product without leaving the bill)
+  const [showNewProductForm, setShowNewProductForm] = useState(false);
+  const [npName, setNpName] = useState('');
+  const [npCategory, setNpCategory] = useState('');
+  const [npPrice, setNpPrice] = useState('');
+  const [npUnit, setNpUnit] = useState('');
+  const [npSaving, setNpSaving] = useState(false);
+
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [selectedVendorId, setSelectedVendorId] = useState('');
   const [showVendorModal, setShowVendorModal] = useState(false);
@@ -412,7 +420,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     if (q > 0 && p > 0) setAmount((q * p).toFixed(2));
   }, [quantity, pricePerUnit]);
 
-  useEffect(() => { setSelectedProductId(''); setBillProductId(''); setBillQty(''); setBillPrice(''); setBillItems([]); }, [category]);
+  useEffect(() => { setSelectedProductId(''); setBillProductId(''); setBillQty(''); setBillPrice(''); setBillItems([]); setShowNewProductForm(false); }, [category]);
 
   useEffect(() => {
     if (!selectedProductId) return;
@@ -1024,6 +1032,43 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     } catch (e: any) {
       console.error('[Rebuild] setDoc FAILED:', e);
       throw e; // re-throw so outer catch shows the alert
+    }
+  };
+
+  const resetNewProductForm = () => {
+    setNpName(''); setNpCategory(''); setNpPrice(''); setNpUnit('');
+    setShowNewProductForm(false);
+  };
+
+  // Same doc shape as ProductCatalog.handleSave so admin and crew products are identical
+  const handleNewProductSave = async () => {
+    const cat = npCategory || category;
+    if (!npName.trim() || !cat) return;
+    setNpSaving(true);
+    try {
+      const ownerId = profile.ownerId || user.uid;
+      const data = {
+        name: npName.trim().toUpperCase(),
+        category: cat,
+        pricePerUnit: npPrice ? parseFloat(npPrice) : null,
+        quantity: null,
+        unit: npUnit.trim() || null,
+        ownerId,
+        userId: user.uid,
+        createdAt: Date.now(),
+      };
+      const ref = await addDoc(collection(db, 'products'), data);
+      setCatalogProducts(prev =>
+        [...prev, { ...data, id: ref.id } as unknown as Product].sort((a, b) => a.name.localeCompare(b.name))
+      );
+      // Auto-select it in the bill builder if it belongs to the current category
+      if (cat === category) setBillProductId(ref.id);
+      resetNewProductForm();
+    } catch (err) {
+      console.error('Error creating product:', err);
+      alert('Could not create product. Check connection.');
+    } finally {
+      setNpSaving(false);
     }
   };
 
@@ -2055,31 +2100,92 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
                     <div className="rounded-2xl border border-indigo-100 bg-indigo-50/50 p-4 space-y-3.5">
                       <p className="text-xs font-semibold text-indigo-600">Add item to bill</p>
                       {/* Product picker */}
-                      <div className="relative">
-                        <Package className="absolute left-3.5 top-1/2 -translate-y-1/2 text-indigo-300 pointer-events-none" size={16} />
-                        {(() => {
-                          const catProducts = catalogProducts.filter(p => p.category === category);
-                          return (
-                            <select
-                              value={billProductId} onChange={e => setBillProductId(e.target.value)}
-                              className="w-full h-11 bg-white border border-indigo-100 focus:border-indigo-400 focus:ring-4 focus:ring-indigo-500/10 outline-none pl-10 pr-9 rounded-xl text-sm font-medium text-slate-700 appearance-none transition-all"
-                            >
-                              {catProducts.length === 0
-                                ? <option value="">No products in this category</option>
-                                : <>
-                                    <option value="">Select product</option>
-                                    {catProducts.map(p => (
-                                      <option key={p.id} value={p.id!}>
-                                        {p.name}{p.pricePerUnit != null ? ` — ₹${p.pricePerUnit}${p.unit ? `/${p.unit}` : ''}` : ''}
-                                      </option>
-                                    ))}
-                                  </>
-                              }
-                            </select>
-                          );
-                        })()}
-                        <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-indigo-300 pointer-events-none" size={15} />
+                      <div className="flex gap-2">
+                        <div className="relative flex-1">
+                          <Package className="absolute left-3.5 top-1/2 -translate-y-1/2 text-indigo-300 pointer-events-none" size={16} />
+                          {(() => {
+                            const catProducts = catalogProducts.filter(p => p.category === category);
+                            return (
+                              <select
+                                value={billProductId} onChange={e => setBillProductId(e.target.value)}
+                                className="w-full h-11 bg-white border border-indigo-100 focus:border-indigo-400 focus:ring-4 focus:ring-indigo-500/10 outline-none pl-10 pr-9 rounded-xl text-sm font-medium text-slate-700 appearance-none transition-all"
+                              >
+                                {catProducts.length === 0
+                                  ? <option value="">No products in this category</option>
+                                  : <>
+                                      <option value="">Select product</option>
+                                      {catProducts.map(p => (
+                                        <option key={p.id} value={p.id!}>
+                                          {p.name}{p.pricePerUnit != null ? ` — ₹${p.pricePerUnit}${p.unit ? `/${p.unit}` : ''}` : ''}
+                                        </option>
+                                      ))}
+                                    </>
+                                }
+                              </select>
+                            );
+                          })()}
+                          <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-indigo-300 pointer-events-none" size={15} />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (showNewProductForm) { resetNewProductForm(); }
+                            else { setNpCategory(category); setShowNewProductForm(true); }
+                          }}
+                          className={`h-11 w-11 flex items-center justify-center rounded-xl shrink-0 active:scale-95 transition-all ${showNewProductForm ? 'bg-slate-100 text-slate-500 hover:bg-slate-200' : 'bg-indigo-600 text-white hover:bg-indigo-700'}`}
+                          title={showNewProductForm ? 'Cancel new product' : 'Add new product'}
+                        >
+                          {showNewProductForm ? <X size={18} /> : <Plus size={18} />}
+                        </button>
                       </div>
+
+                      {/* Inline new-product form */}
+                      {showNewProductForm && (
+                        <div className="rounded-xl border border-indigo-200 bg-white p-3.5 space-y-3">
+                          <p className="text-xs font-semibold text-indigo-600">New product</p>
+                          <input
+                            type="text" value={npName} onChange={e => setNpName(e.target.value)}
+                            placeholder="Product name"
+                            autoFocus
+                            className="w-full h-11 bg-slate-50 border border-slate-200 focus:border-indigo-400 focus:bg-white focus:ring-4 focus:ring-indigo-500/10 outline-none px-4 rounded-xl text-sm font-semibold text-slate-800 uppercase transition-all"
+                          />
+                          <div className="relative">
+                            <select
+                              value={npCategory} onChange={e => setNpCategory(e.target.value)}
+                              className="w-full h-11 bg-slate-50 border border-slate-200 focus:border-indigo-400 focus:bg-white focus:ring-4 focus:ring-indigo-500/10 outline-none px-4 pr-9 rounded-xl text-sm font-medium text-slate-700 appearance-none transition-all"
+                            >
+                              {ALL_CATEGORIES.map(cat => <option key={cat} value={cat}>{cat}</option>)}
+                            </select>
+                            <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={15} />
+                          </div>
+                          <div className="grid grid-cols-2 gap-3">
+                            <input
+                              type="number" step="0.01" min="0"
+                              value={npPrice} onChange={e => setNpPrice(e.target.value)}
+                              placeholder="Price / unit (₹)"
+                              className="w-full h-11 bg-slate-50 border border-slate-200 focus:border-indigo-400 focus:bg-white focus:ring-4 focus:ring-indigo-500/10 outline-none px-4 rounded-xl text-sm font-semibold text-slate-800 transition-all"
+                            />
+                            <input
+                              type="text" value={npUnit} onChange={e => setNpUnit(e.target.value)}
+                              placeholder="Unit (kg, pc…)"
+                              className="w-full h-11 bg-slate-50 border border-slate-200 focus:border-indigo-400 focus:bg-white focus:ring-4 focus:ring-indigo-500/10 outline-none px-4 rounded-xl text-sm font-medium text-slate-700 transition-all"
+                            />
+                          </div>
+                          {npCategory && npCategory !== category && (
+                            <p className="text-[11px] text-amber-600 font-medium">
+                              This product will be saved under {npCategory} — switch the bill's category to see it here.
+                            </p>
+                          )}
+                          <button
+                            type="button"
+                            disabled={npSaving || !npName.trim() || !(npCategory || category)}
+                            onClick={handleNewProductSave}
+                            className="w-full h-11 bg-indigo-600 text-white rounded-xl text-sm font-semibold disabled:opacity-40 flex items-center justify-center gap-2 hover:bg-indigo-700 active:scale-[0.98] transition-all"
+                          >
+                            {npSaving ? <Loader2 size={16} className="animate-spin" /> : <><Check size={16} /> Save product</>}
+                          </button>
+                        </div>
+                      )}
                       {/* Qty + Price */}
                       <div className="grid grid-cols-2 gap-3">
                         <div>
