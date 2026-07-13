@@ -86,6 +86,11 @@ const shortDate = (d: string) => { const [, m, dd] = d.split('-'); return `${par
 // cash keeps its emerald identity, online (digital) purchases take indigo
 const SPEND_COLORS = { online: '#4f46e5', cash: '#059669' } as const;
 
+// 10K transfers keep the amber vault identity used on the tiles
+const TRANSFER_COLOR = '#d97706';
+// Waste types (CVD-validated pair): broken = rose, extra demand = cyan
+const WASTE_COLORS = { broken: '#e11d48', extra: '#0891b2' } as const;
+
 // Every date in [start, end] so zero-spend days show as zero instead of the
 // line skipping over them (capped as a safety net for absurd custom ranges)
 const listDates = (start: string, end: string): string[] => {
@@ -292,6 +297,8 @@ const CrewReports: React.FC<{ user: User; profile: UserProfile; onBack?: () => v
   const [salesView, setSalesView] = useState<'charts' | 'table'>('charts');
   const [entriesView, setEntriesView] = useState<'charts' | 'table'>('charts');
   const [trendCategory, setTrendCategory] = useState('all');
+  const [transfersView, setTransfersView] = useState<'charts' | 'table'>('charts');
+  const [wasteView, setWasteView] = useState<'charts' | 'table'>('charts');
 
   const [salesLogs, setSalesLogs] = useState<DailySalesLog[]>([]);
   const [entries, setEntries] = useState<DailyCounterEntry[]>([]);
@@ -497,11 +504,44 @@ const CrewReports: React.FC<{ user: User; profile: UserProfile; onBack?: () => v
 
   const transferTotal = useMemo(() => fTransfers.reduce((s, t) => s + t.amount, 0), [fTransfers]);
 
+  // Daily 10K transfer amount, zero-filled across the period
+  const transferTrend = useMemo(() => {
+    const byDate = new Map(listDates(start, end).map(d => [d, { date: d, amount: 0 }]));
+    fTransfers.forEach(t => {
+      const d = byDate.get(t.date);
+      if (d) d.amount += t.amount;
+    });
+    return Array.from(byDate.values());
+  }, [fTransfers, start, end]);
+
   const wasteTotals = useMemo(() => fWasteRows.reduce((s, r) => ({
     cost: s.cost + r.total,
     broken: s.broken + (r.type === 'Broken' ? r.total : 0),
     extra: s.extra + (r.type === 'Extra demand' ? r.total : 0),
   }), { cost: 0, broken: 0, extra: 0 }), [fWasteRows]);
+
+  // Daily waste cost split by type, zero-filled across the period
+  const wasteTrend = useMemo(() => {
+    const byDate = new Map(listDates(start, end).map(d => [d, { date: d, broken: 0, extra: 0 }]));
+    fWasteRows.forEach(r => {
+      const d = byDate.get(r.date);
+      if (!d) return;
+      if (r.type === 'Broken') d.broken += r.total; else d.extra += r.total;
+    });
+    return Array.from(byDate.values());
+  }, [fWasteRows, start, end]);
+
+  // Top wasted items by cost; everything past 8 folds into "Other"
+  const wasteByItem = useMemo(() => {
+    const m: Record<string, number> = {};
+    fWasteRows.forEach(r => { m[r.item] = (m[r.item] || 0) + r.total; });
+    const sorted = Object.entries(m).sort((a, b) => b[1] - a[1]);
+    const rows = sorted.slice(0, 8).map(([name, amt]) => ({ name, amt }));
+    const rest = sorted.slice(8);
+    if (rest.length > 0) rows.push({ name: `OTHER (${rest.length} more)`, amt: rest.reduce((s, [, v]) => s + v, 0) });
+    const total = wasteTotals.cost || 1;
+    return rows.map(r => ({ ...r, pct: (r.amt / total) * 100 }));
+  }, [fWasteRows, wasteTotals.cost]);
 
   // ── Export rows per tab ─────────────────────────────────────────────
   const metaLines = [
@@ -971,10 +1011,53 @@ const CrewReports: React.FC<{ user: User; profile: UserProfile; onBack?: () => v
             <Tile label="Total moved to safe" value={`₹${transferTotal.toLocaleString('en-IN')}`} tone="text-amber-600" />
             <Tile label="Transfers" value={String(fTransfers.length)} />
           </div>
-          <div className="flex justify-end"><ExportButtons /></div>
-          {fTransfers.length === 0
-            ? <p className="py-16 text-center text-sm text-slate-400 bg-white border-2 border-dashed border-slate-200 rounded-2xl">No 10K transfers in this period</p>
-            : <DataTable headers={TRANSFER_HEADERS} rows={transferRows()} rightCols={[4]} minWidth={700} />}
+          {/* View toggle + exports */}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex bg-slate-100 p-1 rounded-xl gap-1">
+              {([['charts', BarChart3, 'Charts'], ['table', Table2, 'Table']] as const).map(([v, Icon, label]) => (
+                <button
+                  key={v}
+                  onClick={() => setTransfersView(v)}
+                  className={`h-9 px-3.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all active:scale-95 ${transfersView === v ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                >
+                  <Icon size={14} /> {label}
+                </button>
+              ))}
+            </div>
+            <div className="ml-auto"><ExportButtons /></div>
+          </div>
+
+          {transfersView === 'charts' && (
+            fTransfers.length === 0
+              ? <p className="py-16 text-center text-sm text-slate-400 bg-white border-2 border-dashed border-slate-200 rounded-2xl">No 10K transfers in this period</p>
+              : (
+                <div className="bg-white ring-1 ring-slate-100 shadow-sm rounded-2xl p-4">
+                  <div className="flex flex-wrap items-center gap-2 mb-2">
+                    <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest">Daily transfers to safe</p>
+                    <div className="ml-auto"><TrendChip label="Transfers" swatch={TRANSFER_COLOR} pct={halfOverHalf(transferTrend.map(r => r.amount))} /></div>
+                  </div>
+                  {transferTrend.length < 2 ? (
+                    <p className="h-[230px] flex items-center justify-center text-xs text-slate-400">Pick a wider range to see a trend</p>
+                  ) : (
+                    <ResponsiveContainer width="100%" height={260}>
+                      <BarChart data={transferTrend} margin={{ top: 6, right: 12, bottom: 0, left: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                        <XAxis dataKey="date" tickFormatter={shortDate} tick={{ fontSize: 10, fill: '#94a3b8' }} tickLine={false} axisLine={{ stroke: '#e2e8f0' }} minTickGap={24} />
+                        <YAxis tickFormatter={(v: number) => inrCompact(v)} tick={{ fontSize: 10, fill: '#94a3b8' }} tickLine={false} axisLine={false} width={54} />
+                        <ChartTooltip formatter={(v: any) => [inr(Number(v)), 'Transferred']} contentStyle={{ borderRadius: 12, border: '1px solid #e2e8f0', fontSize: 12 }} />
+                        <Bar dataKey="amount" name="Transferred" fill={TRANSFER_COLOR} radius={[4, 4, 0, 0]} maxBarSize={40} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  )}
+                </div>
+              )
+          )}
+
+          {transfersView === 'table' && (
+            fTransfers.length === 0
+              ? <p className="py-16 text-center text-sm text-slate-400 bg-white border-2 border-dashed border-slate-200 rounded-2xl">No 10K transfers in this period</p>
+              : <DataTable headers={TRANSFER_HEADERS} rows={transferRows()} rightCols={[4]} minWidth={700} />
+          )}
         </div>
       ) : activeTab === 'waste' ? (
         <div className="space-y-3">
@@ -983,10 +1066,104 @@ const CrewReports: React.FC<{ user: User; profile: UserProfile; onBack?: () => v
             <Tile label="Broken" value={`₹${wasteTotals.broken.toLocaleString('en-IN')}`} />
             <Tile label="Extra demand" value={`₹${wasteTotals.extra.toLocaleString('en-IN')}`} />
           </div>
-          <div className="flex justify-end"><ExportButtons /></div>
-          {fWasteRows.length === 0
-            ? <p className="py-16 text-center text-sm text-slate-400 bg-white border-2 border-dashed border-slate-200 rounded-2xl">No waste recorded in this period</p>
-            : <DataTable headers={WASTE_HEADERS} rows={displayRows(wasteRows(), [5])} rightCols={[5, 6, 7]} minWidth={950} />}
+          {/* View toggle + exports */}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex bg-slate-100 p-1 rounded-xl gap-1">
+              {([['charts', BarChart3, 'Charts'], ['table', Table2, 'Table']] as const).map(([v, Icon, label]) => (
+                <button
+                  key={v}
+                  onClick={() => setWasteView(v)}
+                  className={`h-9 px-3.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all active:scale-95 ${wasteView === v ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                >
+                  <Icon size={14} /> {label}
+                </button>
+              ))}
+            </div>
+            <div className="ml-auto"><ExportButtons /></div>
+          </div>
+
+          {wasteView === 'charts' && (
+            fWasteRows.length === 0
+              ? <p className="py-16 text-center text-sm text-slate-400 bg-white border-2 border-dashed border-slate-200 rounded-2xl">No waste recorded in this period</p>
+              : (
+                <div className="space-y-3">
+                  <div className="grid md:grid-cols-2 gap-3">
+                    {/* Waste type mix donut */}
+                    <div className="bg-white ring-1 ring-slate-100 shadow-sm rounded-2xl p-4">
+                      <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-1">Waste by type</p>
+                      <div className="relative">
+                        <ResponsiveContainer width="100%" height={200}>
+                          <PieChart>
+                            <Pie
+                              data={[{ name: 'Broken', value: wasteTotals.broken, c: WASTE_COLORS.broken }, { name: 'Extra demand', value: wasteTotals.extra, c: WASTE_COLORS.extra }].filter(d => d.value > 0)}
+                              dataKey="value" nameKey="name" innerRadius={56} outerRadius={84} paddingAngle={2} stroke="#ffffff" strokeWidth={2}
+                            >
+                              {[{ name: 'Broken', value: wasteTotals.broken, c: WASTE_COLORS.broken }, { name: 'Extra demand', value: wasteTotals.extra, c: WASTE_COLORS.extra }].filter(d => d.value > 0).map(d => <Cell key={d.name} fill={d.c} />)}
+                            </Pie>
+                            <ChartTooltip formatter={(v: any, n: any) => [inr(Number(v)), n]} />
+                          </PieChart>
+                        </ResponsiveContainer>
+                        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                          <p className="text-[9px] font-semibold text-slate-400 uppercase tracking-widest">Total</p>
+                          <p className="text-base font-bold text-slate-900">{inrCompact(wasteTotals.cost)}</p>
+                        </div>
+                      </div>
+                      <div className="mt-2 space-y-1.5">
+                        {([['Broken', wasteTotals.broken, WASTE_COLORS.broken], ['Extra demand', wasteTotals.extra, WASTE_COLORS.extra]] as const).map(([label, amt, c]) => (
+                          <div key={label} className="flex items-center gap-2 text-xs">
+                            <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: c }} />
+                            <span className="font-semibold text-slate-700">{label}</span>
+                            <span className="ml-auto text-slate-500">{inr(amt)}</span>
+                            <span className="w-12 text-right text-slate-400">{wasteTotals.cost > 0 ? `${((amt / wasteTotals.cost) * 100).toFixed(1)}%` : '—'}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Top wasted items */}
+                    <div className="bg-white ring-1 ring-slate-100 shadow-sm rounded-2xl p-4">
+                      <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-2">Top wasted items</p>
+                      <ResponsiveContainer width="100%" height={Math.max(200, wasteByItem.length * 30 + 30)}>
+                        <BarChart data={wasteByItem} layout="vertical" margin={{ top: 0, right: 48, bottom: 0, left: 8 }}>
+                          <XAxis type="number" hide />
+                          <YAxis type="category" dataKey="name" width={130} tick={{ fontSize: 10, fill: '#64748b' }} tickLine={false} axisLine={false} tickFormatter={(n: string) => n.length > 18 ? n.slice(0, 17) + '…' : n} />
+                          <ChartTooltip formatter={(v: any) => inr(Number(v))} contentStyle={{ borderRadius: 12, border: '1px solid #e2e8f0', fontSize: 12 }} />
+                          <Bar dataKey="amt" name="Waste cost" fill={WASTE_COLORS.broken} radius={[0, 4, 4, 0]} barSize={16}>
+                            <LabelList dataKey="pct" position="right" formatter={(p: any) => `${Number(p).toFixed(1)}%`} style={{ fontSize: 10, fill: '#64748b', fontWeight: 600 }} />
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+
+                  {/* Daily waste trend, split by type */}
+                  <div className="bg-white ring-1 ring-slate-100 shadow-sm rounded-2xl p-4">
+                    <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-2">Daily waste cost</p>
+                    {wasteTrend.length < 2 ? (
+                      <p className="h-[210px] flex items-center justify-center text-xs text-slate-400">Pick a wider range to see a trend</p>
+                    ) : (
+                      <ResponsiveContainer width="100%" height={230}>
+                        <LineChart data={wasteTrend} margin={{ top: 6, right: 12, bottom: 0, left: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                          <XAxis dataKey="date" tickFormatter={shortDate} tick={{ fontSize: 10, fill: '#94a3b8' }} tickLine={false} axisLine={{ stroke: '#e2e8f0' }} minTickGap={28} />
+                          <YAxis tickFormatter={(v: number) => inrCompact(v)} tick={{ fontSize: 10, fill: '#94a3b8' }} tickLine={false} axisLine={false} width={54} />
+                          <ChartTooltip formatter={(v: any, n: any) => [inr(Number(v)), n]} contentStyle={{ borderRadius: 12, border: '1px solid #e2e8f0', fontSize: 12 }} />
+                          <ChartLegend wrapperStyle={{ fontSize: 11 }} iconType="plainline" />
+                          <Line type="monotone" dataKey="broken" name="Broken" stroke={WASTE_COLORS.broken} strokeWidth={2} dot={{ r: 2 }} activeDot={{ r: 5 }} />
+                          <Line type="monotone" dataKey="extra" name="Extra demand" stroke={WASTE_COLORS.extra} strokeWidth={2} dot={{ r: 2 }} activeDot={{ r: 5 }} />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    )}
+                  </div>
+                </div>
+              )
+          )}
+
+          {wasteView === 'table' && (
+            fWasteRows.length === 0
+              ? <p className="py-16 text-center text-sm text-slate-400 bg-white border-2 border-dashed border-slate-200 rounded-2xl">No waste recorded in this period</p>
+              : <DataTable headers={WASTE_HEADERS} rows={displayRows(wasteRows(), [5])} rightCols={[5, 6, 7]} minWidth={950} />
+          )}
         </div>
       ) : (
         <div className="space-y-4">
