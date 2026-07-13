@@ -6,6 +6,7 @@ import autoTable from 'jspdf-autotable';
 import {
   ResponsiveContainer, PieChart, Pie, Cell,
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as ChartTooltip, Legend as ChartLegend,
+  BarChart, Bar, LabelList,
 } from 'recharts';
 import { db } from '../firebase';
 import { getCachedCollection } from '../referenceCache';
@@ -79,6 +80,48 @@ const CHANNELS = ['cash', 'card', 'upi'] as const;
 
 const inr = (n: number) => `₹${Math.round(n).toLocaleString('en-IN')}`;
 const inrCompact = (n: number) => n >= 100000 ? `₹${(n / 100000).toFixed(1)}L` : n >= 1000 ? `₹${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : `₹${Math.round(n)}`;
+const shortDate = (d: string) => { const [, m, dd] = d.split('-'); return `${parseInt(dd)} ${MONTH_NAMES[parseInt(m) - 1].slice(0, 3)}`; };
+
+// Entry-spend series colors — same validated hues as the sales palette:
+// cash keeps its emerald identity, online (digital) purchases take indigo
+const SPEND_COLORS = { online: '#4f46e5', cash: '#059669' } as const;
+
+// Every date in [start, end] so zero-spend days show as zero instead of the
+// line skipping over them (capped as a safety net for absurd custom ranges)
+const listDates = (start: string, end: string): string[] => {
+  const out: string[] = [];
+  let cur = new Date(start + 'T00:00:00Z');
+  const stop = new Date(end + 'T00:00:00Z');
+  while (cur <= stop && out.length < 400) {
+    out.push(cur.toISOString().slice(0, 10));
+    cur = new Date(cur.getTime() + 86400000);
+  }
+  return out;
+};
+
+// Average of the second half of a daily series vs the first, as a % change
+const halfOverHalf = (values: number[]): number | null => {
+  if (values.length < 4) return null;
+  const half = Math.floor(values.length / 2);
+  const avg = (a: number[]) => a.reduce((s, v) => s + v, 0) / a.length;
+  const a = avg(values.slice(0, half));
+  const b = avg(values.slice(half));
+  return a > 0 ? ((b - a) / a) * 100 : (b > 0 ? 100 : 0);
+};
+
+const TrendChip = ({ label, pct, swatch }: { label: string; pct: number | null; swatch?: string }) => {
+  if (pct === null) return null;
+  const Dir = Math.abs(pct) < 3 ? Minus : pct > 0 ? TrendingUp : TrendingDown;
+  const dirColor = Math.abs(pct) < 3 ? 'text-slate-400' : pct > 0 ? 'text-emerald-600' : 'text-rose-600';
+  return (
+    <span className="flex items-center gap-1 px-2 py-1 bg-slate-50 border border-slate-100 rounded-lg text-[10px] font-semibold text-slate-600">
+      {swatch && <span className="w-2 h-2 rounded-sm" style={{ backgroundColor: swatch }} />}
+      {label}
+      <Dir size={11} className={dirColor} />
+      <span className={dirColor}>{Math.abs(pct) < 3 ? 'flat' : `${pct > 0 ? '+' : ''}${pct.toFixed(0)}%`}</span>
+    </span>
+  );
+};
 
 // Same preset → [start, end] logic the entries list uses (all IST-safe)
 const rangeForPreset = (preset: DatePreset, customStart: string, customEnd: string): [string, string] => {
@@ -247,6 +290,8 @@ const CrewReports: React.FC<{ user: User; profile: UserProfile; onBack?: () => v
   const [filterOutlet, setFilterOutlet] = useState('all');
   const [loading, setLoading] = useState(false);
   const [salesView, setSalesView] = useState<'charts' | 'table'>('charts');
+  const [entriesView, setEntriesView] = useState<'charts' | 'table'>('charts');
+  const [trendCategory, setTrendCategory] = useState('all');
 
   const [salesLogs, setSalesLogs] = useState<DailySalesLog[]>([]);
   const [entries, setEntries] = useState<DailyCounterEntry[]>([]);
@@ -406,6 +451,49 @@ const CrewReports: React.FC<{ user: User; profile: UserProfile; onBack?: () => v
     });
     return { paid, pending, total: paid + pending, byCategory };
   }, [fEntries]);
+
+  // Daily Online-vs-Cash spend, zero-filled across the period (cancelled excluded)
+  const entriesTrend = useMemo(() => {
+    const byDate = new Map(listDates(start, end).map(d => [d, { date: d, online: 0, cash: 0 }]));
+    fEntries.forEach(e => {
+      if (e.status === 'cancelled') return;
+      const d = byDate.get(e.date);
+      if (!d) return;
+      if (e.type === 'purchase') d.online += e.amount; else d.cash += e.amount;
+    });
+    return Array.from(byDate.values());
+  }, [fEntries, start, end]);
+
+  // Top categories by spend share; everything past 8 folds into "Other"
+  const categoryShare = useMemo(() => {
+    const sorted = (Object.entries(entryTotals.byCategory) as [string, number][]).sort((a, b) => b[1] - a[1]);
+    const rows = sorted.slice(0, 8).map(([name, amt]) => ({ name, amt }));
+    const rest = sorted.slice(8);
+    if (rest.length > 0) rows.push({ name: `OTHER (${rest.length} more)`, amt: rest.reduce((s, [, v]) => s + v, 0) });
+    const total = entryTotals.total || 1;
+    return rows.map(r => ({ ...r, pct: (r.amt / total) * 100 }));
+  }, [entryTotals]);
+
+  const categoryOptions = useMemo(() =>
+    (Object.entries(entryTotals.byCategory) as [string, number][]).sort((a, b) => b[1] - a[1]).map(([c]) => c),
+  [entryTotals]);
+
+  // Daily spend for the selected category (or everything), zero-filled
+  const categoryTrend = useMemo(() => {
+    const byDate = new Map(listDates(start, end).map(d => [d, { date: d, amount: 0 }]));
+    fEntries.forEach(e => {
+      if (e.status === 'cancelled') return;
+      if (trendCategory !== 'all' && e.category !== trendCategory) return;
+      const d = byDate.get(e.date);
+      if (d) d.amount += e.amount;
+    });
+    return Array.from(byDate.values());
+  }, [fEntries, trendCategory, start, end]);
+
+  // Don't keep a category selected once the filters exclude it entirely
+  useEffect(() => {
+    if (trendCategory !== 'all' && !categoryOptions.includes(trendCategory)) setTrendCategory('all');
+  }, [categoryOptions, trendCategory]);
 
   const transferTotal = useMemo(() => fTransfers.reduce((s, t) => s + t.amount, 0), [fTransfers]);
 
@@ -750,7 +838,115 @@ const CrewReports: React.FC<{ user: User; profile: UserProfile; onBack?: () => v
             <Tile label="Pending" value={`₹${entryTotals.pending.toLocaleString('en-IN')}`} tone="text-amber-600" />
             <Tile label="Total" value={`₹${entryTotals.total.toLocaleString('en-IN')}`} />
           </div>
-          {Object.keys(entryTotals.byCategory).length > 0 && (
+          {/* View toggle + exports */}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex bg-slate-100 p-1 rounded-xl gap-1">
+              {([['charts', BarChart3, 'Charts'], ['table', Table2, 'Table']] as const).map(([v, Icon, label]) => (
+                <button
+                  key={v}
+                  onClick={() => setEntriesView(v)}
+                  className={`h-9 px-3.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all active:scale-95 ${entriesView === v ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                >
+                  <Icon size={14} /> {label}
+                </button>
+              ))}
+            </div>
+            <div className="ml-auto"><ExportButtons /></div>
+          </div>
+
+          {entriesView === 'charts' && (
+            fEntries.length === 0
+              ? <p className="py-16 text-center text-sm text-slate-400 bg-white border-2 border-dashed border-slate-200 rounded-2xl">No entries in this period</p>
+              : (
+                <div className="space-y-3">
+                  <div className="grid md:grid-cols-2 gap-3">
+                    {/* Online vs Cash daily trend */}
+                    <div className="bg-white ring-1 ring-slate-100 shadow-sm rounded-2xl p-4">
+                      <div className="flex flex-wrap items-center gap-2 mb-2">
+                        <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest">Spend trend</p>
+                        <div className="ml-auto flex flex-wrap gap-1.5">
+                          <TrendChip label="Online" swatch={SPEND_COLORS.online} pct={halfOverHalf(entriesTrend.map(r => r.online))} />
+                          <TrendChip label="Cash" swatch={SPEND_COLORS.cash} pct={halfOverHalf(entriesTrend.map(r => r.cash))} />
+                        </div>
+                      </div>
+                      {entriesTrend.length < 2 ? (
+                        <p className="h-[230px] flex items-center justify-center text-xs text-slate-400">Pick a wider range to see a trend</p>
+                      ) : (
+                        <ResponsiveContainer width="100%" height={240}>
+                          <LineChart data={entriesTrend} margin={{ top: 6, right: 12, bottom: 0, left: 0 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                            <XAxis dataKey="date" tickFormatter={shortDate} tick={{ fontSize: 10, fill: '#94a3b8' }} tickLine={false} axisLine={{ stroke: '#e2e8f0' }} minTickGap={28} />
+                            <YAxis tickFormatter={(v: number) => inrCompact(v)} tick={{ fontSize: 10, fill: '#94a3b8' }} tickLine={false} axisLine={false} width={54} />
+                            <ChartTooltip formatter={(v: any, n: any) => [inr(Number(v)), n]} contentStyle={{ borderRadius: 12, border: '1px solid #e2e8f0', fontSize: 12 }} />
+                            <ChartLegend wrapperStyle={{ fontSize: 11 }} iconType="plainline" />
+                            <Line type="monotone" dataKey="online" name="Online" stroke={SPEND_COLORS.online} strokeWidth={2} dot={{ r: 2 }} activeDot={{ r: 5 }} />
+                            <Line type="monotone" dataKey="cash" name="Cash" stroke={SPEND_COLORS.cash} strokeWidth={2} dot={{ r: 2 }} activeDot={{ r: 5 }} />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      )}
+                    </div>
+
+                    {/* Category share — ranked, top 8 + Other */}
+                    <div className="bg-white ring-1 ring-slate-100 shadow-sm rounded-2xl p-4">
+                      <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-2">Category share of spend</p>
+                      <ResponsiveContainer width="100%" height={Math.max(220, categoryShare.length * 30 + 30)}>
+                        <BarChart data={categoryShare} layout="vertical" margin={{ top: 0, right: 48, bottom: 0, left: 8 }}>
+                          <XAxis type="number" hide />
+                          <YAxis
+                            type="category" dataKey="name" width={140}
+                            tick={{ fontSize: 10, fill: '#64748b' }} tickLine={false} axisLine={false}
+                            tickFormatter={(n: string) => n.length > 20 ? n.slice(0, 19) + '…' : n}
+                          />
+                          <ChartTooltip formatter={(v: any) => inr(Number(v))} contentStyle={{ borderRadius: 12, border: '1px solid #e2e8f0', fontSize: 12 }} />
+                          <Bar dataKey="amt" name="Spend" fill={SPEND_COLORS.online} radius={[0, 4, 4, 0]} barSize={16}>
+                            <LabelList dataKey="pct" position="right" formatter={(p: any) => `${Number(p).toFixed(1)}%`} style={{ fontSize: 10, fill: '#64748b', fontWeight: 600 }} />
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+
+                  {/* Single-category trend with selector */}
+                  <div className="bg-white ring-1 ring-slate-100 shadow-sm rounded-2xl p-4">
+                    <div className="flex flex-wrap items-center gap-2 mb-2">
+                      <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest">Category trend</p>
+                      <div className="relative ml-2">
+                        <select
+                          value={trendCategory}
+                          onChange={e => setTrendCategory(e.target.value)}
+                          className="h-8 bg-slate-50 border border-slate-200 focus:border-indigo-400 outline-none pl-3 pr-8 rounded-lg text-xs font-semibold text-slate-700 appearance-none transition-all"
+                        >
+                          <option value="all">All categories</option>
+                          {categoryOptions.map(c => <option key={c} value={c}>{c}</option>)}
+                        </select>
+                        <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={13} />
+                      </div>
+                      <div className="ml-auto">
+                        <TrendChip
+                          label={trendCategory === 'all' ? 'Total' : trendCategory.length > 18 ? trendCategory.slice(0, 17) + '…' : trendCategory}
+                          pct={halfOverHalf(categoryTrend.map(r => r.amount))}
+                        />
+                      </div>
+                    </div>
+                    {categoryTrend.length < 2 ? (
+                      <p className="h-[210px] flex items-center justify-center text-xs text-slate-400">Pick a wider range to see a trend</p>
+                    ) : (
+                      <ResponsiveContainer width="100%" height={220}>
+                        <LineChart data={categoryTrend} margin={{ top: 6, right: 12, bottom: 0, left: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                          <XAxis dataKey="date" tickFormatter={shortDate} tick={{ fontSize: 10, fill: '#94a3b8' }} tickLine={false} axisLine={{ stroke: '#e2e8f0' }} minTickGap={28} />
+                          <YAxis tickFormatter={(v: number) => inrCompact(v)} tick={{ fontSize: 10, fill: '#94a3b8' }} tickLine={false} axisLine={false} width={54} />
+                          <ChartTooltip formatter={(v: any) => [inr(Number(v)), trendCategory === 'all' ? 'Spend' : trendCategory]} contentStyle={{ borderRadius: 12, border: '1px solid #e2e8f0', fontSize: 12 }} />
+                          <Line type="monotone" dataKey="amount" name={trendCategory === 'all' ? 'Spend' : trendCategory} stroke={SPEND_COLORS.online} strokeWidth={2} dot={{ r: 2 }} activeDot={{ r: 5 }} />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    )}
+                  </div>
+                </div>
+              )
+          )}
+
+          {entriesView === 'table' && Object.keys(entryTotals.byCategory).length > 0 && (
             <div className="bg-white ring-1 ring-slate-100 shadow-sm rounded-2xl p-4">
               <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-2.5">By category</p>
               <div className="flex flex-wrap gap-2">
@@ -763,10 +959,11 @@ const CrewReports: React.FC<{ user: User; profile: UserProfile; onBack?: () => v
               </div>
             </div>
           )}
-          <div className="flex justify-end"><ExportButtons /></div>
-          {fEntries.length === 0
-            ? <p className="py-16 text-center text-sm text-slate-400 bg-white border-2 border-dashed border-slate-200 rounded-2xl">No entries in this period</p>
-            : <DataTable headers={ENTRY_HEADERS} rows={displayRows(entryRows(), [10])} rightCols={[10, 11, 12]} minWidth={1050} />}
+          {entriesView === 'table' && (
+            fEntries.length === 0
+              ? <p className="py-16 text-center text-sm text-slate-400 bg-white border-2 border-dashed border-slate-200 rounded-2xl">No entries in this period</p>
+              : <DataTable headers={ENTRY_HEADERS} rows={displayRows(entryRows(), [10])} rightCols={[10, 11, 12]} minWidth={1050} />
+          )}
         </div>
       ) : activeTab === 'transfers' ? (
         <div className="space-y-3">
