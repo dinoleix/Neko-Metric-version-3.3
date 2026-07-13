@@ -164,6 +164,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
   const [filterStatus, setFilterStatus] = useState<'all' | EntryStatus>('all');
   const [filterType, setFilterType] = useState<'all' | 'purchase' | 'expense'>('all');
   const [filterCategory, setFilterCategory] = useState('all');
+  const [filterOutlet, setFilterOutlet] = useState('all');
   const [datePreset, setDatePreset] = useState<DatePreset>('today');
   const [customStartDate, setCustomStartDate] = useState(istToday());
   const [customEndDate, setCustomEndDate] = useState(istToday());
@@ -389,18 +390,40 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
       }
 
       // Date range is applied server-side so we only pay for the docs we show.
-      // Needs the (userId ASC, date ASC) composite index in firestore.indexes.json.
-      const q = query(
-        collection(db, 'crew_entries'),
-        where('userId', '==', user.uid),
-        where('date', '>=', start),
-        where('date', '<=', end)
-      );
+      // Crew query their own entries by userId; admins query the whole business
+      // by ownerId, plus their own legacy pre-ownerId entries by userId.
+      // Needs the (userId, date) and (ownerId, date) composite indexes.
+      let docs: DailyCounterEntry[];
+      if (profile.role === 'admin') {
+        const [ownerSnap, userSnap] = await Promise.all([
+          getDocs(query(
+            collection(db, 'crew_entries'),
+            where('ownerId', '==', user.uid),
+            where('date', '>=', start),
+            where('date', '<=', end)
+          )),
+          getDocs(query(
+            collection(db, 'crew_entries'),
+            where('userId', '==', user.uid),
+            where('date', '>=', start),
+            where('date', '<=', end)
+          )),
+        ]);
+        const seen = new Set<string>();
+        docs = [...ownerSnap.docs, ...userSnap.docs]
+          .filter(d => { if (seen.has(d.id)) return false; seen.add(d.id); return true; })
+          .map(d => ({ id: d.id, ...d.data() } as DailyCounterEntry));
+      } else {
+        const snap = await getDocs(query(
+          collection(db, 'crew_entries'),
+          where('userId', '==', user.uid),
+          where('date', '>=', start),
+          where('date', '<=', end)
+        ));
+        docs = snap.docs.map(d => ({ id: d.id, ...d.data() } as DailyCounterEntry));
+      }
 
-      const snap = await getDocs(q);
-      const filteredByDate = snap.docs.map(d => ({ id: d.id, ...d.data() } as DailyCounterEntry));
-
-      setEntries(filteredByDate.sort((a, b) => b.createdAt - a.createdAt));
+      setEntries(docs.sort((a, b) => b.createdAt - a.createdAt));
     } catch (err) {
       console.error("Fetch entries error:", err);
     } finally {
@@ -566,10 +589,13 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
         ? billItems.map(i => i.productName).join(', ')
         : description;
 
+      // On edit, keep the original author so the entry stays visible in the
+      // submitter's own list (admins can edit crew entries)
+      const editedEntry = !isNew ? entries.find(e => e.id === editingId) : undefined;
       const entryData: any = {
-        userId: user.uid,
-        ownerId: profile.ownerId || user.uid,
-        userName: user.email?.split('@')[0] || 'Unknown',
+        userId: editedEntry?.userId || user.uid,
+        ownerId: editedEntry?.ownerId || profile.ownerId || user.uid,
+        userName: editedEntry?.userName || user.email?.split('@')[0] || 'Unknown',
         outletId,
         type: entryType,
         amount: finalAmount,
@@ -1298,12 +1324,13 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
       const matchesType = filterType === 'all' || e.type === filterType;
       const matchesStatus = filterStatus === 'all' || e.status === filterStatus;
       const matchesCategory = filterCategory === 'all' || e.category === filterCategory;
+      const matchesOutlet = filterOutlet === 'all' || e.outletId === filterOutlet;
       const matchesSearch = !searchTerm ||
         e.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
         e.category.toLowerCase().includes(searchTerm.toLowerCase());
-      return matchesType && matchesStatus && matchesCategory && matchesSearch;
+      return matchesType && matchesStatus && matchesCategory && matchesOutlet && matchesSearch;
     });
-  }, [entries, filterType, filterStatus, filterCategory, searchTerm]);
+  }, [entries, filterType, filterStatus, filterCategory, filterOutlet, searchTerm]);
 
   const entrySummary = useMemo(() => {
     const paid = filteredEntries.filter(e => e.status === 'paid').reduce((s, e) => s + e.amount, 0);
@@ -1595,6 +1622,22 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
                 <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={15} />
               </div>
             </div>
+
+            {/* Store filter — admins see every outlet's entries */}
+            {profile.role === 'admin' && (
+              <div className="relative">
+                <MapPin className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={16} />
+                <select
+                  value={filterOutlet}
+                  onChange={e => setFilterOutlet(e.target.value)}
+                  className="w-full h-11 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white focus:ring-4 focus:ring-indigo-500/10 outline-none pl-10 pr-8 rounded-xl text-sm font-medium text-slate-700 appearance-none transition-all"
+                >
+                  <option value="all">All stores</option>
+                  {MASTER_OUTLETS.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+                </select>
+                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={15} />
+              </div>
+            )}
           </div>
 
           {/* Summary strip */}
@@ -1654,6 +1697,11 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
                       }
                       {entry.vendorName && (
                         <p className="text-xs font-medium text-indigo-500 truncate mt-0.5">{entry.vendorName}</p>
+                      )}
+                      {profile.role === 'admin' && (
+                        <p className="text-[10px] font-medium text-slate-400 truncate mt-0.5 flex items-center gap-1">
+                          <MapPin size={10} className="shrink-0" /> {getOutletName(entry.outletId)}{entry.userName ? ` · ${entry.userName}` : ''}
+                        </p>
                       )}
                     </div>
                     <div className="shrink-0 flex flex-col items-center justify-center px-3 border-x border-slate-100">

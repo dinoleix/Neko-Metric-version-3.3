@@ -1,0 +1,824 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import type { User } from 'firebase/auth';
+import { collection, query, getDocs, where } from 'firebase/firestore';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
+import {
+  ResponsiveContainer, PieChart, Pie, Cell,
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as ChartTooltip, Legend as ChartLegend,
+} from 'recharts';
+import { db } from '../firebase';
+import { getCachedCollection } from '../referenceCache';
+import {
+  DailySalesLog,
+  DailyCounterEntry,
+  WasteEntry,
+  Vendor,
+  Product,
+  UserProfile,
+  BankAccount,
+  MASTER_OUTLETS,
+  MONTH_NAMES,
+  getOutletName,
+  istNow,
+  istDateString,
+} from '../types';
+import {
+  ArrowLeft,
+  Loader2,
+  FileSpreadsheet,
+  FileDown,
+  ChevronDown,
+  MapPin,
+  IndianRupee,
+  ShoppingBag,
+  Vault,
+  Trash2,
+  Store,
+  Package,
+  BarChart3,
+  Table2,
+  TrendingUp,
+  TrendingDown,
+  Minus,
+} from 'lucide-react';
+
+type ReportTab = 'sales' | 'entries' | 'transfers' | 'waste' | 'catalog';
+type DatePreset = 'today' | 'yesterday' | 'this-week' | 'last-week' | 'this-month' | 'custom';
+
+interface BankTxn {
+  id?: string;
+  bankAccountId: string;
+  date: string;
+  description: string;
+  amount: number;
+  type: 'debit' | 'credit';
+  category?: string;
+  referenceNo?: string;
+}
+
+const TABS: { id: ReportTab; label: string; icon: any }[] = [
+  { id: 'sales', label: 'Sales', icon: IndianRupee },
+  { id: 'entries', label: 'Purchases & Expenses', icon: ShoppingBag },
+  { id: 'transfers', label: '10K Transfers', icon: Vault },
+  { id: 'waste', label: 'Waste', icon: Trash2 },
+  { id: 'catalog', label: 'Catalog', icon: Package },
+];
+
+const istToday = (): string => istDateString(0);
+
+// CVD-validated categorical palette (dataviz six-checks pass on white surface):
+// indigo+violet fails protan separation, hence amber for UPI
+const CHANNEL_COLORS: Record<'cash' | 'card' | 'upi', string> = {
+  cash: '#059669',
+  card: '#4f46e5',
+  upi: '#d97706',
+};
+const CHANNEL_LABELS: Record<'cash' | 'card' | 'upi', string> = { cash: 'Cash', card: 'Card', upi: 'UPI' };
+const CHANNELS = ['cash', 'card', 'upi'] as const;
+
+const inr = (n: number) => `₹${Math.round(n).toLocaleString('en-IN')}`;
+const inrCompact = (n: number) => n >= 100000 ? `₹${(n / 100000).toFixed(1)}L` : n >= 1000 ? `₹${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : `₹${Math.round(n)}`;
+
+// Same preset → [start, end] logic the entries list uses (all IST-safe)
+const rangeForPreset = (preset: DatePreset, customStart: string, customEnd: string): [string, string] => {
+  const today = istToday();
+  switch (preset) {
+    case 'yesterday': {
+      const d = istDateString(-1);
+      return [d, d];
+    }
+    case 'this-week': {
+      const day = istNow().getUTCDay();
+      const daysSinceMonday = day === 0 ? 6 : day - 1;
+      return [istDateString(-daysSinceMonday), today];
+    }
+    case 'last-week': {
+      const day = istNow().getUTCDay();
+      const daysSinceMonday = day === 0 ? 6 : day - 1;
+      return [istDateString(-daysSinceMonday - 7), istDateString(-daysSinceMonday - 1)];
+    }
+    case 'this-month':
+      return [today.slice(0, 8) + '01', today];
+    case 'custom':
+      return [customStart, customEnd];
+    default:
+      return [today, today];
+  }
+};
+
+const downloadCsv = (headers: string[], rows: (string | number)[][], filename: string) => {
+  const escape = (v: string | number) => {
+    const s = String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const lines = [headers, ...rows].map(row => row.map(escape).join(','));
+  // BOM so Excel opens it as UTF-8
+  const blob = new Blob(['\ufeff' + lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${filename}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+};
+
+// Real .xlsx via SheetJS — dynamically imported so the library only loads on demand
+const downloadXlsx = async (headers: string[], rows: (string | number)[][], filename: string, sheetName: string) => {
+  const XLSX = await import('xlsx');
+  const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+  ws['!cols'] = headers.map((h, i) => ({
+    wch: Math.min(40, Math.max(h.length, ...rows.slice(0, 50).map(r => String(r[i] ?? '').length), 8) + 2),
+  }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, sheetName.slice(0, 31));
+  XLSX.writeFile(wb, `${filename}.xlsx`);
+};
+
+const downloadPdf = (
+  title: string,
+  metaLines: string[],
+  headers: string[],
+  rows: (string | number)[][],
+  filename: string,
+  rightAlignedCols: number[] = []
+) => {
+  const doc = new jsPDF({ orientation: 'landscape' });
+  doc.setFontSize(14);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(30, 27, 75);
+  doc.text(title, 14, 14);
+  doc.setFontSize(8);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(100, 116, 139);
+  metaLines.forEach((line, i) => doc.text(line, 14, 20 + i * 5));
+  const columnStyles: Record<number, any> = {};
+  rightAlignedCols.forEach(i => { columnStyles[i] = { halign: 'right' }; });
+  autoTable(doc, {
+    head: [headers],
+    body: rows.map(r => r.map(v => String(v))),
+    startY: 20 + metaLines.length * 5 + 3,
+    styles: { fontSize: 7, cellPadding: 2, font: 'helvetica' },
+    headStyles: { fillColor: [79, 70, 229], textColor: 255, fontStyle: 'bold' },
+    columnStyles,
+    alternateRowStyles: { fillColor: [248, 250, 252] },
+  });
+  doc.save(`${filename}.pdf`);
+};
+
+const PAGE_SIZES = [10, 20, 30, 50];
+
+// Module-level so pagination state survives parent re-renders; page resets when
+// rows shrink below the current window (e.g. filters changed)
+const DataTable = ({ headers, rows, rightCols = [], minWidth = 900 }: { headers: string[]; rows: (string | number)[][]; rightCols?: number[]; minWidth?: number }) => {
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(20);
+  const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+  const safePage = Math.min(page, totalPages - 1);
+  const startIdx = safePage * pageSize;
+  const pageRows = rows.slice(startIdx, startIdx + pageSize);
+  return (
+    <div className="bg-white ring-1 ring-slate-100 shadow-sm rounded-2xl">
+      <div className="overflow-x-auto rounded-t-2xl">
+        <table className="w-full text-left text-xs" style={{ minWidth }}>
+          <thead>
+            <tr className="border-b border-slate-100">
+              {headers.map((h, i) => (
+                <th key={h} className={`px-3 py-3 font-semibold text-slate-500 whitespace-nowrap ${rightCols.includes(i) ? 'text-right' : ''}`}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {pageRows.map((row, ri) => (
+              <tr key={startIdx + ri} className="border-b border-slate-50 last:border-0 hover:bg-indigo-50/40 transition-colors">
+                {row.map((cell, ci) => (
+                  <td key={ci} className={`px-3 py-2.5 whitespace-nowrap max-w-[240px] truncate ${rightCols.includes(ci) ? 'text-right font-semibold text-slate-800' : 'text-slate-600'}`}>
+                    {typeof cell === 'number' ? `₹${cell.toLocaleString('en-IN')}` : (cell === '' ? '—' : cell)}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {/* Pagination footer */}
+      <div className="flex flex-wrap items-center gap-3 px-4 py-3 border-t border-slate-100">
+        <div className="flex items-center gap-2 text-xs text-slate-500">
+          <span>Rows:</span>
+          <select
+            value={pageSize}
+            onChange={e => { setPageSize(parseInt(e.target.value)); setPage(0); }}
+            className="h-8 bg-slate-50 border border-slate-200 rounded-lg px-2 text-xs font-semibold text-slate-700 outline-none focus:border-indigo-400"
+          >
+            {PAGE_SIZES.map(n => <option key={n} value={n}>{n}</option>)}
+          </select>
+        </div>
+        <p className="text-xs text-slate-400">
+          {rows.length === 0 ? '0' : `${startIdx + 1}–${Math.min(startIdx + pageSize, rows.length)}`} of {rows.length}
+        </p>
+        <div className="ml-auto flex gap-1.5">
+          <button
+            onClick={() => setPage(p => Math.max(0, Math.min(p, totalPages - 1) - 1))}
+            disabled={safePage === 0}
+            className="h-8 px-3 bg-slate-100 hover:bg-slate-200 rounded-lg text-xs font-semibold text-slate-600 disabled:opacity-40 active:scale-95 transition-all"
+          >
+            ‹ Prev
+          </button>
+          <button
+            onClick={() => setPage(p => Math.min(totalPages - 1, Math.min(p, totalPages - 1) + 1))}
+            disabled={safePage >= totalPages - 1}
+            className="h-8 px-3 bg-slate-100 hover:bg-slate-200 rounded-lg text-xs font-semibold text-slate-600 disabled:opacity-40 active:scale-95 transition-all"
+          >
+            Next ›
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const CrewReports: React.FC<{ user: User; profile: UserProfile; onBack?: () => void }> = ({ user, profile, onBack }) => {
+  const ownerId = profile.ownerId || user.uid;
+
+  const [activeTab, setActiveTab] = useState<ReportTab>('sales');
+  const [datePreset, setDatePreset] = useState<DatePreset>('this-month');
+  const [customStartDate, setCustomStartDate] = useState(istToday());
+  const [customEndDate, setCustomEndDate] = useState(istToday());
+  const [filterOutlet, setFilterOutlet] = useState('all');
+  const [loading, setLoading] = useState(false);
+  const [salesView, setSalesView] = useState<'charts' | 'table'>('charts');
+
+  const [salesLogs, setSalesLogs] = useState<DailySalesLog[]>([]);
+  const [entries, setEntries] = useState<DailyCounterEntry[]>([]);
+  const [transfers, setTransfers] = useState<BankTxn[]>([]);
+  const [wasteEntries, setWasteEntries] = useState<WasteEntry[]>([]);
+  const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [vendors, setVendors] = useState<Vendor[]>([]);
+
+  const [start, end] = rangeForPreset(datePreset, customStartDate, customEndDate);
+  const rangeLabel = datePreset === 'custom' ? `${customStartDate} to ${customEndDate}` : datePreset.replace('-', ' ');
+  const storeLabel = filterOutlet === 'all' ? 'All stores' : getOutletName(filterOutlet);
+  const fileStamp = istToday();
+
+  // Bank accounts are needed to map 10K transfer transactions back to a store
+  useEffect(() => {
+    getDocs(query(collection(db, 'bank_accounts'), where('userId', '==', ownerId)))
+      .then(snap => setBankAccounts(snap.docs.map(d => ({ id: d.id, ...d.data() } as BankAccount))))
+      .catch(err => console.error('[Reports] bank accounts failed:', err));
+  }, []);
+
+  // Store filter lists only outlets whose rental record is active; if there are
+  // no rental records at all, fall back to the full master list
+  const [activeOutlets, setActiveOutlets] = useState(MASTER_OUTLETS);
+  useEffect(() => {
+    getDocs(query(collection(db, 'rentals'), where('userId', '==', ownerId)))
+      .then(snap => {
+        const activeIds = new Set(
+          snap.docs.filter(d => d.data().status === 'active').map(d => d.data().outletId as string)
+        );
+        if (activeIds.size > 0) {
+          const outlets = MASTER_OUTLETS.filter(o => activeIds.has(o.id));
+          setActiveOutlets(outlets);
+          setFilterOutlet(prev => (prev === 'all' || outlets.some(o => o.id === prev)) ? prev : 'all');
+        }
+      })
+      .catch(err => console.error('[Reports] rentals failed:', err));
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setLoading(true);
+      try {
+        if (activeTab === 'sales') {
+          const snap = await getDocs(query(collection(db, 'daily_sales_logs'),
+            where('ownerId', '==', ownerId), where('date', '>=', start), where('date', '<=', end)));
+          if (!cancelled) setSalesLogs(snap.docs.map(d => ({ id: d.id, ...d.data() } as DailySalesLog)));
+        } else if (activeTab === 'entries') {
+          const snap = await getDocs(query(collection(db, 'crew_entries'),
+            where('ownerId', '==', ownerId), where('date', '>=', start), where('date', '<=', end)));
+          if (!cancelled) setEntries(snap.docs.map(d => ({ id: d.id, ...d.data() } as DailyCounterEntry)));
+        } else if (activeTab === 'transfers') {
+          const snap = await getDocs(query(collection(db, 'bank_transactions'),
+            where('ownerId', '==', ownerId), where('category', '==', 'TRANSFER'),
+            where('date', '>=', start), where('date', '<=', end)));
+          if (!cancelled) {
+            // Keep only the counter-side debit so each transfer counts once
+            setTransfers(snap.docs.map(d => ({ id: d.id, ...d.data() } as BankTxn)).filter(t => t.type === 'debit'));
+          }
+        } else if (activeTab === 'waste') {
+          const snap = await getDocs(query(collection(db, 'waste_entries'),
+            where('ownerId', '==', ownerId), where('date', '>=', start), where('date', '<=', end)));
+          if (!cancelled) setWasteEntries(snap.docs.map(d => ({ id: d.id, ...d.data() } as WasteEntry)));
+        } else if (activeTab === 'catalog') {
+          const [prods, vends] = await Promise.all([
+            getDocs(query(collection(db, 'products'), where('ownerId', '==', ownerId))),
+            getCachedCollection<Vendor>('vendors', ownerId, 'ownerId'),
+          ]);
+          if (!cancelled) {
+            setProducts(prods.docs.map(d => ({ id: d.id, ...d.data() } as Product))
+              .sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name)));
+            setVendors([...vends].sort((a, b) => a.name.localeCompare(b.name)));
+          }
+        }
+      } catch (err) {
+        console.error('[Reports] load failed:', err);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [activeTab, datePreset, customStartDate, customEndDate]);
+
+  const accountOutlet = (bankAccountId: string) => bankAccounts.find(a => a.id === bankAccountId)?.outletId || '';
+
+  // ── Filtered views (store filter applied client-side) ──────────────
+  const fSales = useMemo(
+    () => salesLogs.filter(l => filterOutlet === 'all' || l.outletId === filterOutlet)
+      .sort((a, b) => b.date.localeCompare(a.date) || a.outletId.localeCompare(b.outletId)),
+    [salesLogs, filterOutlet]);
+  const fEntries = useMemo(
+    () => entries.filter(e => filterOutlet === 'all' || e.outletId === filterOutlet)
+      .sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt),
+    [entries, filterOutlet]);
+  const fTransfers = useMemo(
+    () => transfers.filter(t => filterOutlet === 'all' || accountOutlet(t.bankAccountId) === filterOutlet)
+      .sort((a, b) => b.date.localeCompare(a.date)),
+    [transfers, filterOutlet, bankAccounts]);
+  const fWasteRows = useMemo(() => {
+    const rows: { date: string; outletId: string; item: string; serving: string; type: string; qty: number; costPerUnit: number; total: number; submittedBy: string }[] = [];
+    wasteEntries
+      .filter(w => filterOutlet === 'all' || w.outletId === filterOutlet)
+      .forEach(w => w.items.forEach(it => rows.push({
+        date: w.date, outletId: w.outletId, item: it.itemName, serving: it.servingOptionName,
+        type: it.wasteType === 'broken' ? 'Broken' : 'Extra demand',
+        qty: it.quantity, costPerUnit: it.costPerUnit, total: it.totalCost, submittedBy: w.submittedBy,
+      })));
+    return rows.sort((a, b) => b.date.localeCompare(a.date));
+  }, [wasteEntries, filterOutlet]);
+
+  // ── Summaries ───────────────────────────────────────────────────────
+  const salesTotals = useMemo(() => fSales.reduce((s, l) => ({
+    cash: s.cash + (l.cash || 0), card: s.card + (l.card || 0), upi: s.upi + (l.upi || 0), total: s.total + (l.totalNet || 0),
+  }), { cash: 0, card: 0, upi: 0, total: 0 }), [fSales]);
+
+  // Daily totals across the visible stores — feeds the trend chart
+  const salesTrend = useMemo(() => {
+    const byDate: Record<string, { date: string; cash: number; card: number; upi: number }> = {};
+    fSales.forEach(l => {
+      const d = byDate[l.date] || (byDate[l.date] = { date: l.date, cash: 0, card: 0, upi: 0 });
+      d.cash += l.cash || 0; d.card += l.card || 0; d.upi += l.upi || 0;
+    });
+    return Object.values(byDate).sort((a, b) => a.date.localeCompare(b.date));
+  }, [fSales]);
+
+  // Direction per channel: average of the second half of the period vs the first
+  const channelTrends = useMemo(() => {
+    if (salesTrend.length < 4) return null;
+    const half = Math.floor(salesTrend.length / 2);
+    const avg = (arr: typeof salesTrend, k: 'cash' | 'card' | 'upi') => arr.reduce((s, r) => s + r[k], 0) / arr.length;
+    return CHANNELS.map(k => {
+      const a = avg(salesTrend.slice(0, half), k);
+      const b = avg(salesTrend.slice(half), k);
+      const pct = a > 0 ? ((b - a) / a) * 100 : (b > 0 ? 100 : 0);
+      return { k, pct };
+    });
+  }, [salesTrend]);
+
+  // Per-store totals for the side-by-side comparison when "All stores" is selected
+  const salesByStore = useMemo(() => {
+    const m: Record<string, { cash: number; card: number; upi: number; total: number }> = {};
+    fSales.forEach(l => {
+      const s = m[l.outletId] || (m[l.outletId] = { cash: 0, card: 0, upi: 0, total: 0 });
+      s.cash += l.cash || 0; s.card += l.card || 0; s.upi += l.upi || 0; s.total += l.totalNet || 0;
+    });
+    return Object.entries(m).sort((a, b) => b[1].total - a[1].total);
+  }, [fSales]);
+
+  const entryTotals = useMemo(() => {
+    const paid = fEntries.filter(e => e.status === 'paid').reduce((s, e) => s + e.amount, 0);
+    const pending = fEntries.filter(e => e.status === 'pending').reduce((s, e) => s + e.amount, 0);
+    const byCategory: Record<string, number> = {};
+    fEntries.filter(e => e.status !== 'cancelled').forEach(e => {
+      byCategory[e.category] = (byCategory[e.category] || 0) + e.amount;
+    });
+    return { paid, pending, total: paid + pending, byCategory };
+  }, [fEntries]);
+
+  const transferTotal = useMemo(() => fTransfers.reduce((s, t) => s + t.amount, 0), [fTransfers]);
+
+  const wasteTotals = useMemo(() => fWasteRows.reduce((s, r) => ({
+    cost: s.cost + r.total,
+    broken: s.broken + (r.type === 'Broken' ? r.total : 0),
+    extra: s.extra + (r.type === 'Extra demand' ? r.total : 0),
+  }), { cost: 0, broken: 0, extra: 0 }), [fWasteRows]);
+
+  // ── Export rows per tab ─────────────────────────────────────────────
+  const metaLines = [
+    `Period: ${rangeLabel}   ·   Store: ${storeLabel}   ·   Generated: ${fileStamp}`,
+  ];
+
+  const SALES_HEADERS = ['Date', 'Store', 'Cash', 'Card', 'UPI', 'Total', 'Submitted By', 'Notes'];
+  const salesRows = () => fSales.map(l => [l.date, getOutletName(l.outletId), l.cash, l.card, l.upi, l.totalNet, l.submittedBy || '', l.notes || '']);
+
+  const ENTRY_HEADERS = ['Date', 'Bill No', 'Store', 'Type', 'Paid From', 'Category', 'Description', 'Vendor', 'Submitted By', 'Status', 'Qty', 'Price/Unit', 'Amount'];
+  const entryRows = () => fEntries.map(e => [
+    e.date, e.billNumber || '', getOutletName(e.outletId),
+    e.type === 'purchase' ? 'Online' : 'Cash',
+    e.type === 'expense' ? (e.paidFrom === '10k' ? '10K Vault' : 'Counter') : '',
+    e.category, e.description || '', e.vendorName || '', e.userName || '', e.status || 'paid',
+    e.quantity != null ? e.quantity : '', e.pricePerUnit != null ? e.pricePerUnit : '', e.amount,
+  ]);
+
+  const TRANSFER_HEADERS = ['Date', 'Store', 'Description', 'Reference', 'Amount'];
+  const transferRows = () => fTransfers.map(t => [t.date, getOutletName(accountOutlet(t.bankAccountId)), t.description, t.referenceNo || '', t.amount]);
+
+  const WASTE_HEADERS = ['Date', 'Store', 'Item', 'Serving', 'Waste Type', 'Qty', 'Cost/Unit', 'Total Cost', 'Submitted By'];
+  const wasteRows = () => fWasteRows.map(r => [r.date, getOutletName(r.outletId), r.item, r.serving, r.type, r.qty, r.costPerUnit, r.total, r.submittedBy]);
+
+  const PRODUCT_HEADERS = ['Category', 'Product', 'Price/Unit', 'Unit'];
+  const productRows = () => products.map(p => [p.category, p.name, p.pricePerUnit != null ? p.pricePerUnit : '', p.unit || '']);
+
+  const VENDOR_HEADERS = ['Vendor', 'Phone', 'GST', 'Email', 'Address'];
+  const vendorRows = () => vendors.map(v => [v.name, v.phone || '', v.gst || '', v.email || '', v.address || '']);
+
+  const handleExport = (kind: 'csv' | 'excel' | 'pdf', section?: 'products' | 'vendors') => {
+    let title = '', headers: string[] = [], rows: (string | number)[][] = [], filename = '', right: number[] = [], extraMeta: string[] = [];
+    if (activeTab === 'sales') {
+      title = 'Sales Report'; headers = SALES_HEADERS; rows = salesRows(); filename = `sales-report_${fileStamp}`; right = [2, 3, 4, 5];
+      extraMeta = [`Cash: INR ${salesTotals.cash.toLocaleString('en-IN')}   ·   Card: INR ${salesTotals.card.toLocaleString('en-IN')}   ·   UPI: INR ${salesTotals.upi.toLocaleString('en-IN')}   ·   Total: INR ${salesTotals.total.toLocaleString('en-IN')}`];
+    } else if (activeTab === 'entries') {
+      title = 'Purchases & Expenses Report'; headers = ENTRY_HEADERS; rows = entryRows(); filename = `purchases-expenses_${fileStamp}`; right = [10, 11, 12];
+      extraMeta = [`Paid: INR ${entryTotals.paid.toLocaleString('en-IN')}   ·   Pending: INR ${entryTotals.pending.toLocaleString('en-IN')}   ·   Total: INR ${entryTotals.total.toLocaleString('en-IN')}`];
+    } else if (activeTab === 'transfers') {
+      title = '10K Transfers Report'; headers = TRANSFER_HEADERS; rows = transferRows(); filename = `10k-transfers_${fileStamp}`; right = [4];
+      extraMeta = [`Total transferred: INR ${transferTotal.toLocaleString('en-IN')}   ·   Transfers: ${fTransfers.length}`];
+    } else if (activeTab === 'waste') {
+      title = 'Waste Report'; headers = WASTE_HEADERS; rows = wasteRows(); filename = `waste-report_${fileStamp}`; right = [5, 6, 7];
+      extraMeta = [`Total cost: INR ${wasteTotals.cost.toLocaleString('en-IN')}   ·   Broken: INR ${wasteTotals.broken.toLocaleString('en-IN')}   ·   Extra demand: INR ${wasteTotals.extra.toLocaleString('en-IN')}`];
+    } else if (activeTab === 'catalog') {
+      if (section === 'vendors') {
+        title = 'Vendors'; headers = VENDOR_HEADERS; rows = vendorRows(); filename = `vendors_${fileStamp}`;
+        extraMeta = [`Vendors: ${vendors.length}`];
+      } else {
+        title = 'Products'; headers = PRODUCT_HEADERS; rows = productRows(); filename = `products_${fileStamp}`; right = [2];
+        extraMeta = [`Products: ${products.length}`];
+      }
+    }
+    const meta = activeTab === 'catalog' ? [`Generated: ${fileStamp}`, ...extraMeta] : [...metaLines, ...extraMeta];
+    if (kind === 'csv') downloadCsv(headers, rows, filename);
+    else if (kind === 'excel') downloadXlsx(headers, rows, filename, title).catch(err => { console.error('[Reports] xlsx failed:', err); alert('Excel export failed.'); });
+    else downloadPdf(title, meta, headers, rows, filename, right);
+  };
+
+  // ── Small render helpers ────────────────────────────────────────────
+  const Tile = ({ label, value, tone = 'text-slate-900' }: { label: string; value: string; tone?: string }) => (
+    <div className="bg-white ring-1 ring-slate-100 shadow-sm rounded-2xl px-4 py-3 text-center">
+      <p className="text-[10px] font-semibold text-slate-500 mb-1">{label}</p>
+      <p className={`text-sm font-bold tracking-tight ${tone}`}>{value}</p>
+    </div>
+  );
+
+  const ExportButtons = ({ section }: { section?: 'products' | 'vendors' }) => {
+    const empty =
+      activeTab === 'sales' ? fSales.length === 0
+      : activeTab === 'entries' ? fEntries.length === 0
+      : activeTab === 'transfers' ? fTransfers.length === 0
+      : activeTab === 'waste' ? fWasteRows.length === 0
+      : section === 'vendors' ? vendors.length === 0 : products.length === 0;
+    return (
+      <div className="flex gap-2">
+        <button
+          onClick={() => handleExport('csv', section)}
+          disabled={empty || loading}
+          className="h-9 px-3.5 bg-slate-100 text-slate-600 hover:bg-slate-200 rounded-xl text-xs font-semibold flex items-center gap-1.5 disabled:opacity-40 active:scale-95 transition-all"
+        >
+          <FileDown size={14} /> CSV
+        </button>
+        <button
+          onClick={() => handleExport('excel', section)}
+          disabled={empty || loading}
+          className="h-9 px-3.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-xl text-xs font-semibold flex items-center gap-1.5 disabled:opacity-40 active:scale-95 transition-all"
+        >
+          <FileSpreadsheet size={14} /> Excel
+        </button>
+        <button
+          onClick={() => handleExport('pdf', section)}
+          disabled={empty || loading}
+          className="h-9 px-3.5 bg-rose-50 text-rose-700 hover:bg-rose-100 rounded-xl text-xs font-semibold flex items-center gap-1.5 disabled:opacity-40 active:scale-95 transition-all"
+        >
+          <FileDown size={14} /> PDF
+        </button>
+      </div>
+    );
+  };
+
+  // Money columns are numbers in export rows; qty must stay a plain number on screen
+  const displayRows = (rows: (string | number)[][], plainNumberCols: number[] = []) =>
+    rows.map(r => r.map((c, i) => (plainNumberCols.includes(i) && typeof c === 'number') ? String(c) : c));
+
+  return (
+    <div className="space-y-4 px-1 pt-2 animate-in slide-in-from-right duration-300">
+      {/* Top bar */}
+      <div className="flex items-center gap-3 bg-white rounded-2xl ring-1 ring-slate-100 shadow-sm px-3 py-3">
+        {onBack && (
+          <button
+            onClick={onBack}
+            className="flex items-center gap-2 h-11 px-4 bg-slate-100 hover:bg-slate-200 active:scale-95 rounded-xl text-slate-600 transition-all text-sm font-semibold shrink-0"
+          >
+            <ArrowLeft size={18} /> Home
+          </button>
+        )}
+        <h2 className="flex-1 text-center text-sm font-bold text-slate-800 truncate flex items-center justify-center gap-2 py-2">
+          <BarChart3 size={16} className="text-indigo-500" /> Reports
+        </h2>
+        {onBack && <div className="w-[92px] shrink-0" />}
+      </div>
+
+      {/* Tabs */}
+      <div className="flex gap-2 overflow-x-auto no-scrollbar pb-0.5">
+        {TABS.map(t => (
+          <button
+            key={t.id}
+            onClick={() => setActiveTab(t.id)}
+            className={`h-10 px-4 rounded-xl text-xs font-semibold whitespace-nowrap flex items-center gap-1.5 transition-all active:scale-95 shrink-0 ${activeTab === t.id ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white ring-1 ring-slate-100 text-slate-500 hover:text-slate-700'}`}
+          >
+            <t.icon size={14} /> {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Filter bar (date + store) — not relevant for Catalog */}
+      {activeTab !== 'catalog' && (
+        <div className="bg-white rounded-2xl ring-1 ring-slate-100 shadow-sm p-4 space-y-3.5">
+          <div className="flex gap-2 overflow-x-auto no-scrollbar pb-0.5">
+            {(['today', 'yesterday', 'this-week', 'last-week', 'this-month', 'custom'] as DatePreset[]).map(p => (
+              <button
+                key={p}
+                onClick={() => setDatePreset(p)}
+                className={`h-9 px-4 rounded-lg text-xs font-semibold capitalize whitespace-nowrap transition-all active:scale-95 shrink-0 ${datePreset === p ? 'bg-indigo-600 text-white shadow-sm' : 'bg-slate-100 text-slate-500 hover:text-slate-700'}`}
+              >
+                {p.replace('-', ' ')}
+              </button>
+            ))}
+          </div>
+          {datePreset === 'custom' && (
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1 ml-0.5">From</label>
+                <input type="date" value={customStartDate} onChange={e => setCustomStartDate(e.target.value)} className="w-full h-11 bg-slate-50 border border-slate-200 rounded-xl px-3.5 text-sm font-medium text-slate-700 outline-none focus:border-indigo-500 focus:bg-white focus:ring-4 focus:ring-indigo-500/10 transition-all" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1 ml-0.5">To</label>
+                <input type="date" value={customEndDate} onChange={e => setCustomEndDate(e.target.value)} className="w-full h-11 bg-slate-50 border border-slate-200 rounded-xl px-3.5 text-sm font-medium text-slate-700 outline-none focus:border-indigo-500 focus:bg-white focus:ring-4 focus:ring-indigo-500/10 transition-all" />
+              </div>
+            </div>
+          )}
+          <div className="relative">
+            <MapPin className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={16} />
+            <select
+              value={filterOutlet}
+              onChange={e => setFilterOutlet(e.target.value)}
+              className="w-full h-11 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white focus:ring-4 focus:ring-indigo-500/10 outline-none pl-10 pr-8 rounded-xl text-sm font-medium text-slate-700 appearance-none transition-all"
+            >
+              <option value="all">All stores</option>
+              {activeOutlets.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+            </select>
+            <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={15} />
+          </div>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="py-24 flex justify-center"><Loader2 className="animate-spin text-slate-300" size={36} /></div>
+      ) : activeTab === 'sales' ? (
+        <div className="space-y-3">
+          <div className="grid grid-cols-4 gap-2">
+            <Tile label="Cash" value={`₹${salesTotals.cash.toLocaleString('en-IN')}`} tone="text-emerald-600" />
+            <Tile label="Card" value={`₹${salesTotals.card.toLocaleString('en-IN')}`} tone="text-indigo-600" />
+            <Tile label="UPI" value={`₹${salesTotals.upi.toLocaleString('en-IN')}`} tone="text-amber-600" />
+            <Tile label="Total" value={`₹${salesTotals.total.toLocaleString('en-IN')}`} />
+          </div>
+
+          {/* View toggle + exports */}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex bg-slate-100 p-1 rounded-xl gap-1">
+              {([['charts', BarChart3, 'Charts'], ['table', Table2, 'Table']] as const).map(([v, Icon, label]) => (
+                <button
+                  key={v}
+                  onClick={() => setSalesView(v)}
+                  className={`h-9 px-3.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all active:scale-95 ${salesView === v ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                >
+                  <Icon size={14} /> {label}
+                </button>
+              ))}
+            </div>
+            <div className="ml-auto"><ExportButtons /></div>
+          </div>
+
+          {salesView === 'charts' && (
+            fSales.length === 0
+              ? <p className="py-16 text-center text-sm text-slate-400 bg-white border-2 border-dashed border-slate-200 rounded-2xl">No sales logs in this period</p>
+              : (
+                <div className="grid md:grid-cols-5 gap-3">
+                  {/* Payment mix donut */}
+                  <div className="md:col-span-2 bg-white ring-1 ring-slate-100 shadow-sm rounded-2xl p-4">
+                    <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-1">Payment mix</p>
+                    <div className="relative">
+                      <ResponsiveContainer width="100%" height={210}>
+                        <PieChart>
+                          <Pie
+                            data={CHANNELS.map(k => ({ key: k, name: CHANNEL_LABELS[k], value: salesTotals[k] })).filter(d => d.value > 0)}
+                            dataKey="value" nameKey="name"
+                            innerRadius={62} outerRadius={92}
+                            paddingAngle={2} stroke="#ffffff" strokeWidth={2}
+                          >
+                            {CHANNELS.map(k => salesTotals[k] > 0 && <Cell key={k} fill={CHANNEL_COLORS[k]} />)}
+                          </Pie>
+                          <ChartTooltip formatter={(v: any, n: any) => [inr(Number(v)), n]} />
+                        </PieChart>
+                      </ResponsiveContainer>
+                      <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                        <p className="text-[9px] font-semibold text-slate-400 uppercase tracking-widest">Total</p>
+                        <p className="text-base font-bold text-slate-900">{inrCompact(salesTotals.total)}</p>
+                      </div>
+                    </div>
+                    <div className="mt-2 space-y-1.5">
+                      {CHANNELS.map(k => (
+                        <div key={k} className="flex items-center gap-2 text-xs">
+                          <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: CHANNEL_COLORS[k] }} />
+                          <span className="font-semibold text-slate-700">{CHANNEL_LABELS[k]}</span>
+                          <span className="ml-auto text-slate-500">{inr(salesTotals[k])}</span>
+                          <span className="w-12 text-right text-slate-400">
+                            {salesTotals.total > 0 ? `${((salesTotals[k] / salesTotals.total) * 100).toFixed(1)}%` : '—'}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Daily trend lines */}
+                  <div className="md:col-span-3 bg-white ring-1 ring-slate-100 shadow-sm rounded-2xl p-4">
+                    <div className="flex flex-wrap items-center gap-2 mb-2">
+                      <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest">Daily trend</p>
+                      {channelTrends && (
+                        <div className="ml-auto flex flex-wrap gap-1.5">
+                          {channelTrends.map(({ k, pct }) => {
+                            const Dir = Math.abs(pct) < 3 ? Minus : pct > 0 ? TrendingUp : TrendingDown;
+                            const dirColor = Math.abs(pct) < 3 ? 'text-slate-400' : pct > 0 ? 'text-emerald-600' : 'text-rose-600';
+                            return (
+                              <span key={k} className="flex items-center gap-1 px-2 py-1 bg-slate-50 border border-slate-100 rounded-lg text-[10px] font-semibold text-slate-600">
+                                <span className="w-2 h-2 rounded-sm" style={{ backgroundColor: CHANNEL_COLORS[k] }} />
+                                {CHANNEL_LABELS[k]}
+                                <Dir size={11} className={dirColor} />
+                                <span className={dirColor}>{Math.abs(pct) < 3 ? 'flat' : `${pct > 0 ? '+' : ''}${pct.toFixed(0)}%`}</span>
+                              </span>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                    {salesTrend.length < 2 ? (
+                      <p className="h-[230px] flex items-center justify-center text-xs text-slate-400">Not enough days in this period to draw a trend — pick a wider range</p>
+                    ) : (
+                      <ResponsiveContainer width="100%" height={250}>
+                        <LineChart data={salesTrend} margin={{ top: 6, right: 12, bottom: 0, left: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                          <XAxis
+                            dataKey="date"
+                            tickFormatter={(d: string) => { const [, m, dd] = d.split('-'); return `${parseInt(dd)} ${MONTH_NAMES[parseInt(m) - 1].slice(0, 3)}`; }}
+                            tick={{ fontSize: 10, fill: '#94a3b8' }} tickLine={false} axisLine={{ stroke: '#e2e8f0' }} minTickGap={28}
+                          />
+                          <YAxis tickFormatter={(v: number) => inrCompact(v)} tick={{ fontSize: 10, fill: '#94a3b8' }} tickLine={false} axisLine={false} width={54} />
+                          <ChartTooltip
+                            formatter={(v: any, n: any) => [inr(Number(v)), n]}
+                            labelFormatter={(d: any) => String(d)}
+                            contentStyle={{ borderRadius: 12, border: '1px solid #e2e8f0', fontSize: 12 }}
+                          />
+                          <ChartLegend wrapperStyle={{ fontSize: 11 }} iconType="plainline" />
+                          <Line type="monotone" dataKey="cash" name="Cash" stroke={CHANNEL_COLORS.cash} strokeWidth={2} dot={{ r: 2 }} activeDot={{ r: 5 }} />
+                          <Line type="monotone" dataKey="card" name="Card" stroke={CHANNEL_COLORS.card} strokeWidth={2} dot={{ r: 2 }} activeDot={{ r: 5 }} />
+                          <Line type="monotone" dataKey="upi" name="UPI" stroke={CHANNEL_COLORS.upi} strokeWidth={2} dot={{ r: 2 }} activeDot={{ r: 5 }} />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    )}
+                  </div>
+                </div>
+              )
+          )}
+
+          {/* Side-by-side store comparison — shown when viewing all stores */}
+          {salesView === 'table' && filterOutlet === 'all' && salesByStore.length > 1 && (
+            <div className="bg-white ring-1 ring-slate-100 shadow-sm rounded-2xl p-4">
+              <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-2.5">By store</p>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs min-w-[520px]">
+                  <thead>
+                    <tr className="border-b border-slate-100">
+                      {['Store', 'Cash', 'Card', 'UPI', 'Total'].map((h, i) => (
+                        <th key={h} className={`px-2 py-2 font-semibold text-slate-500 ${i > 0 ? 'text-right' : ''}`}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {salesByStore.map(([oid, s]) => (
+                      <tr key={oid} className="border-b border-slate-50 last:border-0">
+                        <td className="px-2 py-2 font-semibold text-slate-700">{getOutletName(oid)}</td>
+                        <td className="px-2 py-2 text-right text-emerald-600 font-semibold">₹{s.cash.toLocaleString('en-IN')}</td>
+                        <td className="px-2 py-2 text-right text-indigo-600 font-semibold">₹{s.card.toLocaleString('en-IN')}</td>
+                        <td className="px-2 py-2 text-right text-amber-600 font-semibold">₹{s.upi.toLocaleString('en-IN')}</td>
+                        <td className="px-2 py-2 text-right font-bold text-slate-900">₹{s.total.toLocaleString('en-IN')}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+          {salesView === 'table' && (
+            fSales.length === 0
+              ? <p className="py-16 text-center text-sm text-slate-400 bg-white border-2 border-dashed border-slate-200 rounded-2xl">No sales logs in this period</p>
+              : <DataTable headers={SALES_HEADERS} rows={salesRows()} rightCols={[2, 3, 4, 5]} />
+          )}
+        </div>
+      ) : activeTab === 'entries' ? (
+        <div className="space-y-3">
+          <div className="grid grid-cols-3 gap-2">
+            <Tile label="Paid" value={`₹${entryTotals.paid.toLocaleString('en-IN')}`} tone="text-emerald-600" />
+            <Tile label="Pending" value={`₹${entryTotals.pending.toLocaleString('en-IN')}`} tone="text-amber-600" />
+            <Tile label="Total" value={`₹${entryTotals.total.toLocaleString('en-IN')}`} />
+          </div>
+          {Object.keys(entryTotals.byCategory).length > 0 && (
+            <div className="bg-white ring-1 ring-slate-100 shadow-sm rounded-2xl p-4">
+              <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-2.5">By category</p>
+              <div className="flex flex-wrap gap-2">
+                {(Object.entries(entryTotals.byCategory) as [string, number][]).sort((a, b) => b[1] - a[1]).map(([cat, amt]) => (
+                  <span key={cat} className="px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs">
+                    <span className="font-semibold text-slate-700">{cat}</span>
+                    <span className="text-slate-400 ml-1.5">₹{amt.toLocaleString('en-IN')}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+          <div className="flex justify-end"><ExportButtons /></div>
+          {fEntries.length === 0
+            ? <p className="py-16 text-center text-sm text-slate-400 bg-white border-2 border-dashed border-slate-200 rounded-2xl">No entries in this period</p>
+            : <DataTable headers={ENTRY_HEADERS} rows={displayRows(entryRows(), [10])} rightCols={[10, 11, 12]} minWidth={1050} />}
+        </div>
+      ) : activeTab === 'transfers' ? (
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-2">
+            <Tile label="Total moved to safe" value={`₹${transferTotal.toLocaleString('en-IN')}`} tone="text-amber-600" />
+            <Tile label="Transfers" value={String(fTransfers.length)} />
+          </div>
+          <div className="flex justify-end"><ExportButtons /></div>
+          {fTransfers.length === 0
+            ? <p className="py-16 text-center text-sm text-slate-400 bg-white border-2 border-dashed border-slate-200 rounded-2xl">No 10K transfers in this period</p>
+            : <DataTable headers={TRANSFER_HEADERS} rows={transferRows()} rightCols={[4]} minWidth={700} />}
+        </div>
+      ) : activeTab === 'waste' ? (
+        <div className="space-y-3">
+          <div className="grid grid-cols-3 gap-2">
+            <Tile label="Total waste cost" value={`₹${wasteTotals.cost.toLocaleString('en-IN')}`} tone="text-rose-600" />
+            <Tile label="Broken" value={`₹${wasteTotals.broken.toLocaleString('en-IN')}`} />
+            <Tile label="Extra demand" value={`₹${wasteTotals.extra.toLocaleString('en-IN')}`} />
+          </div>
+          <div className="flex justify-end"><ExportButtons /></div>
+          {fWasteRows.length === 0
+            ? <p className="py-16 text-center text-sm text-slate-400 bg-white border-2 border-dashed border-slate-200 rounded-2xl">No waste recorded in this period</p>
+            : <DataTable headers={WASTE_HEADERS} rows={displayRows(wasteRows(), [5])} rightCols={[5, 6, 7]} minWidth={950} />}
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-2">
+            <Tile label="Products" value={String(products.length)} tone="text-indigo-600" />
+            <Tile label="Vendors" value={String(vendors.length)} tone="text-emerald-600" />
+          </div>
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-bold text-slate-700 flex items-center gap-2"><Package size={16} className="text-indigo-500" /> Products</p>
+              <ExportButtons section="products" />
+            </div>
+            {products.length === 0
+              ? <p className="py-10 text-center text-sm text-slate-400 bg-white border-2 border-dashed border-slate-200 rounded-2xl">No products yet</p>
+              : <DataTable headers={PRODUCT_HEADERS} rows={productRows()} rightCols={[2]} minWidth={600} />}
+          </div>
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-bold text-slate-700 flex items-center gap-2"><Store size={16} className="text-emerald-500" /> Vendors</p>
+              <ExportButtons section="vendors" />
+            </div>
+            {vendors.length === 0
+              ? <p className="py-10 text-center text-sm text-slate-400 bg-white border-2 border-dashed border-slate-200 rounded-2xl">No vendors yet</p>
+              : <DataTable headers={VENDOR_HEADERS} rows={vendorRows()} minWidth={750} />}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default CrewReports;

@@ -27,6 +27,7 @@ const CategorySettings = lazy(() => import('./components/CategorySettings'));
 const PartnershipModel = lazy(() => import('./components/PartnershipModel'));
 const ExecDashboard = lazy(() => import('./components/ExecDashboard'));
 const CrewTerminal = lazy(() => import('./components/CrewTerminal'));
+const CrewReports = lazy(() => import('./components/CrewReports'));
 const UserManagement = lazy(() => import('./components/UserManagement'));
 const BankManagement = lazy(() => import('./components/BankManagement'));
 const BankReconciliation = lazy(() => import('./components/BankReconciliation'));
@@ -75,7 +76,7 @@ import {
   Store
 } from 'lucide-react';
 
-type AppTab = 'exec-dashboard' | 'dashboard' | 'sales' | 'raw-verify' | 'items' | 'pnl' | 'cash-flow' | 'pnl-insights' | 'waste' | 'waste-v2' | 'integrity' | 'team' | 'rentals' | 'catalog' | 'upload' | 'category-settings' | 'expenses' | 'partnership' | 'crew-terminal' | 'users' | 'bank-management' | 'bank-audit' | 'holidays' | 'online-profit' | 'vendor-management';
+type AppTab = 'exec-dashboard' | 'dashboard' | 'sales' | 'raw-verify' | 'items' | 'pnl' | 'cash-flow' | 'pnl-insights' | 'waste' | 'waste-v2' | 'integrity' | 'team' | 'rentals' | 'catalog' | 'upload' | 'category-settings' | 'expenses' | 'partnership' | 'crew-terminal' | 'crew-reports' | 'users' | 'bank-management' | 'bank-audit' | 'holidays' | 'online-profit' | 'vendor-management';
 
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
@@ -351,6 +352,7 @@ const App: React.FC = () => {
             <p className="text-[10px] font-black uppercase tracking-widest text-slate-600">Crew Terminal</p>
           </div>
           {!isReadOnly && <NavItem tab="crew-terminal" icon={<Smartphone size={18} />} label="Crew Terminal" />}
+          {isAdmin && <NavItem tab="crew-reports" icon={<BarChart3 size={18} />} label="Crew Reports" />}
 
           {!isReadOnly && (
             <>
@@ -436,6 +438,7 @@ const App: React.FC = () => {
           {activeTab === 'vendor-management' && !isReadOnly && <VendorManagement user={user} dataOwnerId={dataOwnerId} />}
           {activeTab === 'upload' && !isReadOnly && <Uploader user={user} dataOwnerId={dataOwnerId} onSuccess={() => setActiveTab('exec-dashboard')} />}
           {activeTab === 'crew-terminal' && <CrewTerminal user={user} profile={userProfile} />}
+          {activeTab === 'crew-reports' && isAdmin && <CrewReports user={user} profile={userProfile} />}
           {activeTab === 'users' && isAdmin && <UserManagement user={user} />}
           </Suspense>
         </div>
