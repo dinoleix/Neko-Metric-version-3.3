@@ -83,6 +83,26 @@ const STATUS_CONFIG: Record<EntryStatus, { label: string, color: string, bg: str
 
 type DatePreset = 'today' | 'yesterday' | 'this-week' | 'last-week' | 'this-month' | 'custom';
 
+// Resolves which bank account an entry hits: 10K vault for cash expenses paid
+// from the vault (no fallback — the source was explicit), otherwise the outlet's
+// primary cash/digital account with the historical fallback chain. The generic
+// fallback excludes the 10K vault so it can never be charged by accident.
+const resolveTargetAccount = (
+  accounts: BankAccount[],
+  entryOutletId: string,
+  type: 'purchase' | 'expense',
+  source: 'counter' | '10k'
+): BankAccount | null => {
+  if (type === 'expense' && source === '10k') {
+    return accounts.find(a => a.outletId === entryOutletId && a.accountType === '10kcash') ?? null;
+  }
+  const accountType = type === 'expense' ? 'cash' : 'digital';
+  return accounts.find(a => a.outletId === entryOutletId && a.isPrimary === true && a.accountType === accountType)
+    ?? accounts.find(a => a.outletId === entryOutletId && a.accountType === accountType)
+    ?? accounts.find(a => a.outletId === entryOutletId && a.accountType !== '10kcash')
+    ?? null;
+};
+
 // --- SAFE STATUS CONFIG HELPER ---
 const getStatusConfig = (status?: string) => {
   const key = (status as EntryStatus) || 'paid';
@@ -159,6 +179,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
   const [category, setCategory] = useState('');
   const [description, setDescription] = useState('');
   const [status, setStatus] = useState<EntryStatus>('paid');
+  const [paidFrom, setPaidFrom] = useState<'counter' | '10k'>('counter');
   const [date, setDate] = useState(istToday());
   const [outletId, setOutletId] = useState(profile.assignedOutlet || MASTER_OUTLETS[0].id);
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
@@ -186,14 +207,15 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
   const [npUnit, setNpUnit] = useState('');
   const [npSaving, setNpSaving] = useState(false);
 
-  // Crew-added categories (crew_categories collection), merged with the hardcoded lists
-  const [customCategories, setCustomCategories] = useState<string[]>([]);
+  // Custom categories (crew_categories collection), merged with the hardcoded lists
+  const [customCategories, setCustomCategories] = useState<CrewCategory[]>([]);
   const [showNewCategoryForm, setShowNewCategoryForm] = useState(false);
   const [ncName, setNcName] = useState('');
   const [ncSaving, setNcSaving] = useState(false);
+  const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
 
   const allCategories = useMemo(
-    () => Array.from(new Set([...ALL_CREW_CATEGORIES, ...customCategories])).sort(),
+    () => Array.from(new Set([...ALL_CREW_CATEGORIES, ...customCategories.map(c => c.name)])).sort(),
     [customCategories]
   );
 
@@ -411,7 +433,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
   useEffect(() => {
     const ownerId = profile.ownerId || user.uid;
     getCachedCollection<CrewCategory>('crew_categories', ownerId, 'ownerId')
-      .then(cats => setCustomCategories(cats.map(c => c.name)))
+      .then(cats => setCustomCategories(cats))
       .catch(err => console.error('[Categories] failed to load:', err));
   }, []);
 
@@ -471,6 +493,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     setCategory(entry.category);
     setDescription(entry.description);
     setStatus(entry.status || 'paid');
+    setPaidFrom(entry.paidFrom || 'counter');
     setDate(entry.date);
     setOutletId(entry.outletId);
     setExistingReceiptUrl(entry.receiptUrl || null);
@@ -511,13 +534,10 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     if (!hasBillItems && !amount) return;
     if (!category) return;
 
-    // Prevent cash expense if it would overdraw the cash account
-    if (entryType === 'expense' && status === 'paid' && primaryCashAccount) {
+    // Prevent cash expense if it would overdraw the selected source account
+    if (entryType === 'expense' && status === 'paid' && expenseSourceAccount) {
       const parsedAmt = parseFloat(amount) || 0;
-      const oldImpact = (activeMode === 'edit' && editingId)
-        ? (entries.find((en: DailyCounterEntry) => en.id === editingId)?.status === 'paid' ? entries.find((en: DailyCounterEntry) => en.id === editingId)?.amount || 0 : 0)
-        : 0;
-      if (parsedAmt - oldImpact > primaryCashAccount.balance) return;
+      if (parsedAmt - editOldImpact > expenseSourceAccount.balance) return;
     }
 
     setSaving(true);
@@ -559,6 +579,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
         category,
         description: finalDescription,
         status,
+        paidFrom: entryType === 'expense' ? paidFrom : null,
         receiptUrl: finalReceiptUrl || null,
         billNumber: billNumber || null,
         vendorId: selectedVendorId || null,
@@ -576,63 +597,66 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
         savedEntryId = ref.id;
       }
 
-      // Deduct from the correct bank account based on payment type
+      // Deduct from the correct bank account based on payment type + pay-from source
       try {
         const ownerId = profile.ownerId || user.uid;
-        const accountType = entryType === 'expense' ? 'cash' : 'digital';
+        const entrySource: 'counter' | '10k' = entryType === 'expense' ? paidFrom : 'counter';
 
         // Re-fetch live bank accounts to avoid stale React state
         const liveBankSnap = await getDocs(query(collection(db, 'bank_accounts'), where('userId', '==', ownerId)));
         const liveBankAccounts = liveBankSnap.docs
           .map(d => ({ id: d.id, ...d.data() } as BankAccount));
 
-        const targetAcc =
-          liveBankAccounts.find(a => a.outletId === outletId && a.isPrimary === true && a.accountType === accountType) ||
-          liveBankAccounts.find(a => a.outletId === outletId && a.accountType === accountType) ||
-          liveBankAccounts.find(a => a.outletId === outletId);
+        const isEdit = activeMode === 'edit' && editingId;
+        const oldEntry = isEdit ? entries.find(e => e.id === editingId) : undefined;
+        const oldImpact = oldEntry?.status === 'paid' ? oldEntry.amount : 0;
+        const newImpact = status === 'paid' ? finalAmount : 0;
 
-        console.log('[Bank] outletId:', outletId, '| accountType:', accountType, '| liveBankAccounts:', liveBankAccounts.map(a => `${a.outletId}/${a.accountType}/primary=${a.isPrimary}/id=${a.id}`), '| found:', targetAcc?.id);
+        // Old and new can hit different accounts when an edit changes the
+        // pay-from source, outlet, or type — resolve each side separately
+        const oldAcc = oldEntry
+          ? resolveTargetAccount(liveBankAccounts, oldEntry.outletId, oldEntry.type, oldEntry.paidFrom || 'counter')
+          : null;
+        const newAcc = resolveTargetAccount(liveBankAccounts, outletId, entryType, entrySource);
 
-        if (!targetAcc) {
-          alert(`⚠️ Purchase saved, but no bank account found for outlet "${outletId}".\n\nAvailable accounts:\n${liveBankAccounts.map(a => `• ${a.name} (${a.outletId}/${a.accountType})`).join('\n') || 'none'}\n\nThe bank balance was NOT updated.`);
+        console.log('[Bank] outletId:', outletId, '| source:', entrySource, '| liveBankAccounts:', liveBankAccounts.map(a => `${a.outletId}/${a.accountType}/primary=${a.isPrimary}/id=${a.id}`), '| found:', newAcc?.id, '| oldAcc:', oldAcc?.id);
+
+        if (!newAcc && newImpact !== 0) {
+          alert(`⚠️ Entry saved, but no ${entrySource === '10k' ? '10K vault' : 'bank'} account found for outlet "${outletId}".\n\nAvailable accounts:\n${liveBankAccounts.map(a => `• ${a.name} (${a.outletId}/${a.accountType})`).join('\n') || 'none'}\n\nThe bank balance was NOT updated.`);
         }
 
-        if (targetAcc) {
-          const isEdit = activeMode === 'edit' && editingId;
+        const sourceLabel = entryType === 'expense'
+          ? (entrySource === '10k' ? '10K Cash Expense' : 'Cash Expense')
+          : 'Digital Purchase';
+        const now = Date.now();
+        const applyMovement = async (acc: BankAccount, deduction: number) => {
+          if (deduction === 0) return;
+          // increment() is atomic — concurrent submissions can't lose a deduction
+          await updateDoc(doc(db, 'bank_accounts', acc.id!), {
+            balance: increment(-deduction),
+            updatedAt: now,
+          });
+          await addDoc(collection(db, 'bank_transactions'), {
+            userId: user.uid,
+            ownerId,
+            bankAccountId: acc.id!,
+            date,
+            description: `${sourceLabel}: ${category}${description ? ` — ${description}` : ''}`,
+            amount: Math.abs(deduction),
+            type: deduction > 0 ? 'debit' : 'credit',
+            category: category.toUpperCase(),
+            referenceNo: billNumber || `AUTO-${savedEntryId}`,
+            isVerified: false,
+            isReconciled: false,
+            createdAt: now,
+          });
+        };
 
-          // For edits, compute delta against old entry to avoid double-deducting
-          let deduction = 0;
-          if (isEdit) {
-            const oldEntry = entries.find(e => e.id === editingId);
-            const oldImpact = (oldEntry?.status === 'paid') ? oldEntry.amount : 0;
-            const newImpact = status === 'paid' ? finalAmount : 0;
-            deduction = newImpact - oldImpact;
-          } else {
-            deduction = status === 'paid' ? finalAmount : 0;
-          }
-
-          if (deduction !== 0) {
-            const now = Date.now();
-            // increment() is atomic — concurrent submissions can't lose a deduction
-            await updateDoc(doc(db, 'bank_accounts', targetAcc.id!), {
-              balance: increment(-deduction),
-              updatedAt: now,
-            });
-            await addDoc(collection(db, 'bank_transactions'), {
-              userId: user.uid,
-              ownerId,
-              bankAccountId: targetAcc.id!,
-              date,
-              description: `${entryType === 'expense' ? 'Cash Expense' : 'Digital Purchase'}: ${category}${description ? ` — ${description}` : ''}`,
-              amount: Math.abs(deduction),
-              type: deduction > 0 ? 'debit' : 'credit',
-              category: category.toUpperCase(),
-              referenceNo: billNumber || `AUTO-${savedEntryId}`,
-              isVerified: false,
-              isReconciled: false,
-              createdAt: now,
-            });
-          }
+        if (oldAcc && newAcc && oldAcc.id === newAcc.id) {
+          await applyMovement(newAcc, newImpact - oldImpact);
+        } else {
+          if (oldAcc) await applyMovement(oldAcc, -oldImpact); // refund the old account
+          if (newAcc) await applyMovement(newAcc, newImpact);
         }
       } catch (bankErr: any) {
         console.error('[Bank] Deduction failed:', bankErr);
@@ -928,6 +952,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     setCategory('');
     setDescription('');
     setStatus('paid');
+    setPaidFrom('counter');
     setReceiptFile(null);
     setReceiptPreview(null);
     setEditingId(null);
@@ -1047,11 +1072,37 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     }
   };
 
-  // Adds a crew category and selects it in the form. New categories start in the
-  // UNCATEGORIZED COGS bucket until the admin maps them in Category Settings.
+  // Adds or renames a custom category and selects it in the form. New categories
+  // start in the UNCATEGORIZED COGS bucket until the admin maps them in Category
+  // Settings. Renames/deletes don't touch entries or products — they keep the old
+  // category string.
   const handleNewCategorySave = async () => {
     const name = ncName.trim().toUpperCase();
     if (!name) return;
+    const ownerId = profile.ownerId || user.uid;
+
+    if (editingCategoryId) {
+      const existing = customCategories.find(c => c.id === editingCategoryId);
+      if (!existing) { setEditingCategoryId(null); return; }
+      if (existing.name === name) { setNcName(''); setEditingCategoryId(null); return; }
+      if (allCategories.includes(name)) { alert(`Category "${name}" already exists.`); return; }
+      setNcSaving(true);
+      try {
+        await updateDoc(doc(db, 'crew_categories', editingCategoryId), { name });
+        invalidateCached('crew_categories', ownerId);
+        setCustomCategories(prev => prev.map(c => c.id === editingCategoryId ? { ...c, name } : c));
+        if (category === existing.name) setCategory(name);
+        setNcName('');
+        setEditingCategoryId(null);
+      } catch (err) {
+        console.error('Error renaming category:', err);
+        alert('Could not rename category. Check connection.');
+      } finally {
+        setNcSaving(false);
+      }
+      return;
+    }
+
     if (allCategories.includes(name)) {
       setCategory(name);
       setNcName('');
@@ -1060,15 +1111,10 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     }
     setNcSaving(true);
     try {
-      const ownerId = profile.ownerId || user.uid;
-      await addDoc(collection(db, 'crew_categories'), {
-        name,
-        ownerId,
-        userId: user.uid,
-        createdAt: Date.now(),
-      });
+      const data = { name, ownerId, userId: user.uid, createdAt: Date.now() };
+      const ref = await addDoc(collection(db, 'crew_categories'), data);
       invalidateCached('crew_categories', ownerId);
-      setCustomCategories(prev => [...prev, name]);
+      setCustomCategories(prev => [...prev, { ...data, id: ref.id }]);
       setCategory(name);
       setNcName('');
       setShowNewCategoryForm(false);
@@ -1077,6 +1123,21 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
       alert('Could not create category. Check connection.');
     } finally {
       setNcSaving(false);
+    }
+  };
+
+  const handleCategoryDelete = async (cat: CrewCategory) => {
+    if (!confirm(`Delete category "${cat.name}"?\n\nExisting entries and products keep this category name; only the dropdown option is removed.`)) return;
+    try {
+      const ownerId = profile.ownerId || user.uid;
+      await deleteDoc(doc(db, 'crew_categories', cat.id!));
+      invalidateCached('crew_categories', ownerId);
+      setCustomCategories(prev => prev.filter(c => c.id !== cat.id));
+      if (category === cat.name) setCategory('');
+      if (editingCategoryId === cat.id) { setEditingCategoryId(null); setNcName(''); }
+    } catch (err) {
+      console.error('Error deleting category:', err);
+      alert('Could not delete category. Check connection.');
     }
   };
 
@@ -1188,12 +1249,9 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
       // Reverse the bank deduction if the entry was paid
       if (entry && entry.status === 'paid') {
         const ownerId = profile.ownerId || user.uid;
-        const accountType = entry.type === 'expense' ? 'cash' : 'digital';
         const liveBankSnap = await getDocs(query(collection(db, 'bank_accounts'), where('userId', '==', ownerId)));
         const liveAccounts = liveBankSnap.docs.map(d => ({ id: d.id, ...d.data() } as BankAccount));
-        const targetAcc = liveAccounts.find(a => a.outletId === entry.outletId && a.isPrimary && a.accountType === accountType)
-          || liveAccounts.find(a => a.outletId === entry.outletId && a.accountType === accountType)
-          || liveAccounts.find(a => a.outletId === entry.outletId);
+        const targetAcc = resolveTargetAccount(liveAccounts, entry.outletId, entry.type, entry.paidFrom || 'counter');
         if (targetAcc) {
           const now = Date.now();
           const safeBalance = (typeof targetAcc.balance === 'number' && !isNaN(targetAcc.balance)) ? targetAcc.balance : 0;
@@ -1206,7 +1264,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
             ownerId,
             bankAccountId: targetAcc.id!,
             date: entry.date,
-            description: `Reversal: ${entry.type === 'expense' ? 'Cash Expense' : 'Digital Purchase'} deleted — ${entry.category}${entry.description ? ` — ${entry.description}` : ''}`,
+            description: `Reversal: ${entry.type === 'expense' ? (entry.paidFrom === '10k' ? '10K Cash Expense' : 'Cash Expense') : 'Digital Purchase'} deleted — ${entry.category}${entry.description ? ` — ${entry.description}` : ''}`,
             amount: entry.amount,
             type: 'credit',
             category: entry.category.toUpperCase(),
@@ -1262,6 +1320,32 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     const outlet = profile.assignedOutlet || dsOutletId;
     return allBankAccounts.find(a => a.outletId === outlet && a.accountType === '10kcash') ?? null;
   }, [allBankAccounts, profile.assignedOutlet, dsOutletId]);
+
+  // Pay-from source accounts for the entry form's selected outlet (not the DS outlet)
+  const counterFormAccount = useMemo(() =>
+    allBankAccounts.find(a => a.outletId === outletId && a.isPrimary && a.accountType === 'cash')
+      ?? allBankAccounts.find(a => a.outletId === outletId && a.accountType === 'cash')
+      ?? null,
+    [allBankAccounts, outletId]);
+  const tenKFormAccount = useMemo(() =>
+    allBankAccounts.find(a => a.outletId === outletId && a.accountType === '10kcash') ?? null,
+    [allBankAccounts, outletId]);
+  const expenseSourceAccount = paidFrom === '10k' ? tenKFormAccount : counterFormAccount;
+
+  // Old entry's impact on the currently selected source — used by the overdraw
+  // guard and warning so an edit doesn't double-count its own prior deduction
+  const editOldImpact = useMemo(() => {
+    if (!(activeMode === 'edit' && editingId)) return 0;
+    const oldEntry = entries.find(en => en.id === editingId);
+    if (!oldEntry || oldEntry.status !== 'paid' || oldEntry.type !== 'expense') return 0;
+    if ((oldEntry.paidFrom || 'counter') !== paidFrom || oldEntry.outletId !== outletId) return 0;
+    return oldEntry.amount;
+  }, [activeMode, editingId, entries, paidFrom, outletId]);
+
+  // If the selected outlet has no 10K vault, fall back to the counter
+  useEffect(() => {
+    if (allBankAccounts.length > 0 && paidFrom === '10k' && !tenKFormAccount) setPaidFrom('counter');
+  }, [allBankAccounts, paidFrom, tenKFormAccount]);
 
   const handleTransfer = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -2148,7 +2232,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
                         <button
                           type="button"
                           onClick={() => {
-                            if (showNewCategoryForm) { setNcName(''); setShowNewCategoryForm(false); }
+                            if (showNewCategoryForm) { setNcName(''); setEditingCategoryId(null); setShowNewCategoryForm(false); }
                             else setShowNewCategoryForm(true);
                           }}
                           className={`h-12 w-12 flex items-center justify-center rounded-xl shrink-0 active:scale-95 transition-all ${showNewCategoryForm ? 'bg-slate-100 text-slate-500 hover:bg-slate-200' : 'bg-indigo-50 text-indigo-600 hover:bg-indigo-100'}`}
@@ -2158,24 +2242,59 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
                         </button>
                       )}
                     </div>
-                    {/* Inline new-category form (admin only) */}
+                    {/* Inline category manager (admin only) — add, rename, delete custom categories */}
                     {profile.role === 'admin' && showNewCategoryForm && (
-                      <div className="flex gap-2 mt-2.5">
-                        <input
-                          type="text" value={ncName} onChange={e => setNcName(e.target.value)}
-                          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleNewCategorySave(); } }}
-                          placeholder="New category name"
-                          autoFocus
-                          className="flex-1 h-12 bg-white border border-indigo-200 focus:border-indigo-400 focus:ring-4 focus:ring-indigo-500/10 outline-none px-4 rounded-xl text-sm font-semibold text-slate-800 uppercase transition-all"
-                        />
-                        <button
-                          type="button"
-                          disabled={ncSaving || !ncName.trim()}
-                          onClick={handleNewCategorySave}
-                          className="h-12 px-5 bg-indigo-600 text-white rounded-xl text-sm font-semibold disabled:opacity-40 flex items-center justify-center gap-2 hover:bg-indigo-700 active:scale-[0.98] transition-all shrink-0"
-                        >
-                          {ncSaving ? <Loader2 size={16} className="animate-spin" /> : <><Check size={16} /> Save</>}
-                        </button>
+                      <div className="mt-2.5 rounded-xl border border-indigo-200 bg-white p-3 space-y-2.5">
+                        {editingCategoryId && (
+                          <p className="text-[11px] font-semibold text-amber-600">
+                            Renaming "{customCategories.find(c => c.id === editingCategoryId)?.name}"
+                          </p>
+                        )}
+                        <div className="flex gap-2">
+                          <input
+                            type="text" value={ncName} onChange={e => setNcName(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleNewCategorySave(); } }}
+                            placeholder={editingCategoryId ? 'New name' : 'New category name'}
+                            autoFocus
+                            className="flex-1 h-12 bg-slate-50 border border-indigo-200 focus:border-indigo-400 focus:bg-white focus:ring-4 focus:ring-indigo-500/10 outline-none px-4 rounded-xl text-sm font-semibold text-slate-800 uppercase transition-all"
+                          />
+                          <button
+                            type="button"
+                            disabled={ncSaving || !ncName.trim()}
+                            onClick={handleNewCategorySave}
+                            className="h-12 px-5 bg-indigo-600 text-white rounded-xl text-sm font-semibold disabled:opacity-40 flex items-center justify-center gap-2 hover:bg-indigo-700 active:scale-[0.98] transition-all shrink-0"
+                          >
+                            {ncSaving ? <Loader2 size={16} className="animate-spin" /> : <><Check size={16} /> {editingCategoryId ? 'Rename' : 'Save'}</>}
+                          </button>
+                        </div>
+                        {customCategories.length > 0 && (
+                          <div className="space-y-1.5">
+                            <p className="text-[11px] font-medium text-slate-400">Your categories</p>
+                            {[...customCategories].sort((a, b) => a.name.localeCompare(b.name)).map(c => (
+                              <div key={c.id} className="flex items-center justify-between gap-2 bg-slate-50 border border-slate-100 rounded-lg pl-3 pr-1.5 py-1.5">
+                                <p className="text-xs font-semibold text-slate-700 truncate">{c.name}</p>
+                                <div className="flex items-center shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={() => { setEditingCategoryId(c.id!); setNcName(c.name); }}
+                                    className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all"
+                                    title="Rename"
+                                  >
+                                    <Edit2 size={13} />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleCategoryDelete(c)}
+                                    className="p-2 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-all"
+                                    title="Delete"
+                                  >
+                                    <Trash2 size={13} />
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -2566,9 +2685,30 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
                     </div>
                   </div>
 
-                  {entryType === 'expense' && status === 'paid' && parseFloat(amount) > 0 && primaryCashAccount && parseFloat(amount) - (activeMode === 'edit' && editingId ? (entries.find((en: DailyCounterEntry) => en.id === editingId)?.status === 'paid' ? entries.find((en: DailyCounterEntry) => en.id === editingId)?.amount || 0 : 0) : 0) > primaryCashAccount.balance && (
+                  {/* Pay from — cash counter or 10K vault (cash expenses only) */}
+                  {entryType === 'expense' && (
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Pay From</label>
+                      <div className="grid grid-cols-2 gap-2 bg-slate-50 p-1.5 rounded-2xl border-2 border-slate-100">
+                        <button type="button" onClick={() => setPaidFrom('counter')}
+                          className={`h-16 rounded-xl transition-all active:scale-95 border flex flex-col items-center justify-center gap-0.5 ${paidFrom === 'counter' ? 'bg-emerald-500/10 text-emerald-600 border-current shadow-sm' : 'bg-white border-slate-100 text-slate-400'}`}
+                        >
+                          <span className="text-sm font-black uppercase tracking-widest flex items-center gap-1.5"><Wallet size={14} /> Cash Counter</span>
+                          {counterFormAccount && <span className="text-[10px] font-bold opacity-70">₹{counterFormAccount.balance.toLocaleString('en-IN')}</span>}
+                        </button>
+                        <button type="button" onClick={() => setPaidFrom('10k')} disabled={!tenKFormAccount}
+                          className={`h-16 rounded-xl transition-all active:scale-95 border flex flex-col items-center justify-center gap-0.5 disabled:opacity-40 ${paidFrom === '10k' ? 'bg-amber-500/10 text-amber-600 border-current shadow-sm' : 'bg-white border-slate-100 text-slate-400'}`}
+                        >
+                          <span className="text-sm font-black uppercase tracking-widest flex items-center gap-1.5"><Vault size={14} /> 10K Vault</span>
+                          <span className="text-[10px] font-bold opacity-70">{tenKFormAccount ? `₹${tenKFormAccount.balance.toLocaleString('en-IN')}` : 'Not set up'}</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {entryType === 'expense' && status === 'paid' && parseFloat(amount) > 0 && expenseSourceAccount && parseFloat(amount) - editOldImpact > expenseSourceAccount.balance && (
                     <p className="text-[10px] font-black text-rose-500 uppercase tracking-widest flex items-center gap-1.5 -mt-1">
-                      <AlertTriangle size={12} /> Amount exceeds cash balance (₹{primaryCashAccount.balance.toLocaleString('en-IN')})
+                      <AlertTriangle size={12} /> Amount exceeds {paidFrom === '10k' ? '10K vault' : 'cash'} balance (₹{expenseSourceAccount.balance.toLocaleString('en-IN')})
                     </p>
                   )}
 

@@ -40,6 +40,8 @@ export interface DailyCounterEntry {
   vendorId?: string;
   vendorName?: string;
   items?: BillItem[];
+  // Which account a paid cash expense was deducted from (default 'counter')
+  paidFrom?: 'counter' | '10k';
   createdAt: number;
 }
 
