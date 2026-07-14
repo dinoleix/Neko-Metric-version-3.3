@@ -116,8 +116,10 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
         getCachedCollection<StoreRental>('rentals', dataOwnerId),
         getCachedCollection<Employee>('employees', dataOwnerId),
         getCachedCollection<MonthlyPayroll>('monthly_payrolls', dataOwnerId),
-        getDocs(query(collection(db, 'cogs_adjustments'), where('userId', '==', dataOwnerId))),
-        getDocs(query(collection(db, 'bank_statement_imports'), where('userId', '==', dataOwnerId), where('isVerified', '==', true))),
+        // Bounded reads: cogs_adjustments carries a `year` (zigzag-merge, no composite index needed);
+        // bank_statement_imports is consumed only for selectedYear, so window it by ISO date.
+        getDocs(query(collection(db, 'cogs_adjustments'), where('userId', '==', dataOwnerId), where('year', 'in', yearRange))),
+        getDocs(query(collection(db, 'bank_statement_imports'), where('userId', '==', dataOwnerId), where('isVerified', '==', true), where('date', '>=', `${yearInt}-01-01`), where('date', '<=', `${yearInt}-12-31`))),
         getDoc(settingsRef)
       ]);
       

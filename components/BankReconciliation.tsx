@@ -173,26 +173,6 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
       const accSnap = await getDocs(bankAccQ);
       setBankAccounts(accSnap.docs.map(d => ({ id: d.id, ...d.data() } as BankAccount)));
 
-      // 4. Fetch daily sales logs (dual query for backward compat)
-      try {
-        const [ownerSnap, userSnap] = await Promise.all([
-          getDocs(query(collection(db, 'daily_sales_logs'), where('ownerId', '==', dataOwnerId))),
-          getDocs(query(collection(db, 'daily_sales_logs'), where('userId',  '==', dataOwnerId))),
-        ]);
-        const seenIds = new Set<string>();
-        const logs: DailySalesLog[] = [];
-        [...ownerSnap.docs, ...userSnap.docs].forEach(d => {
-          if (!seenIds.has(d.id)) { seenIds.add(d.id); logs.push({ id: d.id, ...d.data() } as DailySalesLog); }
-        });
-        setDailySalesLogs(logs);
-      } catch { setDailySalesLogs([]); }
-
-      // 5. Fetch POS sales summary (source of per-channel CSV figures via paymentMode)
-      try {
-        const salesSnap = await getDocs(query(collection(db, 'sales_summary'), where('userId', '==', dataOwnerId)));
-        setSalesSummary(salesSnap.docs.map(d => ({ id: d.id, ...d.data() } as SalesSummaryRecord)));
-      } catch { setSalesSummary([]); }
-
     } catch (err) {
       console.error("Reconciliation fetch error:", err);
     } finally {
@@ -200,9 +180,42 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
     }
   };
 
+  // Bounded reads: daily_sales_logs and sales_summary are consumed only for the selected
+  // month (every downstream filter uses `${selectedYear}-${monthIdx}`), so window them by
+  // ISO date instead of scanning the whole collection as history grows.
+  const fetchPeriodData = async () => {
+    const monthIdx = (MONTH_NAMES.indexOf(selectedMonth) + 1).toString().padStart(2, '0');
+    const start = `${selectedYear}-${monthIdx}-01`;
+    const end = `${selectedYear}-${monthIdx}-31`;
+
+    // daily sales logs (dual query for backward compat)
+    try {
+      const [ownerSnap, userSnap] = await Promise.all([
+        getDocs(query(collection(db, 'daily_sales_logs'), where('ownerId', '==', dataOwnerId), where('date', '>=', start), where('date', '<=', end))),
+        getDocs(query(collection(db, 'daily_sales_logs'), where('userId',  '==', dataOwnerId), where('date', '>=', start), where('date', '<=', end))),
+      ]);
+      const seenIds = new Set<string>();
+      const logs: DailySalesLog[] = [];
+      [...ownerSnap.docs, ...userSnap.docs].forEach(d => {
+        if (!seenIds.has(d.id)) { seenIds.add(d.id); logs.push({ id: d.id, ...d.data() } as DailySalesLog); }
+      });
+      setDailySalesLogs(logs);
+    } catch { setDailySalesLogs([]); }
+
+    // POS sales summary (source of per-channel CSV figures via paymentMode)
+    try {
+      const salesSnap = await getDocs(query(collection(db, 'sales_summary'), where('userId', '==', dataOwnerId), where('date', '>=', start), where('date', '<=', end)));
+      setSalesSummary(salesSnap.docs.map(d => ({ id: d.id, ...d.data() } as SalesSummaryRecord)));
+    } catch { setSalesSummary([]); }
+  };
+
   useEffect(() => {
     fetchReconciliationData();
   }, [user]);
+
+  useEffect(() => {
+    fetchPeriodData();
+  }, [dataOwnerId, selectedMonth, selectedYear]);
 
   useEffect(() => {
     setMarkedCreditIds(new Set());

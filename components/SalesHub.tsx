@@ -90,28 +90,38 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
       ]);
       setSnapshots(sSnap.docs.map(d => ({ ...d.data(), id: d.id } as SalesMonthlySnapshot)));
       setRentals(rentArr);
-
-      // Query daily_sales_logs separately — permissions may vary until rules are deployed
-      try {
-        const logsByOwner = query(collection(db, 'daily_sales_logs'), where('ownerId', '==', dataOwnerId));
-        const logsByUser  = query(collection(db, 'daily_sales_logs'), where('userId',  '==', dataOwnerId));
-        const [ownerSnap, userSnap] = await Promise.all([getDocs(logsByOwner), getDocs(logsByUser)]);
-        const seenIds = new Set<string>();
-        const allLogs: DailySalesLog[] = [];
-        [...ownerSnap.docs, ...userSnap.docs].forEach(d => {
-          if (!seenIds.has(d.id)) { seenIds.add(d.id); allLogs.push({ id: d.id, ...d.data() } as DailySalesLog); }
-        });
-        setDailySalesLogs(allLogs);
-      } catch {
-        // daily_sales_logs may be inaccessible until updated Firestore rules are deployed
-        setDailySalesLogs([]);
-      }
     } catch (err: any) {
       setError("Failed to sync intelligence suite.");
     } finally { setLoading(false); }
   };
 
+  // Bounded read: daily_sales_logs is only consumed by the reconciliation view (single
+  // reconMonth/reconYear), so fetch just that month instead of the whole collection.
+  const fetchReconLogs = async () => {
+    try {
+      const monthIdx = MONTH_NAMES.indexOf(reconMonth);
+      const start = `${reconYear}-${String(monthIdx + 1).padStart(2, '0')}-01`;
+      const end = `${reconYear}-${String(monthIdx + 1).padStart(2, '0')}-31`;
+      // Query by ownerId and userId separately — permissions may vary until rules are deployed
+      const logsByOwner = query(collection(db, 'daily_sales_logs'),
+        where('ownerId', '==', dataOwnerId), where('date', '>=', start), where('date', '<=', end));
+      const logsByUser = query(collection(db, 'daily_sales_logs'),
+        where('userId', '==', dataOwnerId), where('date', '>=', start), where('date', '<=', end));
+      const [ownerSnap, userSnap] = await Promise.all([getDocs(logsByOwner), getDocs(logsByUser)]);
+      const seenIds = new Set<string>();
+      const allLogs: DailySalesLog[] = [];
+      [...ownerSnap.docs, ...userSnap.docs].forEach(d => {
+        if (!seenIds.has(d.id)) { seenIds.add(d.id); allLogs.push({ id: d.id, ...d.data() } as DailySalesLog); }
+      });
+      setDailySalesLogs(allLogs);
+    } catch {
+      // daily_sales_logs may be inaccessible until updated Firestore rules are deployed
+      setDailySalesLogs([]);
+    }
+  };
+
   useEffect(() => { fetchData(); }, [user]);
+  useEffect(() => { fetchReconLogs(); }, [dataOwnerId, reconMonth, reconYear]);
 
   const activeOutletOptions = useMemo(() => {
     const startMonthIdx = MONTH_NAMES.indexOf(startMonth);

@@ -621,7 +621,7 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
                <div className="absolute top-6 right-6 p-3 bg-white/5 rounded-full flex items-center justify-center border border-white/10 group-hover:scale-110 transition-transform"><CheckCircle2 size={24} className="text-emerald-400" /></div>
                <div>
                   <p className="text-[10px] font-black text-indigo-400 uppercase tracking-widest mb-1">Good Revenue</p>
-                  <h4 className="text-3xl font-black text-slate-900 tracking-tighter text-white">₹{pnlData.grossGoodRevenue.toLocaleString()}</h4>
+                  <h4 className="text-3xl font-black tracking-tighter text-white">₹{pnlData.grossGoodRevenue.toLocaleString()}</h4>
                </div>
                <div className="mt-4 pt-4 border-t border-white/10 space-y-2">
                  <div className="flex justify-between text-[9px] font-black uppercase"><span className="text-slate-500">POS</span><span className="text-slate-200">₹{pnlData.posGoodGross.toLocaleString()}</span></div>
@@ -632,7 +632,7 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
             <div className="bg-slate-900 p-8 rounded-[2.5rem] text-white shadow-2xl relative overflow-hidden group">
                <div>
                   <p className="text-[10px] font-black text-emerald-400 uppercase tracking-widest mb-1">Total Net Revenue</p>
-                  <h4 className="text-3xl font-black text-slate-900 tracking-tighter text-emerald-400">₹{pnlData.netCashInflow.toLocaleString()}</h4>
+                  <h4 className="text-3xl font-black tracking-tighter text-emerald-400">₹{pnlData.netCashInflow.toLocaleString()}</h4>
                </div>
                <div className="mt-4 pt-4 border-t border-white/10 space-y-2">
                  <div className="flex justify-between text-[9px] font-black uppercase"><span className="text-slate-500">POS Net</span><span className="text-slate-200">₹{pnlData.posGoodNet.toLocaleString()}</span></div>

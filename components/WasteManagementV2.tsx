@@ -116,7 +116,16 @@ const WasteManagementV2: React.FC<{ user: User; dataOwnerId: string }> = ({ user
     setSwLoading(true);
     setSwError(null);
     try {
-      const snap = await getDocs(query(collection(db, 'waste_entries'), where('ownerId', '==', dataOwnerId)));
+      // Bounded read: only the selected month's entries (dates are ISO YYYY-MM-DD),
+      // so cost stays constant as history grows instead of scanning all waste_entries.
+      const start = `${swYear}-${swMonth}-01`;
+      const end = `${swYear}-${swMonth}-31`;
+      const snap = await getDocs(query(
+        collection(db, 'waste_entries'),
+        where('ownerId', '==', dataOwnerId),
+        where('date', '>=', start),
+        where('date', '<=', end),
+      ));
       setSwEntries(snap.docs.map(d => ({ id: d.id, ...d.data() } as WasteEntry)));
     } catch (err: any) {
       setSwError(err?.message || 'Failed to load entries');
@@ -127,7 +136,7 @@ const WasteManagementV2: React.FC<{ user: User; dataOwnerId: string }> = ({ user
 
   useEffect(() => {
     if (activeTab === 'serving') fetchServingWaste();
-  }, [activeTab]);
+  }, [activeTab, swYear, swMonth]);
 
   const swFiltered = useMemo(() => {
     const monthStr = `${swYear}-${swMonth}`;

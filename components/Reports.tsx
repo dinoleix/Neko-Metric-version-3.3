@@ -1,16 +1,18 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import type { User } from 'firebase/auth';
-import { collection, query, getDocs, where } from 'firebase/firestore';
+import { collection, query, getDocs, where, orderBy, limit } from 'firebase/firestore';
 import { db } from '../firebase';
-import { 
-  SalesSummaryRecord, 
-  ExpenseRecord, 
-  PurchaseRecord, 
-  Employee, 
+import { getCachedCollection } from '../referenceCache';
+import {
+  ExpenseRecord,
+  PurchaseRecord,
   StoreRental,
+  SalesMonthlySnapshot,
+  ExpenseMonthlySnapshot,
   MONTH_NAMES,
-  YEAR_OPTIONS
+  YEAR_OPTIONS,
+  getOutletName
 } from '../types';
 import { 
   TrendingUp, 
@@ -41,62 +43,35 @@ import {
 type AnalyticsTab = 'sales' | 'expenses' | 'purchases';
 
 const Reports: React.FC<{ user: User }> = ({ user }) => {
-  const [salesRecords, setSalesRecords] = useState<SalesSummaryRecord[]>([]);
-  const [expenseRecords, setExpenseRecords] = useState<ExpenseRecord[]>([]);
-  const [purchaseRecords, setPurchaseRecords] = useState<PurchaseRecord[]>([]);
-  const [employees, setEmployees] = useState<Employee[]>([]);
+  // Aggregates come from bounded monthly snapshots (one doc per outlet per month), so
+  // read cost stays flat as history grows. The "recent" ledger tables below pull a
+  // date-windowed, capped slice of the raw expenses/purchases collections.
+  const [salesSnapshots, setSalesSnapshots] = useState<SalesMonthlySnapshot[]>([]);
+  const [expenseSnapshots, setExpenseSnapshots] = useState<ExpenseMonthlySnapshot[]>([]);
+  const [expenseLedger, setExpenseLedger] = useState<ExpenseRecord[]>([]);
+  const [purchaseLedger, setPurchaseLedger] = useState<PurchaseRecord[]>([]);
   const [rentals, setRentals] = useState<StoreRental[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  
+
   const [activeTab, setActiveTab] = useState<AnalyticsTab>('sales');
   const [selectedYear, setSelectedYear] = useState('All Years');
   const [selectedMonth, setSelectedMonth] = useState('All Months');
   const [storeFilter, setStoreFilter] = useState<'all' | string>('all');
 
-  const parseFlexibleDate = (dateStr: string): Date | null => {
-    if (!dateStr) return null;
-    const d = new Date(dateStr);
-    if (!isNaN(d.getTime())) return d;
-    const parts = dateStr.split(/[/-]/);
-    if (parts.length === 3) {
-      if (parts[0].length === 4) return new Date(`${parts[0]}-${parts[1]}-${parts[2]}`);
-      return new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
-    }
-    return null;
-  };
-
-  const fetchData = async () => {
+  // Snapshots are bounded (12 docs/outlet/year), so we load them all once and filter in memory.
+  const fetchAggregates = async () => {
     setLoading(true);
     setError('');
     try {
-      const qSales = query(collection(db, 'sales_summary'), where('userId', '==', user.uid));
-      const qExp = query(collection(db, 'expenses'), where('userId', '==', user.uid));
-      const qPur = query(collection(db, 'purchases'), where('userId', '==', user.uid));
-      const qEmp = query(collection(db, 'employees'), where('userId', '==', user.uid));
-      const qRent = query(collection(db, 'rentals'), where('userId', '==', user.uid));
-      
-      const [salesSnap, expSnap, purSnap, empSnap, rentSnap] = await Promise.all([
-        getDocs(qSales), 
-        getDocs(qExp),
-        getDocs(qPur),
-        getDocs(qEmp),
-        getDocs(qRent)
+      const [salesSnap, expSnap, rentArr] = await Promise.all([
+        getDocs(query(collection(db, 'sales_snapshots'), where('userId', '==', user.uid))),
+        getDocs(query(collection(db, 'expense_snapshots'), where('userId', '==', user.uid))),
+        getCachedCollection<StoreRental>('rentals', user.uid),
       ]);
-      
-      const sData = salesSnap.docs.map(d => ({ ...d.data(), id: d.id } as SalesSummaryRecord));
-      const eData = expSnap.docs.map(d => ({ ...d.data(), id: d.id } as ExpenseRecord));
-      const pData = purSnap.docs.map(d => ({ ...d.data(), id: d.id } as PurchaseRecord));
-      const empData = empSnap.docs.map(d => ({ ...d.data(), id: d.id } as Employee));
-      const rentData = rentSnap.docs.map(d => ({ ...d.data(), id: d.id } as StoreRental));
-
-      const sortFn = (a: any, b: any) => (parseFlexibleDate(a.date)?.getTime() || 0) - (parseFlexibleDate(b.date)?.getTime() || 0);
-      
-      setSalesRecords(sData.sort(sortFn));
-      setExpenseRecords(eData.sort(sortFn));
-      setPurchaseRecords(pData.sort(sortFn));
-      setEmployees(empData);
-      setRentals(rentData);
+      setSalesSnapshots(salesSnap.docs.map(d => ({ ...d.data(), id: d.id } as SalesMonthlySnapshot)));
+      setExpenseSnapshots(expSnap.docs.map(d => ({ ...d.data(), id: d.id } as ExpenseMonthlySnapshot)));
+      setRentals(rentArr);
     } catch (err: any) {
       console.error(err);
       setError("Failed to sync financial data.");
@@ -105,84 +80,87 @@ const Reports: React.FC<{ user: User }> = ({ user }) => {
     }
   };
 
-  useEffect(() => { fetchData(); }, [user]);
+  // The ledger tables only ever show the most recent rows for the selected period, so we
+  // date-window the raw query (ISO dates) and cap it — bounded regardless of total history.
+  const fetchLedgers = async () => {
+    const ledgerRange = (): { start?: string; end?: string } => {
+      if (selectedYear === 'All Years') return {};
+      if (selectedMonth === 'All Months') return { start: `${selectedYear}-01-01`, end: `${selectedYear}-12-31` };
+      const mm = String(MONTH_NAMES.indexOf(selectedMonth) + 1).padStart(2, '0');
+      return { start: `${selectedYear}-${mm}-01`, end: `${selectedYear}-${mm}-31` };
+    };
+    try {
+      const { start, end } = ledgerRange();
+      const build = (coll: string) => start
+        ? query(collection(db, coll), where('userId', '==', user.uid), where('date', '>=', start), where('date', '<=', end!), orderBy('date', 'desc'), limit(100))
+        : query(collection(db, coll), where('userId', '==', user.uid), orderBy('date', 'desc'), limit(100));
+      const [expSnap, purSnap] = await Promise.all([getDocs(build('expenses')), getDocs(build('purchases'))]);
+      setExpenseLedger(expSnap.docs.map(d => ({ ...d.data(), id: d.id } as ExpenseRecord)));
+      setPurchaseLedger(purSnap.docs.map(d => ({ ...d.data(), id: d.id } as PurchaseRecord)));
+    } catch (err: any) {
+      console.error('[Reports] ledger load failed:', err);
+      setExpenseLedger([]);
+      setPurchaseLedger([]);
+    }
+  };
+
+  const refreshAll = () => { fetchAggregates(); fetchLedgers(); };
+
+  useEffect(() => { fetchAggregates(); }, [user]);
+  useEffect(() => { fetchLedgers(); }, [user, selectedYear, selectedMonth]);
 
   const availableYears = useMemo(() => {
     const years = new Set<string>();
-    [...salesRecords, ...expenseRecords, ...purchaseRecords].forEach(r => {
-      const d = parseFlexibleDate(r.date);
-      if (d) years.add(d.getFullYear().toString());
-    });
+    [...salesSnapshots, ...expenseSnapshots].forEach(s => { if (s.year) years.add(s.year); });
     return Array.from(years).sort((a, b) => b.localeCompare(a));
-  }, [salesRecords, expenseRecords, purchaseRecords]);
+  }, [salesSnapshots, expenseSnapshots]);
 
-  // Combined Filters
-  const filteredSales = useMemo(() => {
-    return salesRecords.filter(r => {
-      const d = parseFlexibleDate(r.date);
-      if (!d) return false;
-      const matchesYear = selectedYear === 'All Years' || d.getFullYear().toString() === selectedYear;
-      const matchesMonth = selectedMonth === 'All Months' || MONTH_NAMES[d.getMonth()] === selectedMonth;
-      const matchesStore = storeFilter === 'all' || (r.outletName || '').trim() === storeFilter || (r.outletId || '').trim() === storeFilter;
-      return matchesYear && matchesMonth && matchesStore;
-    });
-  }, [salesRecords, selectedYear, selectedMonth, storeFilter]);
+  const matchesSnapFilters = (s: { year: string; month: string; outletId: string }) =>
+    (selectedYear === 'All Years' || s.year === selectedYear) &&
+    (selectedMonth === 'All Months' || s.month === selectedMonth) &&
+    (storeFilter === 'all' || s.outletId === storeFilter);
 
-  const filteredExpenses = useMemo(() => {
-    return expenseRecords.filter(r => {
-      const d = parseFlexibleDate(r.date);
-      if (!d) return false;
-      const matchesYear = selectedYear === 'All Years' || d.getFullYear().toString() === selectedYear;
-      const matchesMonth = selectedMonth === 'All Months' || MONTH_NAMES[d.getMonth()] === selectedMonth;
-      const matchesStore = storeFilter === 'all' || (r.outletId || '').trim() === storeFilter;
-      return matchesYear && matchesMonth && matchesStore;
-    });
-  }, [expenseRecords, selectedYear, selectedMonth, storeFilter]);
+  // Ledger rows come back newest-first and period-scoped; only the store filter is applied in memory.
+  const filteredExpenses = useMemo(
+    () => expenseLedger.filter(r => storeFilter === 'all' || (r.outletId || '').trim() === storeFilter),
+    [expenseLedger, storeFilter]
+  );
+  const filteredPurchases = useMemo(
+    () => purchaseLedger.filter(r => storeFilter === 'all' || (r.outletId || '').trim() === storeFilter),
+    [purchaseLedger, storeFilter]
+  );
 
-  const filteredPurchases = useMemo(() => {
-    return purchaseRecords.filter(r => {
-      const d = parseFlexibleDate(r.date);
-      if (!d) return false;
-      const matchesYear = selectedYear === 'All Years' || d.getFullYear().toString() === selectedYear;
-      const matchesMonth = selectedMonth === 'All Months' || MONTH_NAMES[d.getMonth()] === selectedMonth;
-      const matchesStore = storeFilter === 'all' || (r.outletId || '').trim() === storeFilter;
-      return matchesYear && matchesMonth && matchesStore;
-    });
-  }, [purchaseRecords, selectedYear, selectedMonth, storeFilter]);
-
-  // Comprehensive Analytics Calculations
+  // Comprehensive Analytics Calculations (from monthly snapshots)
   const analytics = useMemo(() => {
+    const sSnaps = salesSnapshots.filter(matchesSnapFilters);
+    const eSnaps = expenseSnapshots.filter(matchesSnapFilters);
+
     // Sales Logic
-    const posSales = filteredSales.filter(r => !r.onlinePlatform || r.onlinePlatform.toLowerCase() === 'none');
-    const onlineSales = filteredSales.filter(r => r.onlinePlatform && r.onlinePlatform.toLowerCase() !== 'none');
-    const posGross = posSales.reduce((acc, r) => acc + (r.revenue || 0), 0);
-    const posTax = posSales.reduce((acc, r) => acc + (r.totalTax || 0), 0);
-    const posNet = posGross - posTax;
-    const onlineGross = onlineSales.reduce((acc, r) => acc + (r.revenue || 0), 0);
-    const onlineNet = onlineGross - onlineSales.reduce((acc, r) => acc + (r.commission || 0) + (r.totalTax || 0) + (r.adCharges || 0), 0);
+    const posGross = sSnaps.reduce((acc, s) => acc + (s.posGoodGross || 0), 0);
+    const posNet = sSnaps.reduce((acc, s) => acc + (s.posGoodNet || 0), 0);
+    const onlineGross = sSnaps.reduce((acc, s) => acc + (s.onlineGoodGross || 0), 0);
+    const onlineNet = sSnaps.reduce((acc, s) => acc + (s.onlineGoodNet || 0), 0);
 
     // Expense Logic
-    const totalExp = filteredExpenses.reduce((acc, r) => acc + (r.amount || 0), 0);
+    const totalExp = eSnaps.reduce((acc, s) => acc + (s.totalExpense || 0), 0);
     const expByCategory: Record<string, number> = {};
-    filteredExpenses.forEach(e => {
-      const cat = e.category || 'Misc';
-      expByCategory[cat] = (expByCategory[cat] || 0) + (e.amount || 0);
-    });
+    eSnaps.forEach(s => Object.entries((s.expenseByCategory || {}) as Record<string, number>).forEach(([cat, v]) => {
+      expByCategory[cat] = (expByCategory[cat] || 0) + (v || 0);
+    }));
 
     // Purchase Logic
-    const totalPur = filteredPurchases.reduce((acc, r) => acc + (r.amount || 0), 0);
+    const totalPur = eSnaps.reduce((acc, s) => acc + (s.totalPurchase || 0), 0);
     const purByCategory: Record<string, number> = {};
-    filteredPurchases.forEach(p => {
-      const cat = p.category || 'Inventory';
-      purByCategory[cat] = (purByCategory[cat] || 0) + (p.amount || 0);
-    });
+    eSnaps.forEach(s => Object.entries((s.purchaseByCategory || {}) as Record<string, number>).forEach(([cat, v]) => {
+      purByCategory[cat] = (purByCategory[cat] || 0) + (v || 0);
+    }));
 
-    return { 
+    return {
       sales: { posGross, posNet, onlineGross, onlineNet, totalRev: posGross + onlineGross },
       expenses: { total: totalExp, byCategory: Object.entries(expByCategory).sort((a, b) => b[1] - a[1]) },
       purchases: { total: totalPur, byCategory: Object.entries(purByCategory).sort((a, b) => b[1] - a[1]) }
     };
-  }, [filteredSales, filteredExpenses, filteredPurchases]);
+  }, [salesSnapshots, expenseSnapshots, selectedYear, selectedMonth, storeFilter]);
 
   return (
     <div className="space-y-12 animate-in fade-in duration-700 pb-20">
@@ -202,7 +180,7 @@ const Reports: React.FC<{ user: User }> = ({ user }) => {
             <MapPin size={14} className="text-indigo-500" />
             <select value={storeFilter} onChange={e => setStoreFilter(e.target.value)} className="bg-transparent font-bold text-xs outline-none">
               <option value="all">All Outlets</option>
-              {Array.from(new Set([...salesRecords.map(r => r.outletName || r.outletId), ...rentals.map(r => r.outletId)])).filter(Boolean).map(s => <option key={s} value={s}>{s}</option>)}
+              {Array.from(new Set([...salesSnapshots.map(s => s.outletId), ...expenseSnapshots.map(s => s.outletId), ...rentals.map(r => r.outletId)])).filter(Boolean).map(id => <option key={id} value={id}>{getOutletName(id)}</option>)}
             </select>
           </div>
           
@@ -219,7 +197,7 @@ const Reports: React.FC<{ user: User }> = ({ user }) => {
             {MONTH_NAMES.map(m => <option key={m} value={m}>{m}</option>)}
           </select>
 
-          <button onClick={fetchData} className="p-3 bg-white rounded-xl border border-slate-100 text-slate-400 hover:text-indigo-600 shadow-sm transition-colors">
+          <button onClick={refreshAll} className="p-3 bg-white rounded-xl border border-slate-100 text-slate-400 hover:text-indigo-600 shadow-sm transition-colors">
             <RefreshCw size={16} className={loading ? 'animate-spin' : ''}/>
           </button>
         </div>
@@ -352,7 +330,7 @@ const Reports: React.FC<{ user: User }> = ({ user }) => {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-50">
-                      {filteredExpenses.slice().reverse().slice(0, 10).map((e, idx) => (
+                      {filteredExpenses.slice(0, 10).map((e, idx) => (
                         <tr key={idx} className="hover:bg-slate-50/50 transition-colors">
                           <td className="px-8 py-4 text-xs font-bold text-slate-500">{e.date}</td>
                           <td className="px-8 py-4">
@@ -383,7 +361,7 @@ const Reports: React.FC<{ user: User }> = ({ user }) => {
                  <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm flex flex-col justify-between h-[200px]">
                     <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Avg. Purchase Bill</p>
                     <h4 className="text-3xl font-black text-slate-900 tracking-tighter">
-                      ₹{filteredPurchases.length > 0 ? (analytics.purchases.total / filteredPurchases.length).toLocaleString(undefined, {maximumFractionDigits: 0}) : 0}
+                      ₹{filteredPurchases.length > 0 ? (filteredPurchases.reduce((a, p) => a + (p.amount || 0), 0) / filteredPurchases.length).toLocaleString(undefined, {maximumFractionDigits: 0}) : 0}
                     </h4>
                     <p className="text-[10px] font-bold text-slate-400 uppercase mt-auto">Across {filteredPurchases.length} Receipts</p>
                  </div>
@@ -431,7 +409,7 @@ const Reports: React.FC<{ user: User }> = ({ user }) => {
                     <h3 className="text-xl font-black text-slate-900 tracking-tight mb-8">Purchase Ledger</h3>
                     <div className="flex-1 overflow-auto max-h-[400px] custom-scrollbar">
                        <div className="space-y-4">
-                          {filteredPurchases.slice().reverse().slice(0, 15).map((p, i) => (
+                          {filteredPurchases.slice(0, 15).map((p, i) => (
                             <div key={i} className="flex items-center justify-between p-4 bg-slate-50/50 rounded-2xl border border-slate-50 hover:border-amber-200 transition-colors">
                                <div className="flex items-center gap-4">
                                   <div className="p-2 bg-white rounded-xl shadow-sm">

@@ -68,8 +68,17 @@ const WasteHub: React.FC<Props> = ({ user, dataOwnerId }) => {
     setLoading(true);
     setFetchError(null);
     try {
+      // Bounded read: only the selected month's entries (dates are ISO YYYY-MM-DD),
+      // so cost stays constant as history grows instead of scanning all waste_entries.
+      const start = `${filterYear}-${filterMonth}-01`;
+      const end = `${filterYear}-${filterMonth}-31`;
       const snap = await getDocs(
-        query(collection(db, 'waste_entries'), where('ownerId', '==', dataOwnerId))
+        query(
+          collection(db, 'waste_entries'),
+          where('ownerId', '==', dataOwnerId),
+          where('date', '>=', start),
+          where('date', '<=', end),
+        )
       );
       setEntries(snap.docs.map(d => ({ id: d.id, ...d.data() } as WasteEntry)));
     } catch (err: any) {
@@ -80,7 +89,7 @@ const WasteHub: React.FC<Props> = ({ user, dataOwnerId }) => {
     }
   };
 
-  useEffect(() => { fetchEntries(); }, [dataOwnerId]);
+  useEffect(() => { fetchEntries(); }, [dataOwnerId, filterYear, filterMonth]);
 
   const filtered = useMemo(() => {
     const monthStr = `${filterYear}-${filterMonth}`;
