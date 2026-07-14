@@ -59,7 +59,10 @@ import {
   Square,
   MousePointer2,
   Filter,
-  Edit3
+  Edit3,
+  LayoutGrid,
+  Table2,
+  FileSpreadsheet
 } from 'lucide-react';
 
 const COGS_BUCKETS: {id: CogsBucket, label: string, color: string, icon: any}[] = [
@@ -112,8 +115,13 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
   const [curItemPrice, setCurItemPrice] = useState('');
   const [skuSearchTerm, setSkuSearchTerm] = useState('');
   const [masterSearchTerm, setMasterSearchTerm] = useState('');
+  const [masterView, setMasterView] = useState<'detailed' | 'sheet'>('detailed');
+  const [isAnalyzingAI, setIsAnalyzingAI] = useState(false);
+  const [aiPlan, setAiPlan] = useState<{ canonical: string; action: 'normalize' | 'retain'; members: string[] }[] | null>(null);
+  const [aiPlanSelected, setAiPlanSelected] = useState<Set<number>>(new Set());
   const [costsSearchTerm, setCostsSearchTerm] = useState('');
   const [costsSegmentFilter, setCostsSegmentFilter] = useState('all');
+  const [costsView, setCostsView] = useState<'cards' | 'sheet'>('cards');
 
   // Multi-select state
   const [selectedSkus, setSelectedSkus] = useState<Set<string>>(new Set());
@@ -344,6 +352,117 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
     } catch (err) { setError("AI Normalization failed."); } finally { setIsNormalizingAI(false); }
   };
 
+  // Robustly pull a JSON array out of an AI response: handles bare arrays,
+  // markdown-fenced blocks, an object wrapping the array, and trailing garbage.
+  const extractJsonArray = (text: string): any[] | null => {
+    let t = text.trim();
+    // Strip ```json ... ``` or ``` ... ``` fences
+    const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fence) t = fence[1].trim();
+    // Direct parse
+    try {
+      const v = JSON.parse(t);
+      if (Array.isArray(v)) return v;
+      if (v && typeof v === 'object') {
+        const arr = Object.values(v).find(x => Array.isArray(x));
+        if (arr) return arr as any[];
+      }
+    } catch { /* fall through to bracket slice */ }
+    // Slice from the first '[' to the last ']'
+    const s = t.indexOf('['), e = t.lastIndexOf(']');
+    if (s !== -1 && e > s) {
+      try { const v = JSON.parse(t.slice(s, e + 1)); if (Array.isArray(v)) return v; } catch { /* fall through to salvage */ }
+    }
+    // Truncated array: salvage every complete top-level {...} object
+    if (s !== -1) {
+      const body = t.slice(s + 1);
+      const objs: any[] = [];
+      let depth = 0, startObj = -1, inStr = false, esc = false;
+      for (let i = 0; i < body.length; i++) {
+        const ch = body[i];
+        if (inStr) {
+          if (esc) esc = false;
+          else if (ch === '\\') esc = true;
+          else if (ch === '"') inStr = false;
+          continue;
+        }
+        if (ch === '"') inStr = true;
+        else if (ch === '{') { if (depth === 0) startObj = i; depth++; }
+        else if (ch === '}') { depth--; if (depth === 0 && startObj !== -1) { try { objs.push(JSON.parse(body.slice(startObj, i + 1))); } catch { /* skip */ } startObj = -1; } }
+      }
+      if (objs.length > 0) return objs;
+    }
+    return null;
+  };
+
+  // Clusters near-duplicate source strings and proposes a canonical name +
+  // a normalize/retain action per group, surfaced in a review panel to apply.
+  const analyzeSimilarWithAI = async () => {
+    if (allSourceStrings.length === 0) return;
+    setIsAnalyzingAI(true);
+    setError('');
+    try {
+      const prompt = `You are a menu data-deduplication engine. Below is a list of raw menu item strings imported from POS/CSV exports. Many are near-duplicates of each other: typos, spacing, casing, abbreviations, or minor wording differences that refer to the SAME sellable item. Group strings that refer to the same item.
+
+RULES:
+- Preserve genuinely different sizes/portions (Full/Half/Regular/Large/Small) as SEPARATE groups.
+- Preserve genuinely different items as separate groups.
+- For each group choose ONE clean canonical name in UPPER CASE (fix typos, standardize spacing/wording).
+- If a group has 2 or more members, OR a single member needs a spelling/casing fix, set action to "normalize".
+- If a single string is already clean and needs no change, set action to "retain".
+- Every input string must appear in exactly one group's members, spelled EXACTLY as given in the input.
+
+Return ONLY a JSON array. Each element: {"canonical":"<CLEAN NAME>","action":"normalize"|"retain","members":["<raw string>", ...]}.
+
+Strings:
+${allSourceStrings.join('\n')}`;
+      const response = await ai.models.generateContent({ model: 'gemini-3-flash-preview', contents: prompt, config: { responseMimeType: 'application/json' } });
+      const raw = response.text || '';
+      const parsed = extractJsonArray(raw);
+      if (parsed === null) {
+        console.error('[AnalyzeSimilar] could not parse AI response:', raw.slice(0, 2000));
+        setError('AI returned an unreadable response. Try again, or narrow the list with search first.');
+        return;
+      }
+      const plan = (Array.isArray(parsed) ? parsed : [])
+        .filter((g: any) => g && typeof g.canonical === 'string' && Array.isArray(g.members) && g.members.length > 0)
+        .map((g: any) => ({
+          canonical: String(g.canonical).toUpperCase().trim(),
+          action: g.action === 'retain' ? 'retain' as const : 'normalize' as const,
+          members: g.members.map((m: any) => String(m)),
+        }))
+        // Surface the impactful groups first: multi-member merges, then renames
+        .sort((a: any, b: any) => b.members.length - a.members.length);
+      if (plan.length === 0) { setError('AI returned no groups to review.'); return; }
+      setAiPlan(plan);
+      setAiPlanSelected(new Set(plan.map((_: any, i: number) => i)));
+    } catch (err: any) {
+      console.error('[AnalyzeSimilar] failed:', err);
+      setError(`AI similarity analysis failed: ${err?.message || err}`);
+    } finally { setIsAnalyzingAI(false); }
+  };
+
+  // Resolve an AI-returned member back to the exact source string (case/space tolerant)
+  const sourceKeyLookup = useMemo(
+    () => new Map(allSourceStrings.map(s => [s.trim().toLowerCase(), s])),
+    [allSourceStrings]
+  );
+
+  const applyAiPlan = () => {
+    if (!aiPlan) return;
+    const next = { ...normalizationMap };
+    aiPlan.forEach((g, i) => {
+      if (!aiPlanSelected.has(i)) return;
+      g.members.forEach(m => {
+        const realSource = sourceKeyLookup.get(m.trim().toLowerCase());
+        if (realSource) next[realSource] = g.action === 'retain' ? realSource : g.canonical;
+      });
+    });
+    setNormalizationMap(next);
+    setAiPlan(null);
+    setAiPlanSelected(new Set());
+  };
+
   const autoCategorizeWithAI = async () => {
     const itemsToMap = skuList.filter(name => !skuMappings[name] || skuMappings[name].category === 'UNMAPPED');
     if (itemsToMap.length === 0) return;
@@ -356,6 +475,24 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
   };
 
   const filteredMasterItems = useMemo(() => allSourceStrings.filter(s => s.toLowerCase().includes(masterSearchTerm.toLowerCase())), [allSourceStrings, masterSearchTerm]);
+
+  const masterMapStatus = (source: string): string => {
+    const target = normalizationMap[source];
+    if (!target) return 'Unmapped';
+    return target === source ? 'Retained' : 'Normalized';
+  };
+
+  // Export the currently filtered source → master-SKU mappings to a real .xlsx
+  const exportMasterExcel = async () => {
+    const XLSX = await import('xlsx');
+    const headers = ['Source String (CSV)', 'Target Master SKU', 'Status'];
+    const rows = filteredMasterItems.map(source => [source, normalizationMap[source] || '', masterMapStatus(source)]);
+    const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    ws['!cols'] = headers.map((h, i) => ({ wch: Math.min(48, Math.max(h.length, ...rows.slice(0, 80).map(r => String(r[i] ?? '').length), 10) + 2) }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Master Menu');
+    XLSX.writeFile(wb, `master-menu_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
   const filteredSkuList = useMemo(() => skuList.filter(s => s.toLowerCase().includes(skuSearchTerm.toLowerCase())), [skuList, skuSearchTerm]);
   
   const filteredCostsList = useMemo(() => {
@@ -371,6 +508,26 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
     if (next.has(sku)) next.delete(sku);
     else next.add(sku);
     setSelectedSkus(next);
+  };
+
+  // Number helper for the spreadsheet view: reads the edited value, falling back
+  // to the field's default rendering ('' shows as 0)
+  const costNum = (v: string | undefined) => parseFloat(v || '0') || 0;
+
+  // Export the currently filtered tiered costs to a real .xlsx (SheetJS, lazy-loaded)
+  const exportCostsExcel = async () => {
+    const XLSX = await import('xlsx');
+    const headers = ['Master SKU', 'Segment', 'Category', 'Ingredient Cost', 'Tier 1 Cost', 'Tier 2 Cost', 'T1 Total (Ingr+T1)', 'T2 Total (Ingr+T2)'];
+    const rows = filteredCostsList.map(name => {
+      const c = editingCosts[name] || { ingredient: '0', tier1: '0', tier2: '0' };
+      const ingr = costNum(c.ingredient), t1 = costNum(c.tier1), t2 = costNum(c.tier2);
+      return [name, skuMappings[name]?.segment || 'UNSEGMENTED', skuMappings[name]?.category || 'UNMAPPED', ingr, t1, t2, ingr + t1, ingr + t2];
+    });
+    const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    ws['!cols'] = headers.map((h, i) => ({ wch: Math.min(40, Math.max(h.length, ...rows.slice(0, 80).map(r => String(r[i] ?? '').length), 8) + 2) }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Tiered Costs');
+    XLSX.writeFile(wb, `tiered-costs_${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
   const toggleAllVisibleCosts = () => {
@@ -535,10 +692,62 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
                 <div className="p-10 border-b border-slate-50 bg-indigo-500 bg-opacity-5 flex flex-col md:flex-row md:items-center justify-between gap-6">
                    <div className="flex items-center gap-5"><div className="w-16 h-16 bg-slate-900 rounded-[1.5rem] flex items-center justify-center text-white shadow-xl"><Zap size={32} /></div><div><h3 className="text-2xl font-black text-slate-900 tracking-tight uppercase">Master Menu Hub</h3><p className="text-slate-400 text-sm font-medium uppercase tracking-widest">Unify varying names into a single financial SKU</p></div></div>
                    <div className="flex flex-wrap gap-4 items-center">
+                      {/* Detailed / Spreadsheet view toggle */}
+                      <div className="flex bg-white border border-slate-100 p-1 rounded-xl shadow-sm gap-1">
+                         {([['detailed', LayoutGrid, 'Detailed'], ['sheet', Table2, 'Spreadsheet']] as const).map(([v, Icon, label]) => (
+                           <button key={v} onClick={() => setMasterView(v)} className={`px-3 py-2 rounded-lg flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest transition-all ${masterView === v ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-slate-700'}`}>
+                              <Icon size={13} /> {label}
+                           </button>
+                         ))}
+                      </div>
+                      <button onClick={exportMasterExcel} disabled={filteredMasterItems.length === 0} className="flex items-center gap-2 px-4 py-3 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-100 transition-all disabled:opacity-40">
+                         <FileSpreadsheet size={14} /> Excel
+                      </button>
                       <div className="relative"><Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={16} /><input type="text" placeholder="Search item strings..." value={masterSearchTerm} onChange={e => setMasterSearchTerm(e.target.value)} className="pl-11 pr-4 py-3 bg-white border border-slate-100 rounded-xl text-sm outline-none shadow-sm min-w-[240px]"/></div>
-                      <button onClick={autoNormalizeWithAI} disabled={isNormalizingAI} className="px-6 py-4 bg-slate-900 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest flex items-center gap-2 hover:bg-slate-800 transition-all shadow-xl disabled:opacity-50">{isNormalizingAI ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />} AI Normalize</button>
+                      <button onClick={analyzeSimilarWithAI} disabled={isAnalyzingAI || isNormalizingAI} className="px-6 py-4 bg-indigo-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest flex items-center gap-2 hover:bg-indigo-700 transition-all shadow-xl disabled:opacity-50">{isAnalyzingAI ? <Loader2 size={16} className="animate-spin" /> : <Layers size={16} />} Analyze Similar</button>
+                      <button onClick={autoNormalizeWithAI} disabled={isNormalizingAI || isAnalyzingAI} className="px-6 py-4 bg-slate-900 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest flex items-center gap-2 hover:bg-slate-800 transition-all shadow-xl disabled:opacity-50">{isNormalizingAI ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />} AI Normalize</button>
                    </div>
                 </div>
+                {masterView === 'sheet' && (
+                  <div className="p-6 md:p-8 overflow-x-auto max-h-[800px] overflow-y-auto custom-scrollbar">
+                     <table className="w-full text-left border-collapse min-w-[720px]">
+                        <thead className="sticky top-0 z-10">
+                           <tr className="bg-slate-900 text-white">
+                              <th className="px-4 py-3 text-[10px] font-black uppercase tracking-widest">Source String (CSV)</th>
+                              <th className="px-4 py-3 text-[10px] font-black uppercase tracking-widest">Target Master SKU</th>
+                              <th className="px-3 py-3 text-[10px] font-black uppercase tracking-widest text-center">Status</th>
+                              <th className="px-3 py-3 text-[10px] font-black uppercase tracking-widest text-right">Reset</th>
+                           </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                           {filteredMasterItems.map((source, idx) => {
+                             const status = masterMapStatus(source);
+                             return (
+                               <tr key={source} className={`transition-colors ${idx % 2 ? 'bg-slate-50/50' : 'bg-white'} hover:bg-indigo-50/40`}>
+                                  <td className="px-4 py-2 text-xs font-black text-slate-800 uppercase max-w-[300px] truncate">{source}</td>
+                                  <td className="px-4 py-2">
+                                     <input type="text" value={normalizationMap[source] || ''} onChange={e => setNormalizationMap({ ...normalizationMap, [source]: e.target.value })} placeholder={source} className="w-full min-w-[200px] px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-black text-slate-700 outline-none uppercase focus:border-indigo-400 focus:bg-white" />
+                                  </td>
+                                  <td className="px-3 py-2 text-center">
+                                     {status === 'Normalized' ? <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-50 text-emerald-600 rounded-full text-[9px] font-black uppercase border border-emerald-100"><Check size={10} /> Normalized</span>
+                                       : status === 'Retained' ? <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-slate-50 text-slate-400 rounded-full text-[9px] font-black uppercase border border-slate-100"><FileText size={10} /> Retained</span>
+                                       : <button onClick={() => setNormalizationMap({ ...normalizationMap, [source]: source })} className="inline-flex items-center gap-1 px-2.5 py-1 bg-amber-50 text-amber-600 rounded-full text-[9px] font-black uppercase border border-amber-100 hover:bg-amber-100"><Anchor size={10} /> Retain</button>}
+                                  </td>
+                                  <td className="px-3 py-2 text-right">
+                                     {normalizationMap[source] && <button onClick={() => { const next = { ...normalizationMap }; delete next[source]; setNormalizationMap(next); }} className="p-1.5 text-slate-300 hover:text-rose-500"><RotateCcw size={13} /></button>}
+                                  </td>
+                               </tr>
+                             );
+                           })}
+                        </tbody>
+                     </table>
+                     {filteredMasterItems.length === 0 && (
+                       <div className="py-20 text-center"><SearchX size={48} className="mx-auto text-slate-200 mb-4" /><p className="text-slate-400 font-black uppercase text-xs tracking-widest">No matching source strings</p></div>
+                     )}
+                  </div>
+                )}
+
+                {masterView === 'detailed' && (
                 <div className="p-10 overflow-x-auto"><table className="w-full text-left"><thead><tr className="border-b border-slate-100"><th className="px-6 py-4 text-[11px] font-black text-slate-400 uppercase tracking-widest">Source String (CSV)</th><th className="px-6 py-4 text-[11px] font-black text-slate-400 uppercase text-center"></th><th className="px-6 py-4 text-[11px] font-black text-slate-400 uppercase tracking-widest">Target Master SKU</th><th className="px-6 py-4 text-[11px] font-black text-slate-400 uppercase text-right">Actions</th></tr></thead><tbody className="divide-y divide-slate-50">{filteredMasterItems.map(source => (
                   <tr key={source} className="group hover:bg-slate-50/50 transition-colors">
                      <td className="px-6 py-6"><p className="text-sm font-black text-slate-800 uppercase">{source}</p></td>
@@ -546,7 +755,71 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
                      <td className="px-6 py-6"><div className="flex flex-col gap-2"><input type="text" value={normalizationMap[source] || ''} onChange={e => setNormalizationMap({...normalizationMap, [source]: e.target.value})} placeholder={source} className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm font-black text-slate-700 outline-none focus:ring-4 focus:ring-indigo-500/5 uppercase"/>{aiSuggestions[source] && (<div className="flex items-center gap-3 p-3 bg-indigo-50 border border-indigo-100 rounded-xl animate-in slide-in-from-top-2 shadow-sm"><div className="flex items-center gap-2 flex-1"><Sparkles size={12} className="text-indigo-600"/><span className="text-[10px] font-black text-indigo-700 uppercase">AI:</span><span className="text-[10px] font-bold text-slate-700 uppercase">{aiSuggestions[source]}</span></div><button onClick={() => { setNormalizationMap({...normalizationMap, [source]: aiSuggestions[source]}); const next = {...aiSuggestions}; delete next[source]; setAiSuggestions(next); }} className="px-3 py-1 bg-indigo-600 text-white rounded-lg text-[8px] font-black uppercase flex items-center gap-1.5 hover:bg-indigo-700"><Check size={10}/> Accept</button></div>)}</div></td>
                      <td className="px-6 py-6 text-right"><div className="flex items-center justify-end gap-2">{!normalizationMap[source] && (<button onClick={() => { setNormalizationMap({...normalizationMap, [source]: source}); const next = {...aiSuggestions}; delete next[source]; setAiSuggestions(next); }} className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 text-slate-600 rounded-xl text-[9px] font-black uppercase hover:bg-slate-200 transition-all"><Anchor size={12} /> Retain</button>)}{normalizationMap[source] === source && (<div className="inline-flex items-center gap-1.5 px-3 py-1 bg-slate-50 text-slate-400 rounded-full text-[9px] font-black uppercase tracking-widest border border-slate-100"><FileText size={12} /> Retained</div>)}{normalizationMap[source] && normalizationMap[source] !== source && (<div className="inline-flex items-center gap-1.5 px-3 py-1 bg-emerald-50 text-emerald-600 rounded-full text-[9px] font-black uppercase tracking-widest border border-emerald-100"><Check size={12} /> Normalized</div>)}{normalizationMap[source] && (<button onClick={() => { const next = {...normalizationMap}; delete next[source]; setNormalizationMap(next); }} className="p-2 text-slate-300 hover:text-rose-500"><RotateCcw size={14} /></button>)}</div></td>
                   </tr>
-                ))}</tbody></table></div></section>
+                ))}</tbody></table></div>
+                )}</section>
+           )}
+
+           {/* AI similarity review panel */}
+           {aiPlan && (
+             <div className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4" onClick={() => { setAiPlan(null); setAiPlanSelected(new Set()); }}>
+                <div className="bg-white rounded-[2rem] shadow-2xl w-full max-w-4xl max-h-[88vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
+                   <div className="p-8 bg-slate-900 text-white flex items-center justify-between gap-4 shrink-0">
+                      <div className="flex items-center gap-4">
+                         <div className="w-12 h-12 bg-indigo-600 rounded-2xl flex items-center justify-center shadow-lg"><Layers size={24} /></div>
+                         <div>
+                            <h3 className="text-lg font-black uppercase tracking-tight">Similarity Review</h3>
+                            <p className="text-[10px] font-black text-indigo-300 uppercase tracking-widest mt-0.5">{aiPlan.length} groups · {aiPlan.filter(g => g.action === 'normalize').length} to normalize · {aiPlan.filter(g => g.action === 'retain').length} to retain</p>
+                         </div>
+                      </div>
+                      <button onClick={() => { setAiPlan(null); setAiPlanSelected(new Set()); }} className="p-2 text-slate-400 hover:text-white"><X size={22} /></button>
+                   </div>
+
+                   <div className="px-8 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50 shrink-0">
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{aiPlanSelected.size} of {aiPlan.length} groups selected</p>
+                      <div className="flex items-center gap-3">
+                         <button onClick={() => setAiPlanSelected(new Set(aiPlan.map((_, i) => i)))} className="text-[10px] font-black text-indigo-600 uppercase tracking-widest hover:underline">Select all</button>
+                         <span className="text-slate-200">|</span>
+                         <button onClick={() => setAiPlanSelected(new Set())} className="text-[10px] font-black text-slate-400 uppercase tracking-widest hover:underline">Clear</button>
+                      </div>
+                   </div>
+
+                   <div className="overflow-y-auto custom-scrollbar p-6 space-y-3">
+                      {aiPlan.map((g, i) => {
+                        const isSel = aiPlanSelected.has(i);
+                        return (
+                          <div key={i} className={`rounded-2xl border p-4 transition-all cursor-pointer ${isSel ? 'border-indigo-300 bg-indigo-50/40 ring-1 ring-indigo-500/10' : 'border-slate-100 bg-white opacity-70'}`}
+                            onClick={() => { const n = new Set(aiPlanSelected); n.has(i) ? n.delete(i) : n.add(i); setAiPlanSelected(n); }}>
+                             <div className="flex items-center gap-3 mb-3">
+                                <button className={`shrink-0 ${isSel ? 'text-indigo-600' : 'text-slate-300'}`}>{isSel ? <CheckSquare size={18} /> : <Square size={18} />}</button>
+                                {g.action === 'normalize'
+                                  ? <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-50 text-emerald-600 rounded-full text-[9px] font-black uppercase border border-emerald-100"><Layers size={10} /> Normalize</span>
+                                  : <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-slate-100 text-slate-500 rounded-full text-[9px] font-black uppercase border border-slate-200"><Anchor size={10} /> Retain</span>}
+                                <ArrowRight size={13} className="text-slate-300" />
+                                <span className="text-sm font-black text-slate-900 uppercase truncate">{g.canonical}</span>
+                             </div>
+                             <div className="flex flex-wrap gap-1.5 pl-8">
+                                {g.members.map((m, mi) => {
+                                  const known = sourceKeyLookup.has(m.trim().toLowerCase());
+                                  const isCanonical = m.toUpperCase().trim() === g.canonical;
+                                  return (
+                                    <span key={mi} className={`px-2 py-1 rounded-lg text-[10px] font-bold uppercase border ${!known ? 'bg-rose-50 text-rose-400 border-rose-100 line-through' : isCanonical ? 'bg-white text-slate-400 border-slate-200' : 'bg-white text-slate-600 border-slate-200'}`}>{m}</span>
+                                  );
+                                })}
+                             </div>
+                          </div>
+                        );
+                      })}
+                   </div>
+
+                   <div className="p-6 border-t border-slate-100 flex items-center justify-between gap-4 shrink-0 bg-white">
+                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Applying fills the targets — review, then Commit Logic to save</p>
+                      <div className="flex items-center gap-3">
+                         <button onClick={() => { setAiPlan(null); setAiPlanSelected(new Set()); }} className="px-6 py-3.5 text-slate-500 font-black uppercase text-[10px] tracking-widest hover:text-slate-800">Cancel</button>
+                         <button onClick={applyAiPlan} disabled={aiPlanSelected.size === 0} className="px-8 py-3.5 bg-indigo-600 text-white rounded-2xl font-black uppercase text-[10px] tracking-widest shadow-xl hover:bg-indigo-700 transition-all disabled:opacity-40 flex items-center gap-2"><Check size={14} /> Apply {aiPlanSelected.size} groups</button>
+                      </div>
+                   </div>
+                </div>
+             </div>
            )}
 
            {activeTab === 'product' && (
@@ -580,6 +853,17 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
                          </div>
                       </div>
                       <div className="flex flex-wrap items-center gap-4">
+                         {/* Cards / Spreadsheet view toggle */}
+                         <div className="flex bg-white border border-slate-100 p-1 rounded-xl shadow-sm gap-1">
+                            {([['cards', LayoutGrid, 'Cards'], ['sheet', Table2, 'Spreadsheet']] as const).map(([v, Icon, label]) => (
+                              <button key={v} onClick={() => setCostsView(v)} className={`px-3 py-2 rounded-lg flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest transition-all ${costsView === v ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-slate-700'}`}>
+                                 <Icon size={13} /> {label}
+                              </button>
+                            ))}
+                         </div>
+                         <button onClick={exportCostsExcel} disabled={filteredCostsList.length === 0} className="flex items-center gap-2 px-4 py-2.5 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-100 transition-all disabled:opacity-40">
+                            <FileSpreadsheet size={14} /> Excel
+                         </button>
                          <div className="bg-white px-4 py-2.5 rounded-xl border border-slate-100 flex items-center gap-2 shadow-sm">
                             <Filter size={14} className="text-indigo-500" />
                             <select value={costsSegmentFilter} onChange={e => { setCostsSegmentFilter(e.target.value); setSelectedSkus(new Set()); }} className="bg-transparent font-bold text-xs outline-none uppercase min-w-[140px]">
@@ -610,6 +894,79 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
                       </div>
                    </div>
 
+                   {costsView === 'sheet' && (
+                     <div className="p-6 md:p-8 overflow-x-auto max-h-[800px] overflow-y-auto custom-scrollbar">
+                        <table className="w-full text-left border-collapse min-w-[820px]">
+                           <thead className="sticky top-0 z-10">
+                              <tr className="bg-slate-900 text-white">
+                                 <th className="px-4 py-3 text-[10px] font-black uppercase tracking-widest">Master SKU</th>
+                                 <th className="px-3 py-3 text-[10px] font-black uppercase tracking-widest">Segment</th>
+                                 <th className="px-3 py-3 text-[10px] font-black uppercase tracking-widest">Category</th>
+                                 <th className="px-3 py-3 text-[10px] font-black uppercase tracking-widest text-center">Ingredient ₹</th>
+                                 <th className="px-3 py-3 text-[10px] font-black uppercase tracking-widest text-center text-indigo-300">Tier 1 ₹</th>
+                                 <th className="px-3 py-3 text-[10px] font-black uppercase tracking-widest text-center text-emerald-300">Tier 2 ₹</th>
+                                 <th className="px-3 py-3 text-[10px] font-black uppercase tracking-widest text-right">T1 Total</th>
+                                 <th className="px-3 py-3 text-[10px] font-black uppercase tracking-widest text-right">T2 Total</th>
+                              </tr>
+                           </thead>
+                           <tbody className="divide-y divide-slate-100">
+                              {filteredCostsList.map((itemName, idx) => {
+                                const c = editingCosts[itemName] || { ingredient: '', tier1: '', tier2: '' };
+                                const ingr = costNum(c.ingredient), t1 = costNum(c.tier1), t2 = costNum(c.tier2);
+                                const isSelected = selectedSkus.has(itemName);
+                                return (
+                                  <tr key={itemName} className={`transition-colors ${isSelected ? 'bg-indigo-50/60' : idx % 2 ? 'bg-slate-50/50' : 'bg-white'} hover:bg-indigo-50/40`}>
+                                     <td className="px-4 py-2">
+                                        <div className="flex items-center gap-2.5">
+                                           <button onClick={() => toggleSkuSelection(itemName)} className={`shrink-0 transition-colors ${isSelected ? 'text-indigo-600' : 'text-slate-300 hover:text-slate-500'}`}>
+                                              {isSelected ? <CheckSquare size={16} /> : <Square size={16} />}
+                                           </button>
+                                           <span className="text-xs font-black text-slate-800 uppercase truncate max-w-[220px]">{itemName}</span>
+                                        </div>
+                                     </td>
+                                     <td className="px-3 py-2 text-[10px] font-bold text-slate-500 uppercase">{skuMappings[itemName]?.segment || 'UNSEGMENTED'}</td>
+                                     <td className="px-3 py-2 text-[10px] font-bold text-indigo-500 uppercase">{skuMappings[itemName]?.category || 'UNMAPPED'}</td>
+                                     <td className="px-2 py-2">
+                                        <input type="number" value={c.ingredient || ''} onChange={e => setEditingCosts({ ...editingCosts, [itemName]: { ...editingCosts[itemName], ingredient: e.target.value } })} className="w-24 px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg font-black text-slate-700 outline-none text-xs text-center focus:border-slate-400 focus:bg-white" placeholder="0" />
+                                     </td>
+                                     <td className="px-2 py-2">
+                                        <div className="flex items-center gap-1.5">
+                                           <input type="number" value={c.tier1 || ''} onChange={e => setEditingCosts({ ...editingCosts, [itemName]: { ...editingCosts[itemName], tier1: e.target.value } })} className="w-24 px-3 py-2 bg-indigo-50 border border-indigo-100 rounded-lg font-black text-indigo-600 outline-none text-xs text-center focus:border-indigo-400 focus:bg-white" placeholder="0" />
+                                           <div className="relative">
+                                              <select className="w-8 h-8 opacity-0 absolute inset-0 cursor-pointer" title="Apply serving template" onChange={e => { const opt = servingOptions.find(o => o.id === e.target.value); if (opt) setEditingCosts({ ...editingCosts, [itemName]: { ...editingCosts[itemName], tier1: opt.totalCost.toString() } }); }} value="">
+                                                 <option value="">Template</option>
+                                                 {servingOptions.map(o => <option key={o.id} value={o.id}>{o.name} (₹{o.totalCost})</option>)}
+                                              </select>
+                                              <div className="w-8 h-8 flex items-center justify-center bg-slate-100 text-slate-400 rounded-lg pointer-events-none"><ChevronDown size={13} /></div>
+                                           </div>
+                                        </div>
+                                     </td>
+                                     <td className="px-2 py-2">
+                                        <div className="flex items-center gap-1.5">
+                                           <input type="number" value={c.tier2 || ''} onChange={e => setEditingCosts({ ...editingCosts, [itemName]: { ...editingCosts[itemName], tier2: e.target.value } })} className="w-24 px-3 py-2 bg-emerald-50 border border-emerald-100 rounded-lg font-black text-emerald-600 outline-none text-xs text-center focus:border-emerald-400 focus:bg-white" placeholder="0" />
+                                           <div className="relative">
+                                              <select className="w-8 h-8 opacity-0 absolute inset-0 cursor-pointer" title="Apply serving template" onChange={e => { const opt = servingOptions.find(o => o.id === e.target.value); if (opt) setEditingCosts({ ...editingCosts, [itemName]: { ...editingCosts[itemName], tier2: opt.totalCost.toString() } }); }} value="">
+                                                 <option value="">Template</option>
+                                                 {servingOptions.map(o => <option key={o.id} value={o.id}>{o.name} (₹{o.totalCost})</option>)}
+                                              </select>
+                                              <div className="w-8 h-8 flex items-center justify-center bg-slate-100 text-slate-400 rounded-lg pointer-events-none"><ChevronDown size={13} /></div>
+                                           </div>
+                                        </div>
+                                     </td>
+                                     <td className="px-3 py-2 text-right text-xs font-black text-indigo-600">₹{(ingr + t1).toLocaleString('en-IN')}</td>
+                                     <td className="px-3 py-2 text-right text-xs font-black text-emerald-600">₹{(ingr + t2).toLocaleString('en-IN')}</td>
+                                  </tr>
+                                );
+                              })}
+                           </tbody>
+                        </table>
+                        {filteredCostsList.length === 0 && (
+                          <div className="py-20 text-center"><SearchX size={48} className="mx-auto text-slate-200 mb-4" /><p className="text-slate-400 font-black uppercase text-xs tracking-widest">No matching Master SKUs found</p></div>
+                        )}
+                     </div>
+                   )}
+
+                   {costsView === 'cards' && (
                    <div className="p-10 space-y-6 max-h-[800px] overflow-y-auto custom-scrollbar">
                       {filteredCostsList.map(itemName => {
                         const isSelected = selectedSkus.has(itemName);
@@ -680,6 +1037,7 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
                         <div className="py-20 text-center"><SearchX size={48} className="mx-auto text-slate-200 mb-4" /><p className="text-slate-400 font-black uppercase text-xs tracking-widest">No matching Master SKUs found</p></div>
                       )}
                    </div>
+                   )}
                 </section>
 
                 {selectedSkus.size > 0 && (
