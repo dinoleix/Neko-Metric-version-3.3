@@ -68,7 +68,9 @@ import {
   AlertTriangle,
   ArrowRightLeft,
   Vault,
-  Package
+  Package,
+  Table2,
+  LayoutList
 } from 'lucide-react';
 
 const ALL_CREW_CATEGORIES = Array.from(
@@ -145,6 +147,77 @@ const compressImage = (file: File, maxWidth: number = 1200): Promise<Blob> => {
 // is never off by one day for users in India regardless of local timezone.
 const istToday = (): string => istDateString(0);
 
+const ENTRY_TABLE_HEADERS = ['Date', 'Bill No', 'Store', 'Type', 'Paid From', 'Category', 'Description', 'Vendor', 'Submitted By', 'Status', 'Qty', 'Price/Unit', 'Amount'];
+const ENTRY_TABLE_RIGHT_COLS = [10, 11, 12];
+const ENTRY_TABLE_PAGE_SIZES = [10, 20, 30, 50];
+
+// Module-level so pagination state survives parent re-renders while filters stay put
+const EntriesDataTable = ({ rows }: { rows: (string | number)[][] }) => {
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(20);
+  const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+  const safePage = Math.min(page, totalPages - 1);
+  const startIdx = safePage * pageSize;
+  const pageRows = rows.slice(startIdx, startIdx + pageSize);
+  return (
+    <div className="bg-white ring-1 ring-slate-100 shadow-sm rounded-2xl">
+      <div className="overflow-x-auto rounded-t-2xl">
+        <table className="w-full text-left text-xs" style={{ minWidth: 1050 }}>
+          <thead>
+            <tr className="border-b border-slate-100">
+              {ENTRY_TABLE_HEADERS.map((h, i) => (
+                <th key={h} className={`px-3 py-3 font-semibold text-slate-500 whitespace-nowrap ${ENTRY_TABLE_RIGHT_COLS.includes(i) ? 'text-right' : ''}`}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {pageRows.map((row, ri) => (
+              <tr key={startIdx + ri} className="border-b border-slate-50 last:border-0 hover:bg-indigo-50/40 transition-colors">
+                {row.map((cell, ci) => (
+                  <td key={ci} className={`px-3 py-2.5 whitespace-nowrap max-w-[240px] truncate ${ENTRY_TABLE_RIGHT_COLS.includes(ci) ? 'text-right font-semibold text-slate-800' : 'text-slate-600'}`}>
+                    {ci === 12 && typeof cell === 'number' ? `₹${cell.toLocaleString('en-IN')}` : (cell === '' ? '—' : cell)}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="flex flex-wrap items-center gap-3 px-4 py-3 border-t border-slate-100">
+        <div className="flex items-center gap-2 text-xs text-slate-500">
+          <span>Rows:</span>
+          <select
+            value={pageSize}
+            onChange={e => { setPageSize(parseInt(e.target.value)); setPage(0); }}
+            className="h-8 bg-slate-50 border border-slate-200 rounded-lg px-2 text-xs font-semibold text-slate-700 outline-none focus:border-indigo-400"
+          >
+            {ENTRY_TABLE_PAGE_SIZES.map(n => <option key={n} value={n}>{n}</option>)}
+          </select>
+        </div>
+        <p className="text-xs text-slate-400">
+          {rows.length === 0 ? '0' : `${startIdx + 1}–${Math.min(startIdx + pageSize, rows.length)}`} of {rows.length}
+        </p>
+        <div className="ml-auto flex gap-1.5">
+          <button
+            onClick={() => setPage(p => Math.max(0, Math.min(p, totalPages - 1) - 1))}
+            disabled={safePage === 0}
+            className="h-8 px-3 bg-slate-50 hover:bg-slate-100 disabled:opacity-40 rounded-lg text-xs font-semibold text-slate-600 transition-colors"
+          >
+            Prev
+          </button>
+          <button
+            onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
+            disabled={safePage >= totalPages - 1}
+            className="h-8 px-3 bg-slate-50 hover:bg-slate-100 disabled:opacity-40 rounded-lg text-xs font-semibold text-slate-600 transition-colors"
+          >
+            Next
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, profile }) => {
   const [activeMode, setActiveMode] = useState<'landing' | 'view' | 'add' | 'edit' | 'daily-sales' | 'transfer-10k' | 'record-waste'>('landing');
   const [entryType, setEntryType] = useState<'expense' | 'purchase'>('purchase');
@@ -165,6 +238,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
   const [filterType, setFilterType] = useState<'all' | 'purchase' | 'expense'>('all');
   const [filterCategory, setFilterCategory] = useState('all');
   const [filterOutlet, setFilterOutlet] = useState('all');
+  const [entriesViewMode, setEntriesViewMode] = useState<'cards' | 'table'>('cards');
   const [datePreset, setDatePreset] = useState<DatePreset>('today');
   const [customStartDate, setCustomStartDate] = useState(istToday());
   const [customEndDate, setCustomEndDate] = useState(istToday());
@@ -1338,6 +1412,14 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     return { paid, pending, total: paid + pending };
   }, [filteredEntries]);
 
+  const entryTableRows = useMemo(() => filteredEntries.map(e => [
+    e.date, e.billNumber || '', getOutletName(e.outletId),
+    e.type === 'purchase' ? 'Online' : 'Cash',
+    e.type === 'expense' ? (e.paidFrom === '10k' ? '10K Vault' : 'Counter') : '',
+    e.category, e.description || '', e.vendorName || '', e.userName || '', e.status || 'paid',
+    e.quantity != null ? e.quantity : '', e.pricePerUnit != null ? e.pricePerUnit : '', e.amount,
+  ]), [filteredEntries]);
+
   const primaryCashAccount = useMemo(() => {
     const outlet = profile.assignedOutlet || dsOutletId;
     return bankAccounts.find(a => a.outletId === outlet && a.isPrimary && a.accountType === 'cash') ?? null;
@@ -1658,16 +1740,36 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
             </div>
           )}
 
+          {/* View toggle */}
+          {!loading && filteredEntries.length > 0 && (
+            <div className="flex bg-slate-100 p-1 rounded-xl gap-1 w-fit">
+              {([['cards', LayoutList, 'Cards'], ['table', Table2, 'Excel']] as const).map(([v, Icon, label]) => (
+                <button
+                  key={v}
+                  onClick={() => setEntriesViewMode(v)}
+                  className={`h-9 px-3.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all active:scale-95 ${
+                    entriesViewMode === v ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                  }`}
+                >
+                  <Icon size={14} /> {label}
+                </button>
+              ))}
+            </div>
+          )}
+
           {/* Entries */}
+          {loading ? (
+            <div className="py-24 flex justify-center"><Loader2 className="animate-spin text-slate-300" size={36} /></div>
+          ) : filteredEntries.length === 0 ? (
+            <div className="py-24 text-center bg-white border-2 border-dashed border-slate-200 rounded-2xl">
+              <SearchX className="mx-auto text-slate-300 mb-3" size={44} />
+              <p className="text-slate-400 font-medium text-sm">No matching entries</p>
+            </div>
+          ) : entriesViewMode === 'table' ? (
+            <EntriesDataTable rows={entryTableRows} />
+          ) : (
           <div className="space-y-2.5">
-            {loading ? (
-              <div className="py-24 flex justify-center"><Loader2 className="animate-spin text-slate-300" size={36} /></div>
-            ) : filteredEntries.length === 0 ? (
-              <div className="py-24 text-center bg-white border-2 border-dashed border-slate-200 rounded-2xl">
-                <SearchX className="mx-auto text-slate-300 mb-3" size={44} />
-                <p className="text-slate-400 font-medium text-sm">No matching entries</p>
-              </div>
-            ) : filteredEntries.map(entry => {
+            {filteredEntries.map(entry => {
               const config = getStatusConfig(entry.status);
               const StatusIcon = config.icon;
               return (
@@ -1732,6 +1834,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
               );
             })}
           </div>
+          )}
         </div>
 
       /* ── DAILY SALES FORM ──────────────────────────────────────── */
