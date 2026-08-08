@@ -31,6 +31,16 @@ service cloud.firestore {
         exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.ownerId == resource.data.ownerId;
     }
+    // Crew reading a doc from their OWN assigned outlet within their own business.
+    // Deliberately narrower than isLinkedViaOwnerField: shift handovers need to see
+    // the store's entries, but a crew member has no reason to read other outlets.
+    // Both comparisons read the same profile doc, so this costs one get(), not two.
+    function isCrewOfSameOutlet() {
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.ownerId == resource.data.ownerId &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.assignedOutlet == resource.data.outletId;
+    }
 
     // Users collection — own profile only; admins can read all (UserManagement)
     match /users/{userId} {
@@ -134,9 +144,11 @@ service cloud.firestore {
       allow delete: if isFieldOwner();
     }
 
-    // crew_entries — crew writes with their own userId + admin's ownerId; admin queries by ownerId
+    // crew_entries — crew writes with their own userId + admin's ownerId; admin queries by ownerId.
+    // Crew also read their assigned outlet's entries (not just their own) so a shift
+    // can see what the previous shift recorded and avoid duplicate entries.
     match /crew_entries/{docId} {
-      allow read: if canRead() ||
+      allow read: if canRead() || isCrewOfSameOutlet() ||
         (isAuthenticated() && resource.data.ownerId == request.auth.uid);
       allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
       allow update: if isDocOwner() || isLinkedToOwner() ||

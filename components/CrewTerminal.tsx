@@ -517,7 +517,29 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
         docs = [...byOwner.docs, ...byUser.docs]
           .filter(d => { if (seen.has(d.id)) return false; seen.add(d.id); return true; })
           .map(d => ({ id: d.id, ...d.data() } as DailyCounterEntry));
+      } else if (profile.assignedOutlet) {
+        // Crew see their whole outlet, not just what they personally typed — a
+        // shift needs to know what the previous shift already recorded. Matches
+        // isCrewOfSameOutlet() in firestore.rules; every returned doc satisfies
+        // it because the query pins both ownerId and outletId.
+        // Uses the existing (ownerId, outletId, date) composite index.
+        try {
+          const snap = await getDocs(query(
+            collection(db, 'crew_entries'),
+            where('ownerId', '==', ownerId),
+            where('outletId', '==', profile.assignedOutlet),
+            where('date', '>=', start),
+            where('date', '<=', end)
+          ));
+          docs = snap.docs.map(d => ({ id: d.id, ...d.data() } as DailyCounterEntry));
+        } catch (err) {
+          console.warn('[CrewTerminal] outlet entries query failed, falling back to own entries:', err);
+          const byUser = await runEntries('userId', user.uid);
+          allFailed = byUser.failed;
+          docs = byUser.docs.map(d => ({ id: d.id, ...d.data() } as DailyCounterEntry));
+        }
       } else {
+        // No outlet assigned — can only safely read one's own entries
         const byUser = await runEntries('userId', user.uid);
         allFailed = byUser.failed;
         docs = byUser.docs.map(d => ({ id: d.id, ...d.data() } as DailyCounterEntry));
