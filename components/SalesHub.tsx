@@ -4,7 +4,7 @@ import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, limit } from 'firebase/firestore';
 import { db } from '../firebase';
 import { getCachedCollection } from '../referenceCache';
-import { SalesMonthlySnapshot, DailySalesLog, StoreRental, SkuMapping, SkuCategory, getOutletName, YEAR_OPTIONS, MONTH_NAMES } from '../types';
+import { SalesMonthlySnapshot, DailySalesLog, SalesSummaryRecord, StoreRental, SkuMapping, SkuCategory, getOutletName, YEAR_OPTIONS, MONTH_NAMES } from '../types';
 import { 
   TrendingUp,
   RefreshCw,
@@ -63,6 +63,7 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
   const [rentals, setRentals] = useState<StoreRental[]>([]);
   const [dailySalesLogs, setDailySalesLogs] = useState<DailySalesLog[]>([]);
   const [reconLoadFailed, setReconLoadFailed] = useState(false);
+  const [reconSales, setReconSales] = useState<SalesSummaryRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [reconMonth, setReconMonth] = useState(MONTH_NAMES[new Date().getMonth()]);
@@ -119,7 +120,22 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
       }
     };
 
-    const [byOwner, byUser] = await Promise.all([run('ownerId'), run('userId')]);
+    // The CSV side must come from raw sales_summary, not the snapshot's dailyTrend:
+    // that array pools POS and aggregator revenue, but the crew's till count only
+    // ever contains POS. Comparing them made every day look like a shortfall equal
+    // to that day's online sales. Date-windowed, so still a bounded read.
+    const runSales = async () => {
+      try {
+        const snap = await getDocs(query(collection(db, 'sales_summary'),
+          where('userId', '==', dataOwnerId), where('date', '>=', start), where('date', '<=', end)));
+        return { docs: snap.docs, failed: false };
+      } catch (err) {
+        console.warn('[SalesHub] sales_summary recon query failed:', err);
+        return { docs: [], failed: true };
+      }
+    };
+
+    const [byOwner, byUser, sales] = await Promise.all([run('ownerId'), run('userId'), runSales()]);
 
     const seenIds = new Set<string>();
     const allLogs: DailySalesLog[] = [];
@@ -127,8 +143,9 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
       if (!seenIds.has(d.id)) { seenIds.add(d.id); allLogs.push({ id: d.id, ...d.data() } as DailySalesLog); }
     });
     setDailySalesLogs(allLogs);
+    setReconSales(sales.docs.map(d => ({ id: d.id, ...d.data() } as SalesSummaryRecord)));
     // Only a total failure is worth reporting: if one leg succeeded the data is complete enough
-    setReconLoadFailed(byOwner.failed && byUser.failed);
+    setReconLoadFailed((byOwner.failed && byUser.failed) || sales.failed);
   };
 
   useEffect(() => { fetchData(); }, [user]);
@@ -306,14 +323,22 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
         crewByDay[log.date].totalNet += Number(log.totalNet || 0);
       });
 
+    // Counter sales only — aggregator orders are settled to the bank by the
+    // platform and never pass through the till, so including them would show a
+    // permanent shortfall. Same exclusion BankReconciliation uses.
     const csvByDay = new Array(31).fill(0);
-    snapshots
-      .filter(s => s.month === reconMonth && s.year === reconYear && (storeFilter === 'all' || s.outletId === storeFilter))
-      .forEach(s => {
-        (s.dailyTrend || []).forEach((val, idx) => {
-          if (idx < 31) csvByDay[idx] += Number(val || 0);
-        });
-      });
+    let onlineExcluded = 0;
+    reconSales.forEach(r => {
+      const outletMatch = storeFilter === 'all' || r.outletId === storeFilter;
+      if (!outletMatch) return;
+      const status = (r.orderStatus || '').toUpperCase();
+      if (!(status === 'SETTLED' || status === 'PICKEDUP' || status === 'DELIVERED')) return;
+      const rev = Number(r.revenue || 0);
+      const isOnline = !!r.onlinePlatform && r.onlinePlatform.toLowerCase() !== 'none';
+      if (isOnline) { onlineExcluded += rev; return; }
+      const day = parseInt((r.date || '').split('-')[2]);
+      if (day >= 1 && day <= 31) csvByDay[day - 1] += rev;
+    });
 
     let totalCrewNet = 0, totalCsvGross = 0, crewCash = 0, crewCard = 0, crewUpi = 0;
     let daysLogged = 0, daysWithCsv = 0;
@@ -344,8 +369,8 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
       if (status !== 'empty') rows.push({ date: dateStr, day: d, crewNet, csvGross, delta, status });
     }
 
-    return { rows, totalCrewNet, totalCsvGross, crewCash, crewCard, crewUpi, daysLogged, daysWithCsv, daysInMonth };
-  }, [dailySalesLogs, snapshots, reconMonth, reconYear, storeFilter]);
+    return { rows, totalCrewNet, totalCsvGross, crewCash, crewCard, crewUpi, daysLogged, daysWithCsv, daysInMonth, onlineExcluded };
+  }, [dailySalesLogs, reconSales, reconMonth, reconYear, storeFilter]);
 
   return (
     <div className="space-y-10 animate-in fade-in duration-700 pb-20">
@@ -719,7 +744,12 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
                   <div className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm">
                     <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">CSV Gross Total</p>
                     <p className="text-2xl font-black text-slate-900 tracking-tighter">₹{reconData.totalCsvGross.toLocaleString('en-IN')}</p>
-                    <p className="text-[9px] text-slate-400 font-bold uppercase mt-2">{reconData.daysWithCsv} days in CSV</p>
+                    <p className="text-[9px] text-slate-400 font-bold uppercase mt-2">{reconData.daysWithCsv} days in CSV · counter only</p>
+                    {reconData.onlineExcluded > 0 && (
+                      <p className="text-[9px] text-indigo-500 font-bold uppercase mt-1">
+                        excl. ₹{reconData.onlineExcluded.toLocaleString('en-IN')} online
+                      </p>
+                    )}
                   </div>
                   <div className={`p-6 rounded-[2rem] border shadow-sm ${Math.abs(reconData.totalCrewNet - reconData.totalCsvGross) / Math.max(reconData.totalCsvGross, 1) <= 0.05 ? 'bg-emerald-50 border-emerald-100' : 'bg-amber-50 border-amber-100'}`}>
                     <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Variance</p>

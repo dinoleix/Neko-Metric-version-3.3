@@ -188,19 +188,26 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
     const start = `${selectedYear}-${monthIdx}-01`;
     const end = `${selectedYear}-${monthIdx}-31`;
 
-    // daily sales logs (dual query for backward compat)
-    try {
-      const [ownerSnap, userSnap] = await Promise.all([
-        getDocs(query(collection(db, 'daily_sales_logs'), where('ownerId', '==', dataOwnerId), where('date', '>=', start), where('date', '<=', end))),
-        getDocs(query(collection(db, 'daily_sales_logs'), where('userId',  '==', dataOwnerId), where('date', '>=', start), where('date', '<=', end))),
-      ]);
-      const seenIds = new Set<string>();
-      const logs: DailySalesLog[] = [];
-      [...ownerSnap.docs, ...userSnap.docs].forEach(d => {
-        if (!seenIds.has(d.id)) { seenIds.add(d.id); logs.push({ id: d.id, ...d.data() } as DailySalesLog); }
-      });
-      setDailySalesLogs(logs);
-    } catch { setDailySalesLogs([]); }
+    // daily sales logs (dual query for backward compat). Each leg is isolated: a
+    // Promise.all here meant one leg failing discarded the other leg's results,
+    // and the catch then rendered zero crew sales as though none had been entered.
+    const runLogs = async (field: 'ownerId' | 'userId') => {
+      try {
+        const snap = await getDocs(query(collection(db, 'daily_sales_logs'),
+          where(field, '==', dataOwnerId), where('date', '>=', start), where('date', '<=', end)));
+        return snap.docs;
+      } catch (err) {
+        console.warn(`[BankRecon] daily_sales_logs ${field} query failed:`, err);
+        return [];
+      }
+    };
+    const [ownerDocs, userDocs] = await Promise.all([runLogs('ownerId'), runLogs('userId')]);
+    const seenIds = new Set<string>();
+    const logs: DailySalesLog[] = [];
+    [...ownerDocs, ...userDocs].forEach(d => {
+      if (!seenIds.has(d.id)) { seenIds.add(d.id); logs.push({ id: d.id, ...d.data() } as DailySalesLog); }
+    });
+    setDailySalesLogs(logs);
 
     // POS sales summary (source of per-channel CSV figures via paymentMode)
     try {
