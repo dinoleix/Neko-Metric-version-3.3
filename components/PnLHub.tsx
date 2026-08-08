@@ -723,11 +723,18 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
                             </div>
                             <div className="space-y-2 px-6">
                                <div className="flex justify-between text-sm font-medium text-slate-500 italic"><span>Raw Material Inflow</span><span>₹{pnlData.rawCogs.toLocaleString()}</span></div>
-                               {pnlData.openingIngredients > 0 && (
-                                 <div className="flex justify-between text-sm font-black text-rose-600"><span>(+) Opening Stock (Ingredients)</span><span>+₹{pnlData.openingIngredients.toLocaleString()}</span></div>
-                               )}
-                               {pnlData.openingServings > 0 && (
-                                 <div className="flex justify-between text-sm font-black text-rose-600"><span>(+) Opening Stock (Packaging)</span><span>+₹{pnlData.openingServings.toLocaleString()}</span></div>
+                               {pnlData.openingStock > 0 && (
+                                 <>
+                                   <div className="flex justify-between text-sm font-black text-rose-600"><span>(+) Opening Stock</span><span>+₹{pnlData.openingStock.toLocaleString()}</span></div>
+                                   {/* Broken out the same four ways as closing stock below, so each
+                                       bucket's movement can be read off directly */}
+                                   <div className="pl-4 space-y-1 opacity-60">
+                                      <div className="flex justify-between text-[10px] font-bold uppercase"><span>Food Ingredients</span><span>+₹{pnlData.foodIngredientsOpening.toLocaleString()}</span></div>
+                                      <div className="flex justify-between text-[10px] font-bold uppercase"><span>Drink Ingredients</span><span>+₹{pnlData.drinkIngredientsOpening.toLocaleString()}</span></div>
+                                      <div className="flex justify-between text-[10px] font-bold uppercase"><span>Food Packaging</span><span>+₹{pnlData.foodServingsOpening.toLocaleString()}</span></div>
+                                      <div className="flex justify-between text-[10px] font-bold uppercase"><span>Drink Packaging</span><span>+₹{pnlData.drinkServingsOpening.toLocaleString()}</span></div>
+                                   </div>
+                                 </>
                                )}
                                <div className="flex justify-between text-sm font-black text-emerald-600"><span>(-) Unused Stock Adjustment</span><span>-₹{pnlData.cogsAdj.toLocaleString()}</span></div>
                                <div className="pl-4 space-y-1 opacity-60">
