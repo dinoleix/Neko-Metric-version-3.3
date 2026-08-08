@@ -1735,9 +1735,33 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
           {loading ? (
             <div className="py-24 flex justify-center"><Loader2 className="animate-spin text-slate-300" size={36} /></div>
           ) : filteredEntries.length === 0 ? (
-            <div className="py-24 text-center bg-white border-2 border-dashed border-slate-200 rounded-2xl">
+            // Distinguish "nothing in this date range" from "rows fetched but the
+            // filters hid them" — the same empty box for both made a stuck filter
+            // impossible to diagnose from the screen.
+            <div className="py-16 text-center bg-white border-2 border-dashed border-slate-200 rounded-2xl px-6">
               <SearchX className="mx-auto text-slate-300 mb-3" size={44} />
-              <p className="text-slate-400 font-medium text-sm">No matching entries</p>
+              {entries.length > 0 ? (
+                <>
+                  <p className="text-slate-600 font-bold text-sm">
+                    {entries.length} {entries.length === 1 ? 'entry' : 'entries'} in this period, all hidden by filters
+                  </p>
+                  <div className="flex flex-wrap gap-1.5 justify-center mt-3">
+                    {filterType !== 'all' && <span className="text-[10px] font-bold bg-slate-100 text-slate-600 px-2 py-1 rounded-lg">type: {filterType}</span>}
+                    {filterStatus !== 'all' && <span className="text-[10px] font-bold bg-slate-100 text-slate-600 px-2 py-1 rounded-lg">status: {filterStatus}</span>}
+                    {filterCategory !== 'all' && <span className="text-[10px] font-bold bg-slate-100 text-slate-600 px-2 py-1 rounded-lg">category: {filterCategory}</span>}
+                    {filterOutlet !== 'all' && <span className="text-[10px] font-bold bg-slate-100 text-slate-600 px-2 py-1 rounded-lg">store: {getOutletName(filterOutlet)}</span>}
+                    {searchTerm && <span className="text-[10px] font-bold bg-slate-100 text-slate-600 px-2 py-1 rounded-lg">search: “{searchTerm}”</span>}
+                  </div>
+                  <button
+                    onClick={() => { setFilterType('all'); setFilterStatus('all'); setFilterCategory('all'); setFilterOutlet('all'); setSearchTerm(''); }}
+                    className="mt-4 px-5 py-2.5 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 transition-all active:scale-95"
+                  >
+                    Clear all filters
+                  </button>
+                </>
+              ) : (
+                <p className="text-slate-400 font-medium text-sm">No entries in this date range</p>
+              )}
             </div>
           ) : entriesViewMode === 'table' ? (
             <EntriesDataTable rows={entryTableRows} />
