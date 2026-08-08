@@ -1,7 +1,7 @@
 
 import { collection, query, where, getDocs, getDoc, setDoc, doc } from 'firebase/firestore';
 import { db } from './firebase';
-import { DailyCounterEntry, MONTH_NAMES } from './types';
+import { CrewQtyMeta, DailyCounterEntry, MONTH_NAMES } from './types';
 
 /**
  * Single source of truth for turning crew_entries into the crew_* half of an
@@ -19,18 +19,43 @@ export interface CrewAggregate {
   crewPurchaseByCategory: Record<string, number>;
   crewExpenseByCategory: Record<string, number>;
   crewCogsBucketAgg: Record<string, number>;
+  crewQtyByCategory: Record<string, number>;
+  crewQtyMetaByCategory: Record<string, CrewQtyMeta>;
 }
 
 const emptyBuckets = (): Record<string, number> =>
   ({ FOOD: 0, DRINKS: 0, 'FOOD SERVINGS': 0, 'DRINKS SERVINGS': 0, UNCATEGORIZED: 0 });
 
+// Every key must be present here: DataCatalog's syncSlice spreads this into an
+// agg it writes with a non-merge batch.set, so a key missing from this shape
+// leaves stale data behind on a full sync rather than being reset.
 export const emptyCrewAggregate = (): CrewAggregate => ({
   crewTotalPurchase: 0,
   crewTotalExpense: 0,
   crewPurchaseByCategory: {},
   crewExpenseByCategory: {},
   crewCogsBucketAgg: emptyBuckets(),
+  crewQtyByCategory: {},
+  crewQtyMetaByCategory: {},
 });
+
+/**
+ * Physical units an entry represents.
+ *
+ * The top-level `quantity` wins over the bill-builder's line items and is never
+ * added to them: an edited bill-built purchase can carry both, and preferring
+ * one keeps the result idempotent. Summing `items[].quantity` mixes units of
+ * measure (kg with pieces) and is only meaningful for single-unit consumables —
+ * it is never read for anything else.
+ */
+const unitsForEntry = (e: DailyCounterEntry): { units: number; fromItems: boolean } => {
+  const top = Number(e.quantity);
+  if (top > 0) return { units: top, fromItems: false };
+  const lines = Array.isArray(e.items)
+    ? e.items.reduce((s, it) => s + (Number(it?.quantity) || 0), 0)
+    : 0;
+  return lines > 0 ? { units: lines, fromItems: true } : { units: 0, fromItems: false };
+};
 
 /** Only 'paid' entries feed reporting — 'pending' and 'cancelled' are excluded. */
 export const isReportable = (e: Pick<DailyCounterEntry, 'status'>) => e.status === 'paid';
@@ -65,6 +90,17 @@ export const aggregateCrewEntries = (
 
     const bucket = keywords.includes(cat) ? (cogsBucketMapping[cat] || 'FOOD') : 'UNCATEGORIZED';
     agg.crewCogsBucketAgg[bucket] = (agg.crewCogsBucketAgg[bucket] || 0) + amt;
+
+    // Units are tallied for EVERY category, not just configured consumables, so
+    // adding a new tracked consumable later needs no backfill. Runs across both
+    // entry types — gas cylinders are an expense, not a purchase.
+    const { units, fromItems } = unitsForEntry(e);
+    if (units > 0) agg.crewQtyByCategory[cat] = (agg.crewQtyByCategory[cat] || 0) + units;
+
+    const meta = agg.crewQtyMetaByCategory[cat] || (agg.crewQtyMetaByCategory[cat] = { entries: 0, withQty: 0, fromItems: 0 });
+    meta.entries += 1;
+    if (units > 0) meta.withQty += 1;
+    if (fromItems) meta.fromItems += 1;
   }
 
   return agg;

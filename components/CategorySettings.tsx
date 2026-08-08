@@ -17,7 +17,10 @@ import {
   CategorySettings as CategorySettingsType,
   ServingOption,
   ServingItem,
-  ItemCost
+  ItemCost,
+  TrackedConsumable,
+  CREW_PURCHASE_CATEGORIES,
+  CREW_EXPENSE_CATEGORIES
 } from '../types';
 import { 
   Settings2, 
@@ -44,6 +47,7 @@ import {
   Link2,
   ArrowRightLeft,
   Tag,
+  Flame,
   Info,
   Trash2,
   ListFilter,
@@ -78,10 +82,18 @@ const SKU_CATEGORIES: {id: SkuCategory, label: string, color: string, icon: any}
   { id: 'MISC', label: 'Misc/Fees', color: 'bg-slate-400', icon: Box }
 ];
 
-type SettingsTab = 'purchase' | 'master-menu' | 'product' | 'tiered-costs' | 'servings' | 'segments';
+type SettingsTab = 'purchase' | 'master-menu' | 'product' | 'tiered-costs' | 'servings' | 'segments' | 'consumables';
 
 const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
   const [activeTab, setActiveTab] = useState<SettingsTab>('purchase');
+  const [trackedConsumables, setTrackedConsumables] = useState<TrackedConsumable[]>([]);
+  const [crewCategories, setCrewCategories] = useState<string[]>([]);
+
+  // Same merged list the Crew Terminal dropdown shows, so a configured category
+  // always corresponds to something a crew member can actually pick
+  const consumableCategoryOptions = useMemo(() => Array.from(new Set([
+    ...CREW_PURCHASE_CATEGORIES, ...CREW_EXPENSE_CATEGORIES, ...crewCategories,
+  ].map(c => c.trim().toUpperCase()).filter(Boolean))).sort(), [crewCategories]);
   
   // Basic UI State
   const [loading, setLoading] = useState(false);
@@ -155,7 +167,15 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
         if (data.opsKeywords) setOpsKeywords(data.opsKeywords);
         if (data.cogsBucketMapping) setCogsBucketMapping(data.cogsBucketMapping);
         if (data.menuSegments) setMenuSegments(data.menuSegments);
+        if (data.trackedConsumables) setTrackedConsumables(data.trackedConsumables);
       }
+
+      // Crew-defined categories, so the consumables picker offers the same list
+      // the Crew Terminal shows rather than only the hardcoded ones
+      try {
+        const ccSnap = await getDocs(query(collection(db, 'crew_categories'), where('ownerId', '==', dataOwnerId)));
+        setCrewCategories(ccSnap.docs.map(d => (d.data() as any).name as string).filter(Boolean));
+      } catch { /* optional — the hardcoded lists still populate the picker */ }
 
       setServingOptions(servingSnap.docs.map(d => ({ id: d.id, ...d.data() } as ServingOption)));
       
@@ -250,8 +270,11 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
   const handleSavePurchaseMapping = async () => {
     setSaving(true); setSuccess(false);
     try {
-      await setDoc(doc(db, 'category_settings', user.uid), {
-        cogsKeywords, labourKeywords, opsKeywords, cogsBucketMapping, menuSegments, updatedAt: Date.now()
+      // dataOwnerId, not user.uid — fetchData reads from dataOwnerId, so writing
+      // to user.uid meant a delegated admin's edits landed on a doc nobody reads
+      await setDoc(doc(db, 'category_settings', dataOwnerId), {
+        cogsKeywords, labourKeywords, opsKeywords, cogsBucketMapping, menuSegments,
+        trackedConsumables, updatedAt: Date.now()
       }, { merge: true });
       setSuccess(true); setTimeout(() => setSuccess(false), 3000);
     } catch (err) { setError("Sync failed."); } finally { setSaving(false); }
@@ -605,7 +628,7 @@ ${allSourceStrings.join('\n')}`;
           <button
             onClick={() => {
               setError('');
-              if (activeTab === 'purchase' || activeTab === 'segments') handleSavePurchaseMapping();
+              if (activeTab === 'purchase' || activeTab === 'segments' || activeTab === 'consumables') handleSavePurchaseMapping();
               else if (activeTab === 'master-menu') handleSaveNormalization();
               else if (activeTab === 'product') handleSaveProductMappings();
               else if (activeTab === 'tiered-costs') handleSaveCosts();
@@ -626,7 +649,8 @@ ${allSourceStrings.join('\n')}`;
            { id: 'product', label: 'Allocation', icon: ShoppingBag },
            { id: 'tiered-costs', label: 'Tiered Costs', icon: DollarSign },
            { id: 'servings', label: 'Servings', icon: Box },
-           { id: 'segments', label: 'Segments', icon: Tag }
+           { id: 'segments', label: 'Segments', icon: Tag },
+           { id: 'consumables', label: 'Consumables', icon: Flame }
          ].map(tab => (
            <button 
               key={tab.id}
@@ -1116,6 +1140,96 @@ ${allSourceStrings.join('\n')}`;
                   <button onClick={() => { if(newSegment.trim() && !menuSegments.includes(newSegment.toUpperCase())) { setMenuSegments([...menuSegments, newSegment.toUpperCase()].sort()); setNewSegment(''); } }} className="px-8 py-4 bg-indigo-600 text-white rounded-2xl font-black uppercase text-xs shadow-xl"><Plus size={18}/> Add</button>
                 </div>
                 <div className="flex flex-wrap gap-4">{menuSegments.map(seg => (<div key={seg} className="flex items-center gap-3 px-5 py-3 bg-indigo-50 border border-indigo-100 rounded-2xl animate-in zoom-in"><span className="text-xs font-black text-indigo-600 uppercase tracking-widest">{seg}</span><button onClick={() => setMenuSegments(menuSegments.filter(s => s !== seg))} className="text-indigo-300 hover:text-rose-500"><X size={14} /></button></div>))}</div>
+              </section>
+           )}
+
+           {activeTab === 'consumables' && (
+              <section className="bg-white rounded-[3rem] border border-slate-100 shadow-sm p-12">
+                <div className="flex items-center gap-4 mb-4">
+                  <div className="p-3 bg-orange-500 rounded-2xl text-white"><Flame size={24} /></div>
+                  <div>
+                    <h3 className="text-xl font-black text-slate-900 uppercase">Tracked Consumables</h3>
+                    <p className="text-slate-400 text-sm font-medium">Items counted by unit, not just by spend — so consumption can be compared against sales.</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-3 mb-10 p-5 bg-amber-50 border border-amber-100 rounded-2xl">
+                  <Info size={16} className="text-amber-600 shrink-0 mt-0.5" />
+                  <p className="text-xs font-medium text-amber-800 leading-relaxed">
+                    Adding a category here makes <strong>quantity mandatory</strong> in the Crew Terminal for that category.
+                    Tell your crew before saving. Historical entries without a quantity show as "not recorded", not zero —
+                    set an estimated unit cost below to reconstruct them from the amount spent.
+                  </p>
+                </div>
+
+                <div className="space-y-5">
+                  {trackedConsumables.length === 0 && (
+                    <p className="text-sm font-medium text-slate-400 py-8 text-center">No consumables tracked yet.</p>
+                  )}
+                  {trackedConsumables.map((c, idx) => {
+                    const patch = (next: Partial<TrackedConsumable>) =>
+                      setTrackedConsumables(trackedConsumables.map((x, i) => i === idx ? { ...x, ...next } : x));
+                    return (
+                      <div key={c.id} className={`p-6 rounded-3xl border transition-all ${c.active === false ? 'bg-slate-50 border-slate-100 opacity-60' : 'bg-white border-slate-200 shadow-sm'}`}>
+                        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-end">
+                          <div className="lg:col-span-4 space-y-1.5">
+                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Category</label>
+                            <select value={c.category} onChange={e => patch({ category: e.target.value })}
+                              className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl font-bold text-sm outline-none focus:border-indigo-400">
+                              <option value="">Select…</option>
+                              {consumableCategoryOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                            </select>
+                          </div>
+                          <div className="lg:col-span-3 space-y-1.5">
+                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Label</label>
+                            <input type="text" value={c.label} onChange={e => patch({ label: e.target.value })} placeholder="Gas cylinders"
+                              className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl font-bold text-sm outline-none focus:border-indigo-400" />
+                          </div>
+                          <div className="lg:col-span-2 space-y-1.5">
+                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Unit</label>
+                            <input type="text" value={c.unitLabel} onChange={e => patch({ unitLabel: e.target.value })} placeholder="cylinder"
+                              className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl font-bold text-sm outline-none focus:border-indigo-400" />
+                          </div>
+                          <div className="lg:col-span-2 space-y-1.5">
+                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest" title="Used to estimate months where no quantity was recorded">Est. ₹/unit</label>
+                            <input type="number" min="0" value={c.estimatedUnitCost ?? ''} onChange={e => patch({ estimatedUnitCost: e.target.value ? parseFloat(e.target.value) : undefined })} placeholder="1900"
+                              className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl font-bold text-sm outline-none focus:border-indigo-400" />
+                          </div>
+                          <div className="lg:col-span-1 flex items-center gap-2 justify-end pb-1">
+                            <button onClick={() => patch({ active: c.active === false })} title={c.active === false ? 'Enable' : 'Disable'}
+                              className={`p-2.5 rounded-xl transition-all ${c.active === false ? 'bg-slate-100 text-slate-400' : 'bg-emerald-50 text-emerald-600'}`}>
+                              <Check size={16} />
+                            </button>
+                            <button onClick={() => setTrackedConsumables(trackedConsumables.filter((_, i) => i !== idx))}
+                              className="p-2.5 bg-rose-50 text-rose-400 rounded-xl hover:bg-rose-500 hover:text-white transition-all">
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-4 pt-4 border-t border-slate-100">
+                          <div className="space-y-1.5">
+                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Units per entry</label>
+                            <input type="number" min="1" value={c.unitsPerPurchase ?? 1} onChange={e => patch({ unitsPerPurchase: e.target.value ? parseFloat(e.target.value) : undefined })}
+                              className="w-full px-4 py-2.5 bg-slate-50 border border-slate-100 rounded-xl font-bold text-sm outline-none focus:border-indigo-400" />
+                          </div>
+                          <div className="space-y-1.5">
+                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Alert threshold %</label>
+                            <input type="number" min="1" value={c.alertThresholdPct ?? 15} onChange={e => patch({ alertThresholdPct: e.target.value ? parseFloat(e.target.value) : undefined })}
+                              className="w-full px-4 py-2.5 bg-slate-50 border border-slate-100 rounded-xl font-bold text-sm outline-none focus:border-indigo-400" />
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <button
+                  onClick={() => setTrackedConsumables([...trackedConsumables, {
+                    id: `c-${Date.now()}`, category: '', label: '', unitLabel: 'unit',
+                    unitsPerPurchase: 1, alertThresholdPct: 15, active: true,
+                  }])}
+                  className="mt-8 flex items-center gap-2 px-8 py-4 bg-indigo-600 text-white rounded-2xl font-black uppercase text-xs shadow-xl hover:bg-indigo-700 transition-all">
+                  <Plus size={18} /> Add Consumable
+                </button>
               </section>
            )}
 

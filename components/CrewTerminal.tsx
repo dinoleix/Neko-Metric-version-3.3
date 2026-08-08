@@ -27,6 +27,7 @@ import {
   WasteEntry,
   WasteLineItem,
   WasteType,
+  TrackedConsumable,
   istNow,
   istDateString
 } from '../types';
@@ -266,6 +267,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
 
   const [showProductCatalog, setShowProductCatalog] = useState(false);
   const [productCatalogEnabled, setProductCatalogEnabled] = useState(false);
+  const [trackedConsumables, setTrackedConsumables] = useState<TrackedConsumable[]>([]);
   const [catalogProducts, setCatalogProducts] = useState<Product[]>([]);
   const [selectedProductId, setSelectedProductId] = useState('');
 
@@ -521,7 +523,11 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
   useEffect(() => {
     const ownerId = profile.ownerId || user.uid;
     getDoc(doc(db, 'category_settings', ownerId))
-      .then(snap => { if (snap.exists()) setProductCatalogEnabled(snap.data().productCatalogEnabled === true); })
+      .then(snap => {
+        if (!snap.exists()) return;
+        setProductCatalogEnabled(snap.data().productCatalogEnabled === true);
+        setTrackedConsumables(snap.data().trackedConsumables || []);
+      })
       .catch(() => {});
   }, []);
 
@@ -586,6 +592,14 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
 
   const billTotal = useMemo(() => billItems.reduce((s, i) => s + i.amount, 0), [billItems]);
 
+  // Consumables (gas cylinders etc) are tracked by unit count, so an entry
+  // without a quantity is useless for consumption reporting — require one.
+  const activeConsumable = useMemo(() =>
+    trackedConsumables.find(c =>
+      c.active !== false && c.category.trim().toUpperCase() === category.trim().toUpperCase()
+    ) || null,
+  [trackedConsumables, category]);
+
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
@@ -644,6 +658,12 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     if (!hasBillItems && !amount) return;
     if (!category) return;
 
+    // Bill-builder lines already enforce qty > 0, so only the simple form needs this
+    if (activeConsumable && !hasBillItems && !(parseFloat(quantity) > 0)) {
+      alert(`Enter how many ${activeConsumable.unitLabel}s this covers — ${activeConsumable.label} is tracked by unit.`);
+      return;
+    }
+
     // Prevent cash expense if it would overdraw the selected source account
     if (entryType === 'expense' && status === 'paid' && expenseSourceAccount) {
       const parsedAmt = parseFloat(amount) || 0;
@@ -697,7 +717,11 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
         billNumber: billNumber || null,
         vendorId: selectedVendorId || null,
         vendorName: vendors.find(v => v.id === selectedVendorId)?.name || null,
-        items: (entryType === 'purchase' && billItems.length > 0) ? billItems : null,
+        // Edit mode renders the simple form, so billItems is always empty there —
+        // carry the original line items forward instead of nulling them.
+        items: (entryType === 'purchase' && billItems.length > 0)
+          ? billItems
+          : (!isNew ? (editedEntry?.items || null) : null),
         createdAt: Date.now()
       };
 
@@ -2718,9 +2742,13 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
 
                   <div className="grid grid-cols-2 gap-5">
                     <div className="space-y-2">
-                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Quantity</label>
-                      <input type="number" step="0.01" min="0" value={quantity} onChange={e => setQuantity(e.target.value)}
-                        className="w-full bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none px-5 py-5 rounded-2xl text-xl font-black text-slate-900 transition-all" placeholder="0"
+                      <label className={`text-[10px] font-black uppercase tracking-[0.2em] ml-1 block ${activeConsumable ? 'text-indigo-500' : 'text-slate-400'}`}>
+                        {activeConsumable ? `Quantity (${activeConsumable.unitLabel}s) *` : 'Quantity'}
+                      </label>
+                      <input type="number" step="0.01" min={activeConsumable ? '0.01' : '0'} value={quantity} onChange={e => setQuantity(e.target.value)}
+                        required={!!activeConsumable}
+                        className={`w-full bg-slate-50 border-2 outline-none px-5 py-5 rounded-2xl text-xl font-black text-slate-900 transition-all ${activeConsumable ? 'border-indigo-200 focus:border-indigo-500' : 'border-slate-100 focus:border-indigo-500'}`}
+                        placeholder="0"
                       />
                     </div>
                     <div className="space-y-2">

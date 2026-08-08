@@ -35,6 +35,7 @@ const VendorManagement = lazy(() => import('./components/VendorManagement'));
 const CashFlowTracker = lazy(() => import('./components/CashFlowTracker'));
 const HolidayRegistry = lazy(() => import('./components/HolidayRegistry'));
 const OnlineProfitCenter = lazy(() => import('./components/OnlineProfitCenter'));
+const ConsumablesEfficiency = lazy(() => import('./components/ConsumablesEfficiency'));
 
 const TabLoader: React.FC = () => (
   <div className="flex items-center justify-center py-24">
@@ -73,10 +74,11 @@ import {
   Wallet,
   Clock3,
   Banknote,
-  Store
+  Store,
+  Flame
 } from 'lucide-react';
 
-type AppTab = 'exec-dashboard' | 'dashboard' | 'sales' | 'raw-verify' | 'items' | 'pnl' | 'cash-flow' | 'pnl-insights' | 'waste' | 'waste-v2' | 'integrity' | 'team' | 'rentals' | 'catalog' | 'upload' | 'category-settings' | 'expenses' | 'partnership' | 'crew-terminal' | 'crew-reports' | 'users' | 'bank-management' | 'bank-audit' | 'holidays' | 'online-profit' | 'vendor-management';
+type AppTab = 'exec-dashboard' | 'dashboard' | 'sales' | 'raw-verify' | 'items' | 'pnl' | 'cash-flow' | 'pnl-insights' | 'waste' | 'waste-v2' | 'integrity' | 'team' | 'rentals' | 'catalog' | 'upload' | 'category-settings' | 'expenses' | 'partnership' | 'crew-terminal' | 'crew-reports' | 'users' | 'bank-management' | 'bank-audit' | 'holidays' | 'online-profit' | 'vendor-management' | 'consumables';
 
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
@@ -343,6 +345,7 @@ const App: React.FC = () => {
           <NavItem tab="items" icon={<ShoppingBag size={18} />} label="Item Insights" />
           <NavItem tab="online-profit" icon={<Globe size={18} />} label="Online Profit Center" />
           <NavItem tab="waste-v2" icon={<Zap size={18} />} label="Waste Radar" />
+          {isAdmin && <NavItem tab="consumables" icon={<Flame size={18} />} label="Consumables" />}
           <NavItem tab="pnl" icon={<PieChart size={18} />} label="P&L Command" />
           <NavItem tab="cash-flow" icon={<Banknote size={18} />} label="Cash Reality" />
           <NavItem tab="pnl-insights" icon={<Sparkles size={18} />} label="Margin Intelligence" />
@@ -422,6 +425,7 @@ const App: React.FC = () => {
           {activeTab === 'items' && <ItemSalesHub user={user} dataOwnerId={dataOwnerId} />}
           {activeTab === 'waste' && <WasteManagement user={user} dataOwnerId={dataOwnerId} />}
           {activeTab === 'waste-v2' && <WasteManagementV2 user={user} dataOwnerId={dataOwnerId} />}
+          {activeTab === 'consumables' && isAdmin && <ConsumablesEfficiency user={user} dataOwnerId={dataOwnerId} />}
 
           {activeTab === 'integrity' && !isReadOnly && <IntegrityAudit user={user} dataOwnerId={dataOwnerId} />}
           {activeTab === 'pnl' && <PnLHub user={user} dataOwnerId={dataOwnerId} readOnly={isReadOnly} />}

@@ -183,8 +183,37 @@ export interface ExpenseMonthlySnapshot {
   crewExpenseByCategory?: Record<string, number>;
   crewPurchaseByCategory?: Record<string, number>;
   crewCogsBucketAgg?: Record<string, number>;
+  // Physical units purchased per category, for consumption tracking (gas cylinders etc).
+  // Meaningless for mixed-unit categories — only read for tracked single-unit consumables.
+  crewQtyByCategory?: Record<string, number>;
+  // Distinguishes "0 units bought" from "entries exist but nobody typed a quantity".
+  crewQtyMetaByCategory?: Record<string, CrewQtyMeta>;
   crewLastUpdated?: number;
   lastUpdated: number;
+}
+
+/**
+ * A consumable tracked by unit count rather than only by spend, so consumption
+ * can be compared against business activity month over month (gas cylinders,
+ * cooking oil, packaging). Configured per owner in category_settings.
+ */
+export interface TrackedConsumable {
+  id: string;                   // stable slug, e.g. 'gas-cylinder'
+  category: string;             // must match DailyCounterEntry.category
+  label: string;                // 'Gas cylinders'
+  unitLabel: string;            // singular; UI pluralizes — 'cylinder'
+  unitsPerPurchase?: number;    // multiplier when one entry = several units (default 1)
+  estimatedUnitCost?: number;   // enables reconstructing history from ₹ where quantity is missing
+  alertThresholdPct?: number;   // deviation from baseline that counts as an alert (default 15)
+  active?: boolean;
+}
+
+// Capture coverage for crewQtyByCategory. Without this a reader cannot tell a
+// true zero from an unmeasured month, and a trend chart would plot both as 0.
+export interface CrewQtyMeta {
+  entries: number;    // reportable entries in this category
+  withQty: number;    // ...of which carried a usable quantity
+  fromItems: number;  // ...of which took it from the bill-builder line items
 }
 
 export interface ItemMonthlySnapshot {
@@ -368,6 +397,7 @@ export interface CategorySettings {
   menuSegments?: string[];
   cogsBucketMapping?: Record<string, CogsBucket>;
   productCatalogEnabled?: boolean;
+  trackedConsumables?: TrackedConsumable[];
 }
 
 export interface Product {
