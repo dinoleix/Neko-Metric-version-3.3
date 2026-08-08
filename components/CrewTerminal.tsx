@@ -5,6 +5,7 @@ import { collection, query, getDocs, getDoc, where, addDoc, doc, deleteDoc, upda
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, storage } from '../firebase';
 import { getCachedCollection, invalidateCached } from '../referenceCache';
+import { rebuildCrewSnapshot } from '../crewSnapshotService';
 import {
   DailyCounterEntry,
   DailySalesLog,
@@ -1080,108 +1081,16 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
   // Rebuilds the crew_* fields in expense_snapshots from scratch for the given outlet+period.
   // Called after every paid entry submit, edit, or delete — guarantees the snapshot is always
   // consistent with actual crew_entries in Firestore (no fragile increment/decrement logic).
+  // The aggregation itself lives in crewSnapshotService so Data Catalog's resync shares it.
   const rebuildExpenseSnapshot = async (entryOutletId: string, entryDate: string) => {
     const ownerId = profile.ownerId || user.uid;
-    const [yearStr, monthStr] = entryDate.split('-');
-    const monthNum = parseInt(monthStr);
-    const monthName = MONTH_NAMES[monthNum - 1]; // e.g. "MAY"
-
-    console.log('[Rebuild] START outlet:', entryOutletId, 'date:', entryDate, 'ownerId:', ownerId, 'monthName:', monthName);
-
-    let cogsKeywords: string[] = [];
-    let cogsBucketMapping: Record<string, string> = {};
-    try {
-      const settingsSnap = await getDoc(doc(db, 'category_settings', ownerId));
-      if (settingsSnap.exists()) {
-        const d = settingsSnap.data();
-        if (d.cogsKeywords) cogsKeywords = d.cogsKeywords.map((k: string) => k.trim().toUpperCase());
-        if (d.cogsBucketMapping) cogsBucketMapping = d.cogsBucketMapping;
-      }
-    } catch {}
-
-    // Dual query: new entries have ownerId, old entries (pre-ownerId field) are found by userId.
-    // Both are scoped server-side to this outlet + month so a rebuild costs a handful of reads
-    // instead of the full history. Each query is isolated — if one fails, the other still runs.
-    const monthStart = `${yearStr}-${monthStr}-01`;
-    const monthEnd = `${yearStr}-${monthStr}-31`;
-    let byOwnerDocs: any[] = [];
-    let byUserDocs: any[] = [];
-    try {
-      const snap = await getDocs(query(collection(db, 'crew_entries'),
-        where('ownerId', '==', ownerId),
-        where('outletId', '==', entryOutletId),
-        where('date', '>=', monthStart),
-        where('date', '<=', monthEnd)));
-      byOwnerDocs = snap.docs;
-      console.log('[Rebuild] byOwner OK:', snap.size);
-    } catch (e) { console.warn('[Rebuild] byOwner failed:', e); }
-    try {
-      const snap = await getDocs(query(collection(db, 'crew_entries'),
-        where('userId', '==', user.uid),
-        where('outletId', '==', entryOutletId),
-        where('date', '>=', monthStart),
-        where('date', '<=', monthEnd)));
-      byUserDocs = snap.docs;
-      console.log('[Rebuild] byUser OK:', snap.size);
-    } catch (e) { console.warn('[Rebuild] byUser failed:', e); }
-
-    const seenIds = new Set<string>();
-    const allDocs = [...byOwnerDocs, ...byUserDocs].filter(d => {
-      if (seenIds.has(d.id)) return false;
-      seenIds.add(d.id);
-      return true;
+    const { snapId, entryCount } = await rebuildCrewSnapshot({
+      ownerId,
+      outletId: entryOutletId,
+      date: entryDate,
+      legacyUserId: user.uid, // pre-ownerId entries authored by this user
     });
-    console.log('[Rebuild] merged total:', allDocs.length);
-
-    const paidEntries = allDocs
-      .map(d => ({ id: d.id, ...d.data() } as DailyCounterEntry))
-      .filter(e => {
-        if (e.outletId !== entryOutletId || e.status !== 'paid') return false;
-        const [eYear, eMonth] = (e.date || '').split('-');
-        return eYear === yearStr && parseInt(eMonth) === monthNum;
-      });
-    console.log('[Rebuild] paidEntries for this outlet+period:', paidEntries.length, paidEntries.map(e => ({ id: e.id, type: e.type, amt: e.amount, cat: e.category, outletId: e.outletId, date: e.date, status: e.status })));
-
-    // Aggregate from zero — no incrementing, always a clean recount
-    const agg = {
-      crewTotalPurchase: 0,
-      crewTotalExpense: 0,
-      crewPurchaseByCategory: {} as Record<string, number>,
-      crewExpenseByCategory: {} as Record<string, number>,
-      crewCogsBucketAgg: { FOOD: 0, DRINKS: 0, 'FOOD SERVINGS': 0, 'DRINKS SERVINGS': 0, UNCATEGORIZED: 0 } as Record<string, number>,
-    };
-
-    for (const e of paidEntries) {
-      const cat = (e.category || 'UNCATEGORIZED').trim().toUpperCase();
-      const amt = e.amount || 0;
-      if (e.type === 'purchase') {
-        agg.crewTotalPurchase += amt;
-        agg.crewPurchaseByCategory[cat] = (agg.crewPurchaseByCategory[cat] || 0) + amt;
-      } else {
-        agg.crewTotalExpense += amt;
-        agg.crewExpenseByCategory[cat] = (agg.crewExpenseByCategory[cat] || 0) + amt;
-      }
-      const bucket = cogsKeywords.includes(cat) ? (cogsBucketMapping[cat] || 'FOOD') : 'UNCATEGORIZED';
-      agg.crewCogsBucketAgg[bucket] = (agg.crewCogsBucketAgg[bucket] || 0) + amt;
-    }
-
-    // Write crew_* fields only — merge:true preserves any CSV-uploaded data in the same document
-    const snapId = `${ownerId}_${entryOutletId}_${yearStr}_${monthName}`;
-    console.log('[Rebuild] writing snapId:', snapId, 'agg:', JSON.stringify(agg));
-    try {
-      await setDoc(doc(db, 'expense_snapshots', snapId), {
-        userId: ownerId,
-        outletId: entryOutletId,
-        month: monthName,
-        year: yearStr,
-        ...agg,
-        crewLastUpdated: Date.now(),
-      }, { merge: true });
-      console.log('[Rebuild] DONE ✓');
-    } catch (e: any) {
-      console.error('[Rebuild] setDoc FAILED:', e);
-      throw e; // re-throw so outer catch shows the alert
-    }
+    console.log('[Rebuild] DONE ✓', snapId, `(${entryCount} paid entries)`);
   };
 
   // Adds or renames a custom category and selects it in the form. New categories

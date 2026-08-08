@@ -4,6 +4,7 @@ import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, writeBatch, doc, setDoc, getDoc, increment, arrayUnion } from 'firebase/firestore';
 import { db } from '../firebase';
 import { getCachedCollection } from '../referenceCache';
+import { aggregateCrewEntries, emptyCrewAggregate, isReportable, rebuildCrewSnapshot } from '../crewSnapshotService';
 import { 
   FileMetadata, 
   SalesMonthlySnapshot, 
@@ -95,6 +96,7 @@ const DataCatalog: React.FC<{ user: User; dataOwnerId: string }> = ({ user, data
   const [isRebuilding, setIsRebuilding] = useState(false);
   const [rebuildStatus, setRebuildStatus] = useState<{current: number, total: number} | null>(null);
   const [syncingNode, setSyncingNode] = useState<string | null>(null);
+  const [resyncingNode, setResyncingNode] = useState<string | null>(null);
 
   const fetchCatalog = async () => {
     setLoading(true);
@@ -119,6 +121,46 @@ const DataCatalog: React.FC<{ user: User; dataOwnerId: string }> = ({ user, data
   };
 
   useEffect(() => { fetchCatalog(); }, [user]);
+
+  /**
+   * Recounts only the crew_* fields for one outlet + month straight from
+   * crew_entries. Far cheaper than a full node sync (one collection instead of
+   * seven) and it writes with merge, touching no CSV field — so it cannot repeat
+   * the overwrite that made this button necessary.
+   */
+  const resyncCrew = async (year: string, month: string, outletId: string) => {
+    if (outletId === GLOBAL_ID) {
+      alert('Pick a specific outlet — crew entries are always tagged to one.');
+      return;
+    }
+    const nodeId = `${year}_${month}_${outletId}`;
+    setResyncingNode(nodeId);
+    try {
+      const monthIdx = MONTHS.indexOf(month);
+      if (monthIdx < 0) throw new Error(`Unrecognized month "${month}"`);
+      const date = `${year}-${String(monthIdx + 1).padStart(2, '0')}-01`;
+
+      const { aggregate, entryCount } = await rebuildCrewSnapshot({
+        ownerId: dataOwnerId,
+        outletId,
+        date,
+      });
+
+      await fetchCatalog();
+      alert(
+        `Crew data resynced — ${getOutletName(outletId)}, ${month} ${year}\n\n` +
+        `Purchases: ₹${aggregate.crewTotalPurchase.toLocaleString('en-IN')}\n` +
+        `Expenses:  ₹${aggregate.crewTotalExpense.toLocaleString('en-IN')}\n` +
+        `From ${entryCount} paid entr${entryCount === 1 ? 'y' : 'ies'}.` +
+        (entryCount === 0 ? '\n\nNo paid crew entries found for this period.' : '')
+      );
+    } catch (err: any) {
+      console.error('[ResyncCrew] failed:', err);
+      alert(`Crew resync failed.\n\n${err?.message || err}`);
+    } finally {
+      setResyncingNode(null);
+    }
+  };
 
   const syncSlice = async (year: string, month: string, outletId: string) => {
     const nodeId = `${year}_${month}_${outletId}`;
@@ -195,10 +237,10 @@ const DataCatalog: React.FC<{ user: User; dataOwnerId: string }> = ({ user, data
       const slicePurchases = pSnap.docs.map(d => d.data() as PurchaseRecord).filter(filterByPeriod);
       const sliceItems = iSnap.docs.map(d => d.data() as ItemSalesRecord).filter(filterByPeriod);
       const sliceEvents = evSnap.docs.map(d => d.data() as EventRecord).filter(filterByPeriod);
-      // Only 'paid' entries feed reporting — mirrors rebuildExpenseSnapshot in CrewTerminal
+      // Only 'paid' entries feed reporting (isReportable is shared with the rebuild)
       const sliceCrew = cSnap.docs
         .map(d => d.data() as DailyCounterEntry)
-        .filter(r => filterByPeriod(r) && r.status === 'paid');
+        .filter(r => filterByPeriod(r) && isReportable(r));
       const sliceOnline = oSnap.docs.map(d => d.data() as any).filter(r => {
         const dStr = r.orderDate || r.date;
         if (!dStr) return false;
@@ -418,9 +460,7 @@ const DataCatalog: React.FC<{ user: User; dataOwnerId: string }> = ({ user, data
             userId: dataOwnerId, outletId: oId, month, year, totalExpense: 0, totalPurchase: 0,
             expenseByCategory: {}, purchaseByCategory: {},
             cogsBucketAgg: { 'FOOD': 0, 'DRINKS': 0, 'FOOD SERVINGS': 0, 'DRINKS SERVINGS': 0, 'UNCATEGORIZED': 0 },
-            crewTotalExpense: 0, crewTotalPurchase: 0,
-            crewExpenseByCategory: {}, crewPurchaseByCategory: {},
-            crewCogsBucketAgg: { 'FOOD': 0, 'DRINKS': 0, 'FOOD SERVINGS': 0, 'DRINKS SERVINGS': 0, 'UNCATEGORIZED': 0 },
+            ...emptyCrewAggregate(),
             crewLastUpdated: Date.now(),
             lastUpdated: Date.now()
           };
@@ -444,21 +484,9 @@ const DataCatalog: React.FC<{ user: User; dataOwnerId: string }> = ({ user, data
               agg.cogsBucketAgg[bucket] = (agg.cogsBucketAgg[bucket] || 0) + amt;
             }
           });
-          // Crew Terminal entries — aggregated into the crew_* namespace exactly as
-          // rebuildExpenseSnapshot (CrewTerminal.tsx) does, so both writers agree.
-          outletCrew.forEach(c => {
-            const amt = Number(c.amount || 0);
-            const cat = (c.category || 'UNCATEGORIZED').trim().toUpperCase();
-            if (c.type === 'purchase') {
-              agg.crewTotalPurchase! += amt;
-              agg.crewPurchaseByCategory![cat] = (agg.crewPurchaseByCategory![cat] || 0) + amt;
-            } else {
-              agg.crewTotalExpense! += amt;
-              agg.crewExpenseByCategory![cat] = (agg.crewExpenseByCategory![cat] || 0) + amt;
-            }
-            const bucket = cogsKeywords.includes(cat) ? (cogsBucketMapping[cat] || 'FOOD') : 'UNCATEGORIZED';
-            agg.crewCogsBucketAgg![bucket] = (agg.crewCogsBucketAgg![bucket] || 0) + amt;
-          });
+          // Crew Terminal entries — shared with CrewTerminal's rebuild so the two
+          // writers can never disagree about what a crew total means.
+          Object.assign(agg, aggregateCrewEntries(outletCrew, cogsKeywords, cogsBucketMapping));
 
           batch.set(doc(db, 'expense_snapshots', `${dataOwnerId}_${oId}_${year}_${month}`), agg);
         }
@@ -611,11 +639,14 @@ const DataCatalog: React.FC<{ user: User; dataOwnerId: string }> = ({ user, data
       registry[key].expected.add(f.type);
     });
 
-    const markActual = (year: string, month: string, outletId: string, types: FileType[]) => {
+    // `seed` creates the node when missing. A snapshot proves a period exists even
+    // when no CSV file does — without this, a Crew-Terminal-only month has no node
+    // and therefore no Sync button, making it impossible to resync from here.
+    const markActual = (year: string, month: string, outletId: string, types: FileType[], seed = false) => {
       const specificId = normalizeOutlet(outletId);
-      const specificKey = `${year}_${month}_${specificId}`;
+      const specificKey = seed ? ensureNode(year, month, specificId) : `${year}_${month}_${specificId}`;
       const globalKey = `${year}_${month}_${GLOBAL_ID}`;
-      
+
       types.forEach(type => {
         if (registry[specificKey]) registry[specificKey].actual.add(type);
         if (registry[globalKey]) registry[globalKey].actual.add(type);
@@ -625,6 +656,21 @@ const DataCatalog: React.FC<{ user: User; dataOwnerId: string }> = ({ user, data
     salesSnaps.forEach(s => markActual(s.year, s.month, s.outletId, ['sales']));
     expenseSnaps.forEach(e => markActual(e.year, e.month, e.outletId, ['expense', 'purchase']));
     itemSnaps.forEach(i => markActual(i.year, i.month, i.outletId, ['item', 'platform_item']));
+
+    // An expense_snapshots document is itself proof the period is real, so seed a
+    // node for every one — even with no CSV file behind it (a Crew-Terminal-only
+    // month) and even when its crew_* fields are currently zero or absent.
+    // Deliberately NOT gated on crew data being present: a period whose crew
+    // figures were wiped is precisely the one that needs the resync button, and
+    // the only way to know whether crew entries exist is to read crew_entries.
+    expenseSnaps.forEach(e => {
+      const types: FileType[] = [];
+      if ((e.totalPurchase || 0) > 0 || (e.crewTotalPurchase || 0) > 0) types.push('purchase');
+      if ((e.totalExpense || 0) > 0 || (e.crewTotalExpense || 0) > 0) types.push('expense');
+      markActual(e.year, e.month, e.outletId, types, true);
+      const key = `${e.year}_${e.month}_${normalizeOutlet(e.outletId)}`;
+      types.forEach(t => registry[key].expected.add(t));
+    });
 
     Object.values(registry).forEach((node: any) => {
       node.isSynced = Array.from(node.expected).every((type: any) => node.actual.has(type));
@@ -718,6 +764,7 @@ const DataCatalog: React.FC<{ user: User; dataOwnerId: string }> = ({ user, data
                     ) : auditRegistry.map((node: any) => {
                        const nodeId = `${node.year}_${node.month}_${node.outletId}`;
                        const isSyncing = syncingNode === nodeId;
+                       const isResyncing = resyncingNode === nodeId;
                        const isGlobal = node.outletId === GLOBAL_ID;
                        return (
                           <tr key={nodeId} className="group hover:bg-slate-50/50 transition-colors">
@@ -755,14 +802,26 @@ const DataCatalog: React.FC<{ user: User; dataOwnerId: string }> = ({ user, data
                                    <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-amber-50 text-amber-600 rounded-full text-[9px] font-black uppercase tracking-widest animate-pulse"><History size={12} /> Incomplete</span>
                                 )}
                              </td>
-                             <td className="px-8 py-6 text-right">
-                                <button 
-                                  onClick={() => syncSlice(node.year, node.month, node.outletId)}
-                                  disabled={isSyncing || isRebuilding}
-                                  className={`px-4 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${isSyncing ? 'bg-indigo-600 text-white animate-spin' : 'bg-slate-900 text-white hover:bg-indigo-600 shadow-md shadow-slate-200 disabled:opacity-30'}`}
-                                >
-                                  {isSyncing ? <RefreshCw size={14} /> : (isGlobal ? 'Sync Global Hub' : 'Sync Node')}
-                                </button>
+                             <td className="px-8 py-6">
+                                <div className="flex items-center justify-end gap-2">
+                                   {!isGlobal && (
+                                     <button
+                                       onClick={() => resyncCrew(node.year, node.month, node.outletId)}
+                                       disabled={isSyncing || isResyncing || isRebuilding}
+                                       title="Recount Crew Terminal purchases & expenses for this period. Does not touch CSV data."
+                                       className={`px-4 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${isResyncing ? 'bg-emerald-600 text-white' : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-600 hover:text-white border border-emerald-100 disabled:opacity-30'}`}
+                                     >
+                                       {isResyncing ? <RefreshCw size={14} className="animate-spin" /> : 'Resync Crew'}
+                                     </button>
+                                   )}
+                                   <button
+                                     onClick={() => syncSlice(node.year, node.month, node.outletId)}
+                                     disabled={isSyncing || isResyncing || isRebuilding}
+                                     className={`px-4 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${isSyncing ? 'bg-indigo-600 text-white animate-spin' : 'bg-slate-900 text-white hover:bg-indigo-600 shadow-md shadow-slate-200 disabled:opacity-30'}`}
+                                   >
+                                     {isSyncing ? <RefreshCw size={14} /> : (isGlobal ? 'Sync Global Hub' : 'Sync Node')}
+                                   </button>
+                                </div>
                              </td>
                           </tr>
                        );
