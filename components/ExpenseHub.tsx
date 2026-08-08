@@ -726,10 +726,12 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
                                        <div className="flex items-center gap-3">
                                           {bucketStock && (bucketStock.opening > 0 || bucketStock.closing > 0) && (
                                             <span
-                                              title={`Bought ₹${bucketStock.purchased.toLocaleString()} + opening ₹${bucketStock.opening.toLocaleString()} − closing ₹${bucketStock.closing.toLocaleString()}`}
+                                              title={`Opening ₹${bucketStock.opening.toLocaleString()} + bought ₹${bucketStock.purchased.toLocaleString()} − closing ₹${bucketStock.closing.toLocaleString()} = ₹${bucketStock.consumed.toLocaleString()}`}
                                               className="text-[8px] font-black uppercase text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 tabular-nums"
                                             >
-                                              bought ₹{bucketStock.purchased.toLocaleString()} · stock {bucketStock.closing >= bucketStock.opening ? '+' : '−'}₹{Math.abs(bucketStock.closing - bucketStock.opening).toLocaleString()}
+                                              {bucketStock.opening >= bucketStock.closing
+                                                ? <>bought ₹{bucketStock.purchased.toLocaleString()} · used ₹{(bucketStock.opening - bucketStock.closing).toLocaleString()} from stock</>
+                                                : <>bought ₹{bucketStock.purchased.toLocaleString()} · ₹{(bucketStock.closing - bucketStock.opening).toLocaleString()} added to stock</>}
                                             </span>
                                           )}
                                           <span className="text-[11px] font-black text-slate-800 tracking-tight">₹{bucketAmtAdjusted.toLocaleString()}</span>
@@ -738,6 +740,28 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
 
                                     {isBucketExpanded && (
                                        <div className="ml-8 space-y-2 border-l-2 border-slate-100 pl-6 py-2 animate-in slide-in-from-left-2 duration-300">
+                                          {/* Same four lines as the panel above, per bucket, so each
+                                              one can be read without interpreting a signed delta */}
+                                          {bucketStock && (bucketStock.opening > 0 || bucketStock.closing > 0) && (
+                                            <div className="mb-4 p-4 bg-slate-50 border border-slate-100 rounded-xl space-y-1">
+                                               <div className="flex justify-between items-center py-1">
+                                                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Opening stock</span>
+                                                  <span className="text-[11px] font-bold text-slate-700 tabular-nums">+ ₹{bucketStock.opening.toLocaleString()}</span>
+                                               </div>
+                                               <div className="flex justify-between items-center py-1 border-t border-slate-100">
+                                                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Bought this month</span>
+                                                  <span className="text-[11px] font-bold text-slate-700 tabular-nums">+ ₹{bucketStock.purchased.toLocaleString()}</span>
+                                               </div>
+                                               <div className="flex justify-between items-center py-1 border-t border-slate-100">
+                                                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Closing stock</span>
+                                                  <span className="text-[11px] font-bold text-emerald-700 tabular-nums">− ₹{bucketStock.closing.toLocaleString()}</span>
+                                               </div>
+                                               <div className="flex justify-between items-center pt-2 mt-1 border-t-2 border-slate-300">
+                                                  <span className="text-[10px] font-black text-slate-900 uppercase tracking-widest">Used up</span>
+                                                  <span className="text-xs font-black text-slate-900 tabular-nums">= ₹{bucketStock.consumed.toLocaleString()}</span>
+                                               </div>
+                                            </div>
+                                          )}
                                           {(Object.entries(analytics.cogsItemBreakdown[bucket]) as [string, { amount: number; source: string }][]).sort((a, b) => b[1].amount - a[1].amount).map(([itemName, itemData]) => {
                                              return (
                                                 <div key={itemName} className="flex justify-between items-center group">
