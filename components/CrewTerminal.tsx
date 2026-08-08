@@ -83,7 +83,7 @@ const STATUS_CONFIG: Record<EntryStatus, { label: string, color: string, bg: str
   cancelled: { label: 'Cancelled', color: 'text-rose-500', bg: 'bg-rose-500/10', icon: XCircle }
 };
 
-type DatePreset = 'today' | 'yesterday' | 'this-week' | 'last-week' | 'this-month' | 'custom';
+type DatePreset = 'today' | 'yesterday' | 'this-week' | 'last-week' | 'this-month' | 'last-month' | 'custom';
 
 // Resolves which bank account an entry hits: 10K vault for cash expenses paid
 // from the vault (no fallback — the source was explicit), otherwise the outlet's
@@ -454,6 +454,18 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
         case 'this-month':
           start = todayIst.slice(0, 8) + '01'; // first day of current IST month
           break;
+        case 'last-month': {
+          // Whole previous calendar month. Day 0 of the following month gives its
+          // last day (UTC-safe, so leap years and year rollover both hold).
+          const [y, m] = todayIst.split('-').map(Number);
+          const lastY = m === 1 ? y - 1 : y;
+          const lastM = m === 1 ? 12 : m - 1;
+          const mm = String(lastM).padStart(2, '0');
+          const lastDay = new Date(Date.UTC(lastY, lastM, 0)).getUTCDate();
+          start = `${lastY}-${mm}-01`;
+          end = `${lastY}-${mm}-${String(lastDay).padStart(2, '0')}`;
+          break;
+        }
         case 'custom':
           start = customStartDate;
           end = customEndDate;
@@ -1653,7 +1665,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
 
             {/* Date presets */}
             <div className="flex gap-2 overflow-x-auto no-scrollbar pb-0.5">
-              {(['today', 'yesterday', 'this-week', 'last-week', 'this-month', 'custom'] as DatePreset[]).map(p => (
+              {(['today', 'yesterday', 'this-week', 'last-week', 'this-month', 'last-month', 'custom'] as DatePreset[]).map(p => (
                 <button
                   key={p}
                   onClick={() => setDatePreset(p)}
