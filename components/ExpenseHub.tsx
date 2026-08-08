@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase';
-import { computeConsumption, closingStockTotal, openingStockTotal, expenseMapsOf, purchaseMapsOf, forEachCostRow } from '../pnlService';
+import { computeConsumption, closingStockTotal, openingStockTotal, openingByBucket, closingByBucket, BUCKETS, expenseMapsOf, purchaseMapsOf, forEachCostRow } from '../pnlService';
 import { getCachedCollection } from '../referenceCache';
 import { 
   ExpenseMonthlySnapshot, 
@@ -300,12 +300,31 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
           return matchesStore && matchesPeriod;
         })
       : [];
-    // NET stock movement (closing − opening), not closing alone. Subtracting this
-    // from purchases gives Opening + Purchases − Closing, and because every bucket
-    // breakdown below apportions this same figure, they stay consistent with the
-    // total for free. A negative value (stock drawn down) correctly increases COGS.
-    const totalCogsOffset = closingStockTotal(scopedAdjustments) - openingStockTotal(scopedAdjustments);
+    // Consumption = Opening + Purchases − Closing. All three components are kept
+    // separate and surfaced in the UI: showing only a combined "offset" is what
+    // made this panel unreadable.
+    const openingStock = openingStockTotal(scopedAdjustments);
+    const closingStock = closingStockTotal(scopedAdjustments);
+    const totalCogsOffset = closingStock - openingStock; // net stock movement
     const adjustedCogsTotal = Math.max(0, csvCogs - totalCogsOffset);
+
+    // Per-bucket consumption, using each bucket's OWN stock figures. The previous
+    // code subtracted the entire stock movement from the two SERVINGS buckets
+    // only, so food-ingredient stock was deducted from packaging — and when a
+    // month had no packaging purchases the offset silently vanished from the
+    // breakdown while still reducing the headline, leaving the two irreconcilable.
+    const openingBk = openingByBucket(scopedAdjustments);
+    const closingBk = closingByBucket(scopedAdjustments);
+    const cogsBucketAdjusted: Record<string, number> = {};
+    const cogsBucketDetail: Record<string, { purchased: number; opening: number; closing: number; consumed: number }> = {};
+    BUCKETS.forEach(b => {
+      const purchased = cogsBucketAgg[b] || 0;
+      const opening = openingBk[b] || 0;
+      const closing = closingBk[b] || 0;
+      const consumed = Math.max(0, purchased + opening - closing);
+      cogsBucketAdjusted[b] = consumed;
+      cogsBucketDetail[b] = { purchased, opening, closing, consumed };
+    });
     const totalLabour = csvLabour + fixedBaseSalary;
 
     const catMap: Record<string, number> = {
@@ -331,11 +350,15 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
       categories,
       opsBreakdown: finalOpsBreakdown,
       uncatBreakdown: finalUncatBreakdown,
-      cogsBucketAgg, 
+      cogsBucketAgg,
+      cogsBucketAdjusted,
+      cogsBucketDetail,
       cogsItemBreakdown,
-      cogsTotal: adjustedCogsTotal, 
+      cogsTotal: adjustedCogsTotal,
       rawCogsTotal: csvCogs,
       totalCogsOffset,
+      openingStock,
+      closingStock,
       opsTotal: csvOps, 
       labourTotal: totalLabour, 
       rentTotal: fixedRent,
@@ -427,7 +450,6 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
     const radius = 80;
     const center = 120;
     
-    const totalServingsRaw = (analytics.cogsBucketAgg['FOOD SERVINGS'] || 0) + (analytics.cogsBucketAgg['DRINKS SERVINGS'] || 0);
 
     return (
       <div className="flex flex-col md:flex-row items-center justify-around gap-12 w-full animate-in zoom-in-95 duration-500">
@@ -437,10 +459,8 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
               const rawBucketAmt = (analytics.cogsBucketAgg[b.id] as number) || 0;
               let adjustedAmt = rawBucketAmt;
               
-              if (b.id.includes('SERVINGS') && totalServingsRaw > 0) {
-                 const servingWeight = rawBucketAmt / totalServingsRaw;
-                 adjustedAmt = Math.max(0, rawBucketAmt - (analytics.totalCogsOffset * servingWeight));
-              }
+              // Each bucket nets off its own opening/closing stock
+              adjustedAmt = analytics.cogsBucketAdjusted[b.id] ?? rawBucketAmt;
 
               const percent = adjustedAmt / (analytics.cogsTotal || 1);
               if (percent <= 0) return null;
@@ -471,10 +491,7 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
              const rawBucketAmt = (analytics.cogsBucketAgg[b.id] as number) || 0;
              let adjustedAmt = rawBucketAmt;
               
-             if (b.id.includes('SERVINGS') && totalServingsRaw > 0) {
-                const servingWeight = rawBucketAmt / totalServingsRaw;
-                adjustedAmt = Math.max(0, rawBucketAmt - (analytics.totalCogsOffset * servingWeight));
-             }
+             adjustedAmt = analytics.cogsBucketAdjusted[b.id] ?? rawBucketAmt;
 
              if (adjustedAmt <= 0) return null;
              return (
@@ -642,23 +659,47 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
                        
                        {isCogs && isExpanded && (
                          <div className="ml-16 space-y-4 pt-3 pb-8 border-l-4 border-amber-500/20 pl-8 animate-in slide-in-from-top-3 duration-300">
-                            <div className="p-4 bg-slate-50 border border-slate-100 rounded-2xl mb-4 flex justify-between items-center">
-                                <div className="flex items-center gap-3">
-                                    <ShoppingCart size={16} className="text-amber-600" />
-                                    <span className="text-xs font-black text-slate-600 uppercase tracking-tight">Gross COGS Spending</span>
-                                </div>
-                                <span className="text-sm font-black text-slate-900">₹{analytics.rawCogsTotal.toLocaleString()}</span>
-                            </div>
+                            {/* Opening + Purchases − Closing, spelled out. Someone
+                                seeing this for the first time should not have to
+                                infer that "offset" meant closing stock. */}
+                            <div className="p-5 bg-white border border-slate-200 rounded-2xl mb-4 space-y-1">
+                                <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-3">How this month's COGS is worked out</p>
 
-                            {analytics.totalCogsOffset > 0 && (
-                                <div className="p-4 bg-emerald-50 border border-emerald-100 rounded-2xl mb-4 flex justify-between items-center">
+                                <div className="flex justify-between items-center py-2">
                                     <div className="flex items-center gap-3">
-                                        <PackageCheck size={16} className="text-emerald-600" />
-                                        <span className="text-xs font-black text-emerald-800 uppercase tracking-tight">Inventory Offset (Servings Focus)</span>
+                                        <PackageCheck size={15} className="text-slate-400" />
+                                        <span className="text-xs font-bold text-slate-600">Stock you started the month with <span className="text-slate-400 font-medium">(opening)</span></span>
                                     </div>
-                                    <span className="text-sm font-black text-emerald-600">-₹{analytics.totalCogsOffset.toLocaleString()}</span>
+                                    <span className="text-sm font-bold text-slate-700 tabular-nums">+ ₹{analytics.openingStock.toLocaleString()}</span>
                                 </div>
-                            )}
+
+                                <div className="flex justify-between items-center py-2 border-t border-slate-50">
+                                    <div className="flex items-center gap-3">
+                                        <ShoppingCart size={15} className="text-amber-600" />
+                                        <span className="text-xs font-bold text-slate-600">Bought during the month <span className="text-slate-400 font-medium">(purchases)</span></span>
+                                    </div>
+                                    <span className="text-sm font-bold text-slate-700 tabular-nums">+ ₹{analytics.rawCogsTotal.toLocaleString()}</span>
+                                </div>
+
+                                <div className="flex justify-between items-center py-2 border-t border-slate-50">
+                                    <div className="flex items-center gap-3">
+                                        <PackageCheck size={15} className="text-emerald-600" />
+                                        <span className="text-xs font-bold text-slate-600">Stock left at month end <span className="text-slate-400 font-medium">(closing)</span></span>
+                                    </div>
+                                    <span className="text-sm font-bold text-emerald-700 tabular-nums">− ₹{analytics.closingStock.toLocaleString()}</span>
+                                </div>
+
+                                <div className="flex justify-between items-center pt-3 mt-1 border-t-2 border-slate-900">
+                                    <span className="text-xs font-black text-slate-900 uppercase tracking-tight">Actually used up (COGS)</span>
+                                    <span className="text-base font-black text-slate-900 tabular-nums">= ₹{analytics.cogsTotal.toLocaleString()}</span>
+                                </div>
+
+                                {analytics.openingStock === 0 && analytics.closingStock > 0 && (
+                                    <p className="text-[10px] font-medium text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 mt-3">
+                                        No opening stock recorded for this period, so COGS may be understated. Enter it in P&amp;L Command, or use “Carry Forward” there to pull last month’s closing figure in.
+                                    </p>
+                                )}
+                            </div>
 
                             {['FOOD', 'DRINKS', 'FOOD SERVINGS', 'DRINKS SERVINGS'].map(bucket => {
                                const bucketAmtRaw = analytics.cogsBucketAgg[bucket] || 0;
@@ -667,12 +708,9 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
                                const bucketIcon = bucket.includes('FOOD') ? <Utensils size={14}/> : <Coffee size={14}/>;
                                const colorMap: any = { 'FOOD': 'text-emerald-500', 'DRINKS': 'text-indigo-500', 'FOOD SERVINGS': 'text-amber-500', 'DRINKS SERVINGS': 'text-rose-500' };
                                
-                               let bucketAmtAdjusted = bucketAmtRaw;
-                               if (bucket.includes('SERVINGS')) {
-                                  const totalServingsRaw = (analytics.cogsBucketAgg['FOOD SERVINGS'] || 0) + (analytics.cogsBucketAgg['DRINKS SERVINGS'] || 0);
-                                  const servingWeight = totalServingsRaw > 0 ? bucketAmtRaw / totalServingsRaw : 0;
-                                  bucketAmtAdjusted = Math.max(0, bucketAmtRaw - (analytics.totalCogsOffset * servingWeight));
-                               }
+                               // Each bucket nets off its OWN opening/closing stock
+                               const bucketAmtAdjusted = analytics.cogsBucketAdjusted[bucket] ?? bucketAmtRaw;
+                               const bucketStock = analytics.cogsBucketDetail[bucket];
 
                                return (
                                  <div key={bucket} className="space-y-3">
@@ -686,8 +724,13 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
                                           {isBucketExpanded ? <ChevronDown size={14} className="text-slate-300" /> : <ChevronRight size={14} className="text-slate-300" />}
                                        </div>
                                        <div className="flex items-center gap-3">
-                                          {bucket.includes('SERVINGS') && analytics.totalCogsOffset > 0 && (
-                                            <span className="text-[8px] font-black uppercase text-emerald-500 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-100">Offset Applied</span>
+                                          {bucketStock && (bucketStock.opening > 0 || bucketStock.closing > 0) && (
+                                            <span
+                                              title={`Bought ₹${bucketStock.purchased.toLocaleString()} + opening ₹${bucketStock.opening.toLocaleString()} − closing ₹${bucketStock.closing.toLocaleString()}`}
+                                              className="text-[8px] font-black uppercase text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 tabular-nums"
+                                            >
+                                              bought ₹{bucketStock.purchased.toLocaleString()} · stock {bucketStock.closing >= bucketStock.opening ? '+' : '−'}₹{Math.abs(bucketStock.closing - bucketStock.opening).toLocaleString()}
+                                            </span>
                                           )}
                                           <span className="text-[11px] font-black text-slate-800 tracking-tight">₹{bucketAmtAdjusted.toLocaleString()}</span>
                                        </div>
@@ -866,9 +909,7 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
                         let adjustedAmt = rawBucketAmt;
 
                         if (bucket.id.includes('SERVINGS')) {
-                           const totalServingsRaw = (analytics.cogsBucketAgg['FOOD SERVINGS'] || 0) + (analytics.cogsBucketAgg['DRINKS SERVINGS'] || 0);
-                           const servingWeight = totalServingsRaw > 0 ? rawBucketAmt / totalServingsRaw : 0;
-                           adjustedAmt = Math.max(0, rawBucketAmt - (analytics.totalCogsOffset * servingWeight));
+                           adjustedAmt = analytics.cogsBucketAdjusted[bucket.id] ?? rawBucketAmt;
                         }
 
                         const percent = (adjustedAmt / (analytics.cogsTotal || 1)) * 100;
@@ -896,9 +937,7 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
                            const amtRaw = analytics.cogsBucketAgg[b] || 0;
                            let adjAmt = amtRaw;
                            if (b.includes('SERVINGS')) {
-                             const totalServingsRaw = (analytics.cogsBucketAgg['FOOD SERVINGS'] || 0) + (analytics.cogsBucketAgg['DRINKS SERVINGS'] || 0);
-                             const servingWeight = totalServingsRaw > 0 ? amtRaw / totalServingsRaw : 0;
-                             adjAmt = Math.max(0, amtRaw - (analytics.totalCogsOffset * servingWeight));
+                             adjAmt = analytics.cogsBucketAdjusted[b] ?? amtRaw;
                            }
                            const weight = adjAmt / (analytics.cogsTotal || 1);
                            if (weight < 0.01) return null;
