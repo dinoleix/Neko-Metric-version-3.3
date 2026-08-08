@@ -10,6 +10,7 @@ import {
   SalesSummaryRecord,
   ExpenseRecord,
   PurchaseRecord,
+  DailyCounterEntry,
   ExpenseMonthlySnapshot,
   ItemMonthlySnapshot,
   ItemSalesRecord,
@@ -162,13 +163,22 @@ const DataCatalog: React.FC<{ user: User; dataOwnerId: string }> = ({ user, data
       const mm = String(MONTHS.indexOf(month) + 1).padStart(2, '0');
       const dateRange = [where('date', '>=', `${year}-${mm}-01`), where('date', '<=', `${year}-${mm}-31`)];
 
-      const [sSnap, eSnap, pSnap, iSnap, evSnap, oSnap] = await Promise.all([
+      // crew_entries is keyed on ownerId (CSV collections use userId) and is the
+      // source of the crew_* half of expense_snapshots. Sync recomputes BOTH halves
+      // so the snapshot write below can own the whole document — previously it
+      // rebuilt only the CSV half and then overwrote the doc, wiping crew data.
+      const crewConstraints = isGlobal
+        ? [where('ownerId', '==', dataOwnerId)]
+        : [where('ownerId', '==', dataOwnerId), where('outletId', '==', outletId)];
+
+      const [sSnap, eSnap, pSnap, iSnap, evSnap, oSnap, cSnap] = await Promise.all([
         getDocs(query(collection(db, 'sales_summary'), ...constraints, ...dateRange)),
         getDocs(query(collection(db, 'expenses'), ...constraints, ...dateRange)),
         getDocs(query(collection(db, 'purchases'), ...constraints, ...dateRange)),
         getDocs(query(collection(db, 'item_sales'), ...constraints, ...dateRange)),
         getDocs(query(collection(db, 'events'), ...constraints, ...dateRange)),
-        getDocs(query(collection(db, 'online_order_details'), ...constraints))
+        getDocs(query(collection(db, 'online_order_details'), ...constraints)),
+        getDocs(query(collection(db, 'crew_entries'), ...crewConstraints, ...dateRange))
       ]);
 
       const filterByPeriod = (r: any) => {
@@ -185,6 +195,10 @@ const DataCatalog: React.FC<{ user: User; dataOwnerId: string }> = ({ user, data
       const slicePurchases = pSnap.docs.map(d => d.data() as PurchaseRecord).filter(filterByPeriod);
       const sliceItems = iSnap.docs.map(d => d.data() as ItemSalesRecord).filter(filterByPeriod);
       const sliceEvents = evSnap.docs.map(d => d.data() as EventRecord).filter(filterByPeriod);
+      // Only 'paid' entries feed reporting — mirrors rebuildExpenseSnapshot in CrewTerminal
+      const sliceCrew = cSnap.docs
+        .map(d => d.data() as DailyCounterEntry)
+        .filter(r => filterByPeriod(r) && r.status === 'paid');
       const sliceOnline = oSnap.docs.map(d => d.data() as any).filter(r => {
         const dStr = r.orderDate || r.date;
         if (!dStr) return false;
@@ -203,6 +217,7 @@ const DataCatalog: React.FC<{ user: User; dataOwnerId: string }> = ({ user, data
         sliceItems.forEach(r => outletsFound.add(r.outletId || 'Unassigned'));
         sliceEvents.forEach(r => outletsFound.add(r.outletId || 'Unassigned'));
         sliceOnline.forEach(r => outletsFound.add(r.outletId || 'Unassigned'));
+        sliceCrew.forEach(r => outletsFound.add(r.outletId || 'Unassigned'));
       } else {
         outletsFound.add(outletId);
       }
@@ -226,6 +241,7 @@ const DataCatalog: React.FC<{ user: User; dataOwnerId: string }> = ({ user, data
         const outletItems = sliceItems.filter(i => (i.outletId || 'Unassigned') === oId);
         const outletEvents = sliceEvents.filter(e => (e.outletId || 'Unassigned') === oId);
         const outletOnline = sliceOnline.filter(o => (o.outletId || 'Unassigned') === oId);
+        const outletCrew = sliceCrew.filter(c => (c.outletId || 'Unassigned') === oId);
 
         const rental = rentals.find(r => r.outletId === oId);
         const tier = rental?.tier || 'TIER_1';
@@ -233,7 +249,7 @@ const DataCatalog: React.FC<{ user: User; dataOwnerId: string }> = ({ user, data
         // 1. Sales Snapshot
         if (outletSales.length > 0 || outletEvents.length > 0) {
           const agg: SalesMonthlySnapshot = {
-            userId: user.uid, outletId: oId, month, year,
+            userId: dataOwnerId, outletId: oId, month, year,
             posTotalGross: 0, posGoodGross: 0, posGoodNet: 0, posGoodTax: 0,
             onlineGoodGross: 0, onlineGoodNet: 0, onlineGoodTax: 0, onlineGoodComm: 0, onlineGoodAds: 0,
             onlineGoodGstOnComm: 0, onlineGoodTds: 0,
@@ -377,13 +393,13 @@ const DataCatalog: React.FC<{ user: User; dataOwnerId: string }> = ({ user, data
           });
 
           outletEvents.forEach(e => { agg.eventRevenue += (e.revenue || 0); });
-          batch.set(doc(db, 'sales_snapshots', `${user.uid}_${oId}_${year}_${month}`), agg);
+          batch.set(doc(db, 'sales_snapshots', `${dataOwnerId}_${oId}_${year}_${month}`), agg);
 
           // Save Customers
           for (const [cId, data] of Object.entries(customerAggs)) {
-            const cRef = doc(db, 'online_customers', `${user.uid}_${cId}`);
+            const cRef = doc(db, 'online_customers', `${dataOwnerId}_${cId}`);
             batch.set(cRef, {
-              userId: user.uid,
+              userId: dataOwnerId,
               customerId: cId,
               totalOrders: increment(data.totalOrders),
               totalSpent: increment(data.totalSpent),
@@ -395,12 +411,17 @@ const DataCatalog: React.FC<{ user: User; dataOwnerId: string }> = ({ user, data
           }
         }
 
-        // 2. Expense/Purchase Snapshot
-        if (outletExpenses.length > 0 || outletPurchases.length > 0) {
+        // 2. Expense/Purchase Snapshot — rebuilds the CSV half (total*/…ByCategory)
+        // AND the Crew Terminal half (crew*) so the full-document write below is safe.
+        if (outletExpenses.length > 0 || outletPurchases.length > 0 || outletCrew.length > 0) {
           const agg: ExpenseMonthlySnapshot = {
-            userId: user.uid, outletId: oId, month, year, totalExpense: 0, totalPurchase: 0,
+            userId: dataOwnerId, outletId: oId, month, year, totalExpense: 0, totalPurchase: 0,
             expenseByCategory: {}, purchaseByCategory: {},
             cogsBucketAgg: { 'FOOD': 0, 'DRINKS': 0, 'FOOD SERVINGS': 0, 'DRINKS SERVINGS': 0, 'UNCATEGORIZED': 0 },
+            crewTotalExpense: 0, crewTotalPurchase: 0,
+            crewExpenseByCategory: {}, crewPurchaseByCategory: {},
+            crewCogsBucketAgg: { 'FOOD': 0, 'DRINKS': 0, 'FOOD SERVINGS': 0, 'DRINKS SERVINGS': 0, 'UNCATEGORIZED': 0 },
+            crewLastUpdated: Date.now(),
             lastUpdated: Date.now()
           };
           outletExpenses.forEach(e => {
@@ -423,12 +444,28 @@ const DataCatalog: React.FC<{ user: User; dataOwnerId: string }> = ({ user, data
               agg.cogsBucketAgg[bucket] = (agg.cogsBucketAgg[bucket] || 0) + amt;
             }
           });
-          batch.set(doc(db, 'expense_snapshots', `${user.uid}_${oId}_${year}_${month}`), agg);
+          // Crew Terminal entries — aggregated into the crew_* namespace exactly as
+          // rebuildExpenseSnapshot (CrewTerminal.tsx) does, so both writers agree.
+          outletCrew.forEach(c => {
+            const amt = Number(c.amount || 0);
+            const cat = (c.category || 'UNCATEGORIZED').trim().toUpperCase();
+            if (c.type === 'purchase') {
+              agg.crewTotalPurchase! += amt;
+              agg.crewPurchaseByCategory![cat] = (agg.crewPurchaseByCategory![cat] || 0) + amt;
+            } else {
+              agg.crewTotalExpense! += amt;
+              agg.crewExpenseByCategory![cat] = (agg.crewExpenseByCategory![cat] || 0) + amt;
+            }
+            const bucket = cogsKeywords.includes(cat) ? (cogsBucketMapping[cat] || 'FOOD') : 'UNCATEGORIZED';
+            agg.crewCogsBucketAgg![bucket] = (agg.crewCogsBucketAgg![bucket] || 0) + amt;
+          });
+
+          batch.set(doc(db, 'expense_snapshots', `${dataOwnerId}_${oId}_${year}_${month}`), agg);
         }
 
         // 3. Item Snapshot
         if (outletItems.length > 0) {
-          const agg: ItemMonthlySnapshot = { userId: user.uid, outletId: oId, month, year, items: {}, combos: [], lastUpdated: Date.now() };
+          const agg: ItemMonthlySnapshot = { userId: dataOwnerId, outletId: oId, month, year, items: {}, combos: [], lastUpdated: Date.now() };
           
           // Order Tracking for Combos
           const orderGroups: Record<string, { items: Set<string>, revenue: number }> = {};
@@ -510,7 +547,7 @@ const DataCatalog: React.FC<{ user: User; dataOwnerId: string }> = ({ user, data
             .slice(0, 30)
             .map(c => ({ items: c.names, count: c.count, totalRevenue: c.totalRevenue }));
 
-          batch.set(doc(db, 'item_snapshots', `${user.uid}_${oId}_${year}_${month}`), agg);
+          batch.set(doc(db, 'item_snapshots', `${dataOwnerId}_${oId}_${year}_${month}`), agg);
         }
       }
 
