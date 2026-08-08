@@ -3,6 +3,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, orderBy, limit } from 'firebase/firestore';
 import { db } from '../firebase';
+import { expenseMapsOf, purchaseMapsOf, forEachCostRow, totalExpenseOf, totalPurchaseOf } from '../pnlService';
 import { getCachedCollection } from '../referenceCache';
 import {
   ExpenseRecord,
@@ -141,18 +142,19 @@ const Reports: React.FC<{ user: User }> = ({ user }) => {
     const onlineGross = sSnaps.reduce((acc, s) => acc + (s.onlineGoodGross || 0), 0);
     const onlineNet = sSnaps.reduce((acc, s) => acc + (s.onlineGoodNet || 0), 0);
 
-    // Expense Logic
-    const totalExp = eSnaps.reduce((acc, s) => acc + (s.totalExpense || 0), 0);
+    // Both CSV and Crew Terminal spend — the CSV-only reads here previously
+    // left crew-entered expenses and purchases out of every report total
+    const totalExp = eSnaps.reduce((acc, s) => acc + totalExpenseOf(s), 0);
     const expByCategory: Record<string, number> = {};
-    eSnaps.forEach(s => Object.entries((s.expenseByCategory || {}) as Record<string, number>).forEach(([cat, v]) => {
-      expByCategory[cat] = (expByCategory[cat] || 0) + (v || 0);
+    eSnaps.forEach(s => forEachCostRow(expenseMapsOf(s), (cat, v) => {
+      expByCategory[cat] = (expByCategory[cat] || 0) + v;
     }));
 
     // Purchase Logic
-    const totalPur = eSnaps.reduce((acc, s) => acc + (s.totalPurchase || 0), 0);
+    const totalPur = eSnaps.reduce((acc, s) => acc + totalPurchaseOf(s), 0);
     const purByCategory: Record<string, number> = {};
-    eSnaps.forEach(s => Object.entries((s.purchaseByCategory || {}) as Record<string, number>).forEach(([cat, v]) => {
-      purByCategory[cat] = (purByCategory[cat] || 0) + (v || 0);
+    eSnaps.forEach(s => forEachCostRow(purchaseMapsOf(s), (cat, v) => {
+      purByCategory[cat] = (purByCategory[cat] || 0) + v;
     }));
 
     return {

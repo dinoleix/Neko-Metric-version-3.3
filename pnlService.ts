@@ -1,5 +1,5 @@
 
-import { CogsAdjustment, CogsBucket } from './types';
+import { CogsAdjustment, CogsBucket, ExpenseMonthlySnapshot } from './types';
 
 /**
  * Single source of truth for turning stock records into consumption.
@@ -86,3 +86,79 @@ export const closingByBucket = (adjustments: CogsAdjustment[] = []): Record<Cogs
 };
 
 export { BUCKETS };
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * Cost rows
+ *
+ * expense_snapshots keeps CSV-uploaded spend and Crew Terminal spend in two
+ * separate namespaces so the sources can never double-count:
+ *
+ *   CSV   → expenseByCategory / purchaseByCategory / totalExpense / totalPurchase
+ *   Crew  → crewExpenseByCategory / crewPurchaseByCategory / crewTotal*
+ *
+ * A module that reads only the CSV half sees a business with no Crew Terminal.
+ * That is not hypothetical: five modules did exactly that, hiding six-figure
+ * monthly spend from Margin Intelligence, Partnership Forge and Reports.
+ *
+ * Always reach a snapshot's costs through these helpers so a new module cannot
+ * be written blind to half the data.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+type CostMap = Record<string, number> | undefined;
+
+/** Every category→amount map on a snapshot: CSV and crew, expense and purchase. */
+export const costMapsOf = (snap: ExpenseMonthlySnapshot): CostMap[] => [
+  snap?.expenseByCategory,
+  snap?.purchaseByCategory,
+  snap?.crewExpenseByCategory,
+  snap?.crewPurchaseByCategory,
+];
+
+/** Only the expense-side maps (CSV + crew). */
+export const expenseMapsOf = (snap: ExpenseMonthlySnapshot): CostMap[] =>
+  [snap?.expenseByCategory, snap?.crewExpenseByCategory];
+
+/** Only the purchase-side maps (CSV + crew). */
+export const purchaseMapsOf = (snap: ExpenseMonthlySnapshot): CostMap[] =>
+  [snap?.purchaseByCategory, snap?.crewPurchaseByCategory];
+
+/**
+ * Visits every (category, amount) pair across the given maps.
+ * Categories are trimmed and upper-cased, matching how keyword lists are held.
+ */
+export const forEachCostRow = (
+  maps: CostMap[],
+  cb: (category: string, amount: number) => void
+): void => {
+  maps.forEach(map => {
+    Object.entries(map || {}).forEach(([cat, amt]) => {
+      const value = Number(amt) || 0;
+      if (value === 0) return;
+      cb(cat.trim().toUpperCase(), value);
+    });
+  });
+};
+
+/** Total expense for a snapshot, both sources. */
+export const totalExpenseOf = (snap: ExpenseMonthlySnapshot): number =>
+  (snap?.totalExpense || 0) + (snap?.crewTotalExpense || 0);
+
+/** Total purchases for a snapshot, both sources. */
+export const totalPurchaseOf = (snap: ExpenseMonthlySnapshot): number =>
+  (snap?.totalPurchase || 0) + (snap?.crewTotalPurchase || 0);
+
+/**
+ * COGS buckets for a snapshot, merging the CSV and crew aggregates.
+ * Unknown bucket names fold into UNCATEGORIZED rather than being dropped.
+ */
+export const cogsBucketsOf = (snap: ExpenseMonthlySnapshot): Record<CogsBucket, number> => {
+  const out = emptyBuckets();
+  [snap?.cogsBucketAgg, snap?.crewCogsBucketAgg].forEach(map => {
+    Object.entries(map || {}).forEach(([bucket, amt]) => {
+      const value = Number(amt) || 0;
+      if (BUCKETS.includes(bucket as CogsBucket)) out[bucket as CogsBucket] += value;
+      else out['UNCATEGORIZED'] += value;
+    });
+  });
+  return out;
+};

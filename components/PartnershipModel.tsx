@@ -4,6 +4,7 @@ import autoTable from 'jspdf-autotable';
 import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase';
+import { costMapsOf, forEachCostRow } from '../pnlService';
 import { 
   SalesMonthlySnapshot, 
   ExpenseMonthlySnapshot,
@@ -166,19 +167,14 @@ const PartnershipModel: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
     let mappedLabourCost = 0;
     let totalOps = 0;
 
+    // costMapsOf covers CSV *and* Crew Terminal spend — reading only the CSV
+    // maps here previously understated every cost ratio in the model
     storeExpenses.forEach((e: ExpenseMonthlySnapshot) => {
-      const processMap = (map: Record<string, number> = {}) => {
-        Object.entries(map).forEach(([cat, amt]) => {
-          const val = Number(amt || 0);
-          if (val === 0) return;
-          const upper = cat.trim().toUpperCase();
-          if (cogsKeywords.includes(upper)) totalCogs += val;
-          else if (labourKeywords.includes(upper)) mappedLabourCost += val;
-          else totalOps += val;
-        });
-      };
-      processMap(e.expenseByCategory);
-      processMap(e.purchaseByCategory);
+      forEachCostRow(costMapsOf(e), (upper, val) => {
+        if (cogsKeywords.includes(upper)) totalCogs += val;
+        else if (labourKeywords.includes(upper)) mappedLabourCost += val;
+        else totalOps += val;
+      });
     });
 
     const storePayrolls = payrolls.filter(p => p.outletId === benchmarkStore && filterByLookback(p));

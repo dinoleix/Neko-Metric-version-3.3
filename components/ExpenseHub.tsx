@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase';
-import { computeConsumption, closingStockTotal, openingStockTotal } from '../pnlService';
+import { computeConsumption, closingStockTotal, openingStockTotal, expenseMapsOf, purchaseMapsOf, forEachCostRow } from '../pnlService';
 import { getCachedCollection } from '../referenceCache';
 import { 
   ExpenseMonthlySnapshot, 
@@ -366,18 +366,18 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
       let fixedRent = 0;
       let fixedLabour = 0;
       filteredSnaps.forEach(snap => {
-        const process = (src: Record<string, number>) => {
-           Object.entries(src).forEach(([cat, amt]) => {
-              const val = Number(amt || 0);
-              const upper = cat.trim().toUpperCase();
+        const process = (maps: (Record<string, number> | undefined)[]) => {
+           forEachCostRow(maps, (upper, val) => {
               if (cogsKeywords.includes(upper)) rawCogs += val;
               else if (labourKeywords.includes(upper)) csvLabour += val;
               else if (opsKeywords.includes(upper)) ops += val;
               else uncat += val;
            });
         };
-        if (viewMode === 'combined' || viewMode === 'purchase') process(snap.purchaseByCategory || {});
-        if (viewMode === 'combined' || viewMode === 'expense') process(snap.expenseByCategory || {});
+        // CSV *and* crew, matching the headline figures above — this trend read
+        // only the CSV maps, so the chart contradicted the tiles it sits under
+        if (viewMode === 'combined' || viewMode === 'purchase') process(purchaseMapsOf(snap));
+        if (viewMode === 'combined' || viewMode === 'expense') process(expenseMapsOf(snap));
       });
       const monthAdjustments = (viewMode === 'combined' || viewMode === 'purchase')
         ? adjustments.filter(a => currentFilterOutlets.includes(a.outletId) && a.month === month && a.year === year)

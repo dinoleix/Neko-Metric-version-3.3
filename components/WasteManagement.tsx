@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase';
-import { closingStockTotal, openingStockTotal } from '../pnlService';
+import { closingStockTotal, openingStockTotal, costMapsOf, forEachCostRow } from '../pnlService';
 import { getCachedCollection } from '../referenceCache';
 import { 
   ItemMonthlySnapshot, 
@@ -165,22 +165,16 @@ const WasteManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
     let rawMiscCogs = 0;
     let rawCogsTotal = 0;
 
+    // costMapsOf covers CSV *and* Crew Terminal spend
     filteredExpSnaps.forEach(snap => {
-      const process = (src: Record<string, number>) => {
-        Object.entries(src || {}).forEach(([cat, amt]) => {
-          const val = Number(amt || 0);
-          const upper = cat.trim().toUpperCase();
-          if (cogsKeywords.includes(upper)) {
-            rawCogsTotal += val;
-            const bucket = cogsBucketMapping[upper] || 'FOOD';
-            if (bucket === 'FOOD' || bucket === 'FOOD SERVINGS') rawFoodCogs += val;
-            else if (bucket === 'DRINKS' || bucket === 'DRINKS SERVINGS') rawDrinksCogs += val;
-            else rawMiscCogs += val;
-          }
-        });
-      };
-      process(snap.purchaseByCategory || {});
-      process(snap.expenseByCategory || {});
+      forEachCostRow(costMapsOf(snap), (upper, val) => {
+        if (!cogsKeywords.includes(upper)) return;
+        rawCogsTotal += val;
+        const bucket = cogsBucketMapping[upper] || 'FOOD';
+        if (bucket === 'FOOD' || bucket === 'FOOD SERVINGS') rawFoodCogs += val;
+        else if (bucket === 'DRINKS' || bucket === 'DRINKS SERVINGS') rawDrinksCogs += val;
+        else rawMiscCogs += val;
+      });
     });
 
     // Consumption = Opening + Purchases − Closing, apportioned across the three

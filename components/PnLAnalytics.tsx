@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase';
-import { computeConsumption, closingStockTotal } from '../pnlService';
+import { computeConsumption, closingStockTotal, costMapsOf, forEachCostRow } from '../pnlService';
 import { getCachedCollection } from '../referenceCache';
 import { 
   SalesMonthlySnapshot, 
@@ -238,18 +238,15 @@ const PnLAnalytics: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
     let rawLabour = 0;
     let rawOther = 0;
 
+    // costMapsOf covers CSV *and* Crew Terminal spend — reading only the CSV
+    // maps here previously hid all crew-entered costs from this report
     filteredExpenseSnaps.forEach(snap => {
-      const processMap = (map: Record<string, number>) => {
-        Object.entries(map || {}).forEach(([cat, amt]) => {
-          const upper = cat.trim().toUpperCase();
-          if (cogsKeywords.includes(upper)) rawCogs += amt;
-          else if (labourKeywords.includes(upper)) rawLabour += amt;
-          else if (opsKeywords.includes(upper)) rawOps += amt;
-          else rawOther += amt;
-        });
-      };
-      processMap(snap.expenseByCategory);
-      processMap(snap.purchaseByCategory);
+      forEachCostRow(costMapsOf(snap), (upper, amt) => {
+        if (cogsKeywords.includes(upper)) rawCogs += amt;
+        else if (labourKeywords.includes(upper)) rawLabour += amt;
+        else if (opsKeywords.includes(upper)) rawOps += amt;
+        else rawOther += amt;
+      });
     });
 
     // Consumption = Opening + Purchases − Closing (shared with PnLHub so the two

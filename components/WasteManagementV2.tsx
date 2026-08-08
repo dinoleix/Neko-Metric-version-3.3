@@ -5,7 +5,7 @@ import autoTable from 'jspdf-autotable';
 import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase';
-import { closingByBucket, openingByBucket } from '../pnlService';
+import { closingByBucket, openingByBucket, cogsBucketsOf } from '../pnlService';
 import { getCachedCollection } from '../referenceCache';
 import {
   ItemMonthlySnapshot,
@@ -316,16 +316,17 @@ const WasteManagementV2: React.FC<{ user: User; dataOwnerId: string }> = ({ user
 
     const staffDrilldown = Object.entries(staffItems).sort((a, b) => b[1].theoreticalCost - a[1].theoreticalCost);
     const actuals: Record<CogsBucket, number> = { 'FOOD': 0, 'DRINKS': 0, 'FOOD SERVINGS': 0, 'DRINKS SERVINGS': 0, 'UNCATEGORIZED': 0 };
+    // cogsBucketsOf merges cogsBucketAgg with crewCogsBucketAgg. The crew
+    // aggregate has been written by crewSnapshotService all along but was read
+    // by nothing, so crew-entered material never counted as actual consumption.
     filteredExpSnaps.forEach(snap => {
-      Object.entries(snap.cogsBucketAgg || {}).forEach(([bucket, amt]) => {
-        if (actuals.hasOwnProperty(bucket)) actuals[bucket as CogsBucket] += Number(amt || 0);
-        else actuals['UNCATEGORIZED'] += Number(amt || 0);
-      });
+      const buckets = cogsBucketsOf(snap);
+      (Object.keys(buckets) as CogsBucket[]).forEach(b => { actuals[b] += buckets[b]; });
     });
 
     // Consumption = Opening + Purchases − Closing, per bucket. Opening was
-    // previously omitted here, understating actual consumption and therefore
-    // overstating leakage against the theoretical figure.
+    // previously omitted, which understated actual consumption — and because
+    // leakage is 1 − theoretical/actual, a lower actual UNDERSTATES leakage.
     const closingBk = closingByBucket(filteredAdjustments);
     const openingBk = openingByBucket(filteredAdjustments);
     const totalFoodIngOffset = closingBk['FOOD'];
