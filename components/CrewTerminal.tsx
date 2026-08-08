@@ -268,6 +268,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
   const [showProductCatalog, setShowProductCatalog] = useState(false);
   const [productCatalogEnabled, setProductCatalogEnabled] = useState(false);
   const [trackedConsumables, setTrackedConsumables] = useState<TrackedConsumable[]>([]);
+  const [entriesLoadFailed, setEntriesLoadFailed] = useState(false);
   const [catalogProducts, setCatalogProducts] = useState<Product[]>([]);
   const [selectedProductId, setSelectedProductId] = useState('');
 
@@ -482,39 +483,54 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
       // Crew query their own entries by userId; admins query the whole business
       // by ownerId, plus their own legacy pre-ownerId entries by userId.
       // Needs the (userId, date) and (ownerId, date) composite indexes.
+      // Each leg is isolated. Sharing a Promise.all meant one failing query threw
+      // away the other's results, and the catch below then left the PREVIOUS
+      // fetch's rows on screen — stale data that looks like a filter result.
+      const runEntries = async (field: 'ownerId' | 'userId', value: string) => {
+        try {
+          const snap = await getDocs(query(
+            collection(db, 'crew_entries'),
+            where(field, '==', value),
+            where('date', '>=', start),
+            where('date', '<=', end)
+          ));
+          return { docs: snap.docs, failed: false };
+        } catch (err) {
+          console.warn(`[CrewTerminal] crew_entries ${field} query failed:`, err);
+          return { docs: [] as any[], failed: true };
+        }
+      };
+
       let docs: DailyCounterEntry[];
+      let allFailed = false;
       if (profile.role === 'admin') {
-        const [ownerSnap, userSnap] = await Promise.all([
-          getDocs(query(
-            collection(db, 'crew_entries'),
-            where('ownerId', '==', user.uid),
-            where('date', '>=', start),
-            where('date', '<=', end)
-          )),
-          getDocs(query(
-            collection(db, 'crew_entries'),
-            where('userId', '==', user.uid),
-            where('date', '>=', start),
-            where('date', '<=', end)
-          )),
+        // ownerId is the BUSINESS owner, not necessarily this admin. Querying
+        // user.uid here (the only place in this file that did) meant a delegated
+        // admin saw none of their crew's entries, while Crew Reports — which uses
+        // profile.ownerId — showed all of them.
+        const [byOwner, byUser] = await Promise.all([
+          runEntries('ownerId', ownerId),
+          runEntries('userId', user.uid),
         ]);
+        allFailed = byOwner.failed && byUser.failed;
         const seen = new Set<string>();
-        docs = [...ownerSnap.docs, ...userSnap.docs]
+        docs = [...byOwner.docs, ...byUser.docs]
           .filter(d => { if (seen.has(d.id)) return false; seen.add(d.id); return true; })
           .map(d => ({ id: d.id, ...d.data() } as DailyCounterEntry));
       } else {
-        const snap = await getDocs(query(
-          collection(db, 'crew_entries'),
-          where('userId', '==', user.uid),
-          where('date', '>=', start),
-          where('date', '<=', end)
-        ));
-        docs = snap.docs.map(d => ({ id: d.id, ...d.data() } as DailyCounterEntry));
+        const byUser = await runEntries('userId', user.uid);
+        allFailed = byUser.failed;
+        docs = byUser.docs.map(d => ({ id: d.id, ...d.data() } as DailyCounterEntry));
       }
 
+      setEntriesLoadFailed(allFailed);
       setEntries(docs.sort((a, b) => b.createdAt - a.createdAt));
     } catch (err) {
       console.error("Fetch entries error:", err);
+      // Never leave the previous period's rows on screen — an empty list with an
+      // error is honest; stale rows look like a real (wrong) answer.
+      setEntries([]);
+      setEntriesLoadFailed(true);
     } finally {
       setLoading(false);
     }
@@ -1666,6 +1682,19 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
               </div>
             )}
           </div>
+
+          {entriesLoadFailed && (
+            <div className="flex items-start gap-3 p-4 bg-rose-50 border border-rose-100 rounded-2xl">
+              <AlertCircle size={16} className="text-rose-600 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-xs font-bold text-rose-900">Couldn't load entries</p>
+                <p className="text-[11px] font-medium text-rose-800 mt-0.5">
+                  This list is empty because the read failed, not because there is nothing to show.
+                  Check the browser console for the Firestore error.
+                </p>
+              </div>
+            </div>
+          )}
 
           {/* Summary strip */}
           {!loading && filteredEntries.length > 0 && (
