@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase';
+import { closingStockTotal, openingStockTotal } from '../pnlService';
 import { getCachedCollection } from '../referenceCache';
 import { 
   ItemMonthlySnapshot, 
@@ -182,19 +183,23 @@ const WasteManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
       process(snap.expenseByCategory || {});
     });
 
-    const totalOffset = filteredAdjustments.reduce((acc, a) => acc + a.adjustmentAmount, 0);
-    
+    // Consumption = Opening + Purchases − Closing, apportioned across the three
+    // COGS groups by their share of purchases. Opening was previously omitted.
+    const totalOffset = closingStockTotal(filteredAdjustments);
+    const totalOpening = openingStockTotal(filteredAdjustments);
+
     let actualFoodPurchase = rawFoodCogs;
     let actualDrinksPurchase = rawDrinksCogs;
     let actualMiscCogs = rawMiscCogs;
 
-    if (totalOffset > 0 && rawCogsTotal > 0) {
+    const netStock = totalOffset - totalOpening;
+    if (netStock !== 0 && rawCogsTotal > 0) {
       const foodRatio = rawFoodCogs / rawCogsTotal;
       const drinkRatio = rawDrinksCogs / rawCogsTotal;
       const miscRatio = rawMiscCogs / rawCogsTotal;
-      actualFoodPurchase -= (totalOffset * foodRatio);
-      actualDrinksPurchase -= (totalOffset * drinkRatio);
-      actualMiscCogs -= (totalOffset * miscRatio);
+      actualFoodPurchase -= (netStock * foodRatio);
+      actualDrinksPurchase -= (netStock * drinkRatio);
+      actualMiscCogs -= (netStock * miscRatio);
     }
 
     const foodVariance = Math.max(0, actualFoodPurchase - theoreticalFoodSpend);

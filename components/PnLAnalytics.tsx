@@ -3,6 +3,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase';
+import { computeConsumption, closingStockTotal } from '../pnlService';
 import { getCachedCollection } from '../referenceCache';
 import { 
   SalesMonthlySnapshot, 
@@ -251,8 +252,10 @@ const PnLAnalytics: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
       processMap(snap.purchaseByCategory);
     });
 
-    const cogsAdj = filteredAdjustments.reduce((acc, a) => acc + a.adjustmentAmount, 0);
-    const coGS = Math.max(0, rawCogs - cogsAdj);
+    // Consumption = Opening + Purchases − Closing (shared with PnLHub so the two
+    // screens can no longer report different COGS for the same month)
+    const cogsAdj = closingStockTotal(filteredAdjustments);
+    const coGS = computeConsumption(rawCogs, filteredAdjustments);
     const grossProfit = goodRev - posTax - platformLeakage - coGS;
     const grossMargin = goodRev > 0 ? (grossProfit / goodRev) * 100 : 0;
     const totalOpEx = rawLabour + rawOps + rawOther;

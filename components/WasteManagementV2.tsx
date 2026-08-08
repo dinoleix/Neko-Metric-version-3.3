@@ -5,6 +5,7 @@ import autoTable from 'jspdf-autotable';
 import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase';
+import { closingByBucket, openingByBucket } from '../pnlService';
 import { getCachedCollection } from '../referenceCache';
 import {
   ItemMonthlySnapshot,
@@ -322,15 +323,20 @@ const WasteManagementV2: React.FC<{ user: User; dataOwnerId: string }> = ({ user
       });
     });
 
-    const totalFoodIngOffset = filteredAdjustments.reduce((acc, a) => acc + (a.foodIngredientsAdjustment || 0), 0);
-    const totalDrinkIngOffset = filteredAdjustments.reduce((acc, a) => acc + (a.drinkIngredientsAdjustment || 0), 0);
-    const totalFoodPackOffset = filteredAdjustments.reduce((acc, a) => acc + (a.foodServingsAdjustment || 0), 0);
-    const totalDrinkPackOffset = filteredAdjustments.reduce((acc, a) => acc + (a.drinkServingsAdjustment || 0), 0);
+    // Consumption = Opening + Purchases − Closing, per bucket. Opening was
+    // previously omitted here, understating actual consumption and therefore
+    // overstating leakage against the theoretical figure.
+    const closingBk = closingByBucket(filteredAdjustments);
+    const openingBk = openingByBucket(filteredAdjustments);
+    const totalFoodIngOffset = closingBk['FOOD'];
+    const totalDrinkIngOffset = closingBk['DRINKS'];
+    const totalFoodPackOffset = closingBk['FOOD SERVINGS'];
+    const totalDrinkPackOffset = closingBk['DRINKS SERVINGS'];
 
-    actuals['FOOD'] = Math.max(0, actuals['FOOD'] - totalFoodIngOffset);
-    actuals['DRINKS'] = Math.max(0, actuals['DRINKS'] - totalDrinkIngOffset);
-    actuals['FOOD SERVINGS'] = Math.max(0, actuals['FOOD SERVINGS'] - totalFoodPackOffset);
-    actuals['DRINKS SERVINGS'] = Math.max(0, actuals['DRINKS SERVINGS'] - totalDrinkPackOffset);
+    actuals['FOOD'] = Math.max(0, actuals['FOOD'] + openingBk['FOOD'] - totalFoodIngOffset);
+    actuals['DRINKS'] = Math.max(0, actuals['DRINKS'] + openingBk['DRINKS'] - totalDrinkIngOffset);
+    actuals['FOOD SERVINGS'] = Math.max(0, actuals['FOOD SERVINGS'] + openingBk['FOOD SERVINGS'] - totalFoodPackOffset);
+    actuals['DRINKS SERVINGS'] = Math.max(0, actuals['DRINKS SERVINGS'] + openingBk['DRINKS SERVINGS'] - totalDrinkPackOffset);
 
     const totalRevenue = Object.values(itemAnalysis).reduce((acc, i) => acc + i.revenue, 0);
     const totalUniqueProducts = Object.keys(itemAnalysis).length;

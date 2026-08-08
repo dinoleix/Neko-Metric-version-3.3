@@ -3,6 +3,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase';
+import { computeConsumption, closingStockTotal } from '../pnlService';
 import { 
   SalesMonthlySnapshot, 
   ExpenseMonthlySnapshot, 
@@ -109,8 +110,9 @@ const ExecDashboard: React.FC<{ user: User; dataOwnerId: string }> = ({ user, da
     const cashInflow = currentSales.reduce((acc, s) => acc + (s.posGoodNet || 0) + (s.onlineGoodNet || 0) + (s.eventRevenue || 0), 0);
 
     const totalPurchases = currentExpenses.reduce((acc, s) => acc + (s.totalPurchase || 0) + (s.crewTotalPurchase || 0), 0);
-    const stockOffset = currentAdjustments.reduce((acc, a) => acc + (a.adjustmentAmount || 0), 0);
-    const netMaterialConsumption = Math.max(0, totalPurchases - stockOffset);
+    // Consumption = Opening + Purchases − Closing (shared with PnLHub)
+    const stockOffset = closingStockTotal(currentAdjustments);
+    const netMaterialConsumption = computeConsumption(totalPurchases, currentAdjustments);
 
     // BUG-03 fix: separate labour-classified rows from general opex so they don't stack on top of totalFixedPayroll
     let csvLabourFromExpenses = 0;
@@ -172,10 +174,10 @@ const ExecDashboard: React.FC<{ user: User; dataOwnerId: string }> = ({ user, da
         });
         const oOpEx = oExp.reduce((acc, s) => acc + (s.totalExpense || 0) + (s.crewTotalExpense || 0), 0) - oCSVLabour;
         const oPurch = oExp.reduce((acc, s) => acc + (s.totalPurchase || 0) + (s.crewTotalPurchase || 0), 0);
-        const oOffset = oAdj.reduce((acc, a) => acc + (a.adjustmentAmount || 0), 0);
+        const oOffset = closingStockTotal(oAdj);
         const oStaff = oPay != null ? oPay.totalAmount : employees.filter(e => e.outletId === o.id).reduce((sum, e) => sum + (e.currentSalary || 0), 0);
 
-        const oBurden = oOpEx + Math.max(0, oPurch - oOffset) + oRent + oStaff;
+        const oBurden = oOpEx + computeConsumption(oPurch, oAdj) + oRent + oStaff;
         const profit = oInflow - oBurden;
         const margin = gross > 0 ? (profit / gross) * 100 : 0;
 

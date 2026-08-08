@@ -4,6 +4,7 @@ import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, doc, getDoc, setDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import { getCachedCollection } from '../referenceCache';
+import { computeConsumption, closingStockTotal, openingStockTotal, openingByBucket, closingByBucket, hasImpossibleStock } from '../pnlService';
 import { 
   SalesMonthlySnapshot, 
   ExpenseMonthlySnapshot, 
@@ -356,30 +357,28 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
       processMap(snap.crewPurchaseByCategory || {});
     });
 
-    // Fallback: if adjustmentAmount missing (legacy records), compute from sub-buckets
-    const getAdjTotal = (a: CogsAdjustment) =>
-      a.adjustmentAmount != null
-        ? a.adjustmentAmount
-        : (a.foodIngredientsAdjustment || 0) + (a.drinkIngredientsAdjustment || 0) + (a.foodServingsAdjustment || 0) + (a.drinkServingsAdjustment || 0);
-
-    const cogsAdj = adjustments.filter(a => currentFilterOutlets.includes(a.outletId)).reduce((acc, a) => acc + getAdjTotal(a), 0);
-    const foodIngredientsAdj = adjustments.filter(a => currentFilterOutlets.includes(a.outletId)).reduce((acc, a) => acc + (a.foodIngredientsAdjustment || 0), 0);
-    const drinkIngredientsAdj = adjustments.filter(a => currentFilterOutlets.includes(a.outletId)).reduce((acc, a) => acc + (a.drinkIngredientsAdjustment || 0), 0);
-    const foodServingsAdj = adjustments.filter(a => currentFilterOutlets.includes(a.outletId)).reduce((acc, a) => acc + (a.foodServingsAdjustment || 0), 0);
-    const drinkServingsAdj = adjustments.filter(a => currentFilterOutlets.includes(a.outletId)).reduce((acc, a) => acc + (a.drinkServingsAdjustment || 0), 0);
+    const scopedAdjustments = adjustments.filter(a => currentFilterOutlets.includes(a.outletId));
+    const cogsAdj = closingStockTotal(scopedAdjustments);
+    const closing = closingByBucket(scopedAdjustments);
+    const foodIngredientsAdj = closing['FOOD'];
+    const drinkIngredientsAdj = closing['DRINKS'];
+    const foodServingsAdj = closing['FOOD SERVINGS'];
+    const drinkServingsAdj = closing['DRINKS SERVINGS'];
 
     // Opening stock carried over from prior month's closing (all four buckets).
     // Defaults to 0, so months without an opening value behave identically to before.
-    const foodIngredientsOpening = adjustments.filter(a => currentFilterOutlets.includes(a.outletId)).reduce((acc, a) => acc + (a.foodIngredientsOpening || 0), 0);
-    const drinkIngredientsOpening = adjustments.filter(a => currentFilterOutlets.includes(a.outletId)).reduce((acc, a) => acc + (a.drinkIngredientsOpening || 0), 0);
-    const foodServingsOpening = adjustments.filter(a => currentFilterOutlets.includes(a.outletId)).reduce((acc, a) => acc + (a.foodServingsOpening || 0), 0);
-    const drinkServingsOpening = adjustments.filter(a => currentFilterOutlets.includes(a.outletId)).reduce((acc, a) => acc + (a.drinkServingsOpening || 0), 0);
+    const opening = openingByBucket(scopedAdjustments);
+    const foodIngredientsOpening = opening['FOOD'];
+    const drinkIngredientsOpening = opening['DRINKS'];
+    const foodServingsOpening = opening['FOOD SERVINGS'];
+    const drinkServingsOpening = opening['DRINKS SERVINGS'];
     const openingIngredients = foodIngredientsOpening + drinkIngredientsOpening;
     const openingServings = foodServingsOpening + drinkServingsOpening;
-    const openingStock = openingIngredients + openingServings;
+    const openingStock = openingStockTotal(scopedAdjustments);
 
     // Consumption = Opening + Purchases − Closing
-    const adjustedCOGS = Math.max(0, rawCogs + openingStock - cogsAdj);
+    const adjustedCOGS = computeConsumption(rawCogs, scopedAdjustments);
+    const stockDataSuspect = hasImpossibleStock(rawCogs, scopedAdjustments);
 
     // 3. FIXED BURDEN
     let fixedPayroll = 0;
@@ -432,7 +431,7 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
       openingIngredients, foodIngredientsOpening, drinkIngredientsOpening,
       openingServings, foodServingsOpening, drinkServingsOpening, openingStock,
       mappedOps, csvVariableLabour, fixedPayroll, totalPayroll, totalRent, unmappedExp, operatingBurn,
-      netProfit, payrollValidated, isMonthFullyLocked,
+      netProfit, payrollValidated, isMonthFullyLocked, stockDataSuspect,
       margins: {
         contributionPercent: (contributionMargin / denominator) * 100,
         netProfitMargin: (netProfit / denominator) * 100,
@@ -480,15 +479,12 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
             process(snap.crewExpenseByCategory || {}); process(snap.crewPurchaseByCategory || {});
           });
 
-          // BUG-01 fix: fall back to summing sub-buckets if adjustmentAmount is absent (legacy records)
-          const adjTotal = oAdj
-            ? (oAdj.adjustmentAmount != null
-                ? oAdj.adjustmentAmount
-                : (oAdj.foodIngredientsAdjustment || 0) + (oAdj.drinkIngredientsAdjustment || 0) + (oAdj.foodServingsAdjustment || 0) + (oAdj.drinkServingsAdjustment || 0))
-            : 0;
-          // Opening stock carried into this month adds to consumption: Opening + Purchases − Closing
-          const openingTotal = oAdj ? (oAdj.foodIngredientsOpening || 0) + (oAdj.drinkIngredientsOpening || 0) + (oAdj.foodServingsOpening || 0) + (oAdj.drinkServingsOpening || 0) : 0;
-          const c = Math.max(0, rawC + openingTotal - adjTotal);
+          // Consumption = Opening + Purchases − Closing, via the shared service
+          // (which also handles legacy records lacking adjustmentAmount)
+          const oAdjList = oAdj ? [oAdj] : [];
+          const adjTotal = closingStockTotal(oAdjList);
+          const openingTotal = openingStockTotal(oAdjList);
+          const c = computeConsumption(rawC, oAdjList);
           const rent = oRent?.currentRent || 0;
           // BUG-02 fix: use ?? not || so a payroll record with totalAmount=0 is respected; also guard e.currentSalary
           const labour = rawL + (oPay != null ? oPay.totalAmount : employees.filter(e => e.outletId === oId).reduce((s, e) => s + (e.currentSalary || 0), 0));

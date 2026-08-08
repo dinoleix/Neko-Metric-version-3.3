@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase';
+import { computeConsumption, closingStockTotal, openingStockTotal } from '../pnlService';
 import { getCachedCollection } from '../referenceCache';
 import { 
   ExpenseMonthlySnapshot, 
@@ -292,12 +293,18 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
     }
 
     const relevantMonthsForAdj = selectedMonth === 'All Months' ? MONTH_NAMES : [selectedMonth];
-    const totalCogsOffset = (viewMode === 'combined' || viewMode === 'purchase') ? adjustments.filter(a => {
-        const matchesStore = currentFilterOutlets.includes(a.outletId);
-        const matchesPeriod = relevantMonthsForAdj.includes(a.month) && a.year === selectedYear;
-        return matchesStore && matchesPeriod;
-    }).reduce((acc, a) => acc + (a.adjustmentAmount || 0), 0) : 0;
-
+    const scopedAdjustments = (viewMode === 'combined' || viewMode === 'purchase')
+      ? adjustments.filter(a => {
+          const matchesStore = currentFilterOutlets.includes(a.outletId);
+          const matchesPeriod = relevantMonthsForAdj.includes(a.month) && a.year === selectedYear;
+          return matchesStore && matchesPeriod;
+        })
+      : [];
+    // NET stock movement (closing − opening), not closing alone. Subtracting this
+    // from purchases gives Opening + Purchases − Closing, and because every bucket
+    // breakdown below apportions this same figure, they stay consistent with the
+    // total for free. A negative value (stock drawn down) correctly increases COGS.
+    const totalCogsOffset = closingStockTotal(scopedAdjustments) - openingStockTotal(scopedAdjustments);
     const adjustedCogsTotal = Math.max(0, csvCogs - totalCogsOffset);
     const totalLabour = csvLabour + fixedBaseSalary;
 
@@ -372,9 +379,9 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
         if (viewMode === 'combined' || viewMode === 'purchase') process(snap.purchaseByCategory || {});
         if (viewMode === 'combined' || viewMode === 'expense') process(snap.expenseByCategory || {});
       });
-      const monthOffset = (viewMode === 'combined' || viewMode === 'purchase') ? adjustments.filter(a => {
-          return currentFilterOutlets.includes(a.outletId) && a.month === month && a.year === year;
-      }).reduce((acc, a) => acc + (a.adjustmentAmount || 0), 0) : 0;
+      const monthAdjustments = (viewMode === 'combined' || viewMode === 'purchase')
+        ? adjustments.filter(a => currentFilterOutlets.includes(a.outletId) && a.month === month && a.year === year)
+        : [];
       if (viewMode === 'combined' || viewMode === 'purchase') {
         const periodStart = new Date(y, mIdx, 1);
         const periodEnd = new Date(y, mIdx + 1, 0);
@@ -392,7 +399,8 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
           else if (multiplier > 0) fixedLabour += employees.filter(e => e.outletId === oId).reduce((acc, e) => acc + (e.currentSalary || 0), 0) * multiplier;
         });
       }
-      const totalCogs = Math.max(0, rawCogs - monthOffset);
+      // Consumption = Opening + Purchases − Closing, same as the headline figure
+      const totalCogs = computeConsumption(rawCogs, monthAdjustments);
       const totalLabour = csvLabour + fixedLabour;
       results.push({ label: month.substring(0, 3), month, year, COGS: totalCogs, OPERATIONS: ops, LABOUR: totalLabour, 'FIXED (RENT)': fixedRent, UNCATEGORIZED: uncat, total: totalCogs + ops + totalLabour + fixedRent + uncat });
     }
