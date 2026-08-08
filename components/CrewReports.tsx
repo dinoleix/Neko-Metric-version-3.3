@@ -45,7 +45,7 @@ import {
 } from 'lucide-react';
 
 type ReportTab = 'sales' | 'entries' | 'transfers' | 'waste' | 'catalog';
-type DatePreset = 'today' | 'yesterday' | 'this-week' | 'last-week' | 'this-month' | 'custom';
+type DatePreset = 'today' | 'yesterday' | 'this-week' | 'last-week' | 'this-month' | 'last-month' | 'custom';
 
 interface BankTxn {
   id?: string;
@@ -148,6 +148,16 @@ const rangeForPreset = (preset: DatePreset, customStart: string, customEnd: stri
     }
     case 'this-month':
       return [today.slice(0, 8) + '01', today];
+    case 'last-month': {
+      // Whole previous calendar month. Day 0 of the following month gives its
+      // last day (UTC-safe, so leap years and year rollover both hold).
+      const [y, m] = today.split('-').map(Number);
+      const lastY = m === 1 ? y - 1 : y;
+      const lastM = m === 1 ? 12 : m - 1;
+      const mm = String(lastM).padStart(2, '0');
+      const lastDay = new Date(Date.UTC(lastY, lastM, 0)).getUTCDate();
+      return [`${lastY}-${mm}-01`, `${lastY}-${mm}-${String(lastDay).padStart(2, '0')}`];
+    }
     case 'custom':
       return [customStart, customEnd];
     default:
@@ -682,7 +692,7 @@ const CrewReports: React.FC<{ user: User; profile: UserProfile; onBack?: () => v
       {activeTab !== 'catalog' && (
         <div className="bg-white rounded-2xl ring-1 ring-slate-100 shadow-sm p-4 space-y-3.5">
           <div className="flex gap-2 overflow-x-auto no-scrollbar pb-0.5">
-            {(['today', 'yesterday', 'this-week', 'last-week', 'this-month', 'custom'] as DatePreset[]).map(p => (
+            {(['today', 'yesterday', 'this-week', 'last-week', 'this-month', 'last-month', 'custom'] as DatePreset[]).map(p => (
               <button
                 key={p}
                 onClick={() => setDatePreset(p)}
