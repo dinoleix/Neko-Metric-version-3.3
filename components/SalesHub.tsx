@@ -62,6 +62,7 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
   const [snapshots, setSnapshots] = useState<SalesMonthlySnapshot[]>([]);
   const [rentals, setRentals] = useState<StoreRental[]>([]);
   const [dailySalesLogs, setDailySalesLogs] = useState<DailySalesLog[]>([]);
+  const [reconLoadFailed, setReconLoadFailed] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [reconMonth, setReconMonth] = useState(MONTH_NAMES[new Date().getMonth()]);
@@ -98,26 +99,36 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
   // Bounded read: daily_sales_logs is only consumed by the reconciliation view (single
   // reconMonth/reconYear), so fetch just that month instead of the whole collection.
   const fetchReconLogs = async () => {
-    try {
-      const monthIdx = MONTH_NAMES.indexOf(reconMonth);
-      const start = `${reconYear}-${String(monthIdx + 1).padStart(2, '0')}-01`;
-      const end = `${reconYear}-${String(monthIdx + 1).padStart(2, '0')}-31`;
-      // Query by ownerId and userId separately — permissions may vary until rules are deployed
-      const logsByOwner = query(collection(db, 'daily_sales_logs'),
-        where('ownerId', '==', dataOwnerId), where('date', '>=', start), where('date', '<=', end));
-      const logsByUser = query(collection(db, 'daily_sales_logs'),
-        where('userId', '==', dataOwnerId), where('date', '>=', start), where('date', '<=', end));
-      const [ownerSnap, userSnap] = await Promise.all([getDocs(logsByOwner), getDocs(logsByUser)]);
-      const seenIds = new Set<string>();
-      const allLogs: DailySalesLog[] = [];
-      [...ownerSnap.docs, ...userSnap.docs].forEach(d => {
-        if (!seenIds.has(d.id)) { seenIds.add(d.id); allLogs.push({ id: d.id, ...d.data() } as DailySalesLog); }
-      });
-      setDailySalesLogs(allLogs);
-    } catch {
-      // daily_sales_logs may be inaccessible until updated Firestore rules are deployed
-      setDailySalesLogs([]);
-    }
+    const monthIdx = MONTH_NAMES.indexOf(reconMonth);
+    const start = `${reconYear}-${String(monthIdx + 1).padStart(2, '0')}-01`;
+    const end = `${reconYear}-${String(monthIdx + 1).padStart(2, '0')}-31`;
+
+    // Two legs: ownerId covers crew-written logs, userId covers legacy logs the
+    // admin wrote themselves. Each is isolated — a Promise.all here meant one
+    // leg failing (e.g. a missing composite index) discarded the OTHER leg's
+    // results too, and the blanket catch then rendered a confident "0 days
+    // logged" that was indistinguishable from genuinely having no data.
+    const run = async (field: 'ownerId' | 'userId') => {
+      try {
+        const snap = await getDocs(query(collection(db, 'daily_sales_logs'),
+          where(field, '==', dataOwnerId), where('date', '>=', start), where('date', '<=', end)));
+        return { docs: snap.docs, failed: false };
+      } catch (err) {
+        console.warn(`[SalesHub] daily_sales_logs ${field} query failed:`, err);
+        return { docs: [], failed: true };
+      }
+    };
+
+    const [byOwner, byUser] = await Promise.all([run('ownerId'), run('userId')]);
+
+    const seenIds = new Set<string>();
+    const allLogs: DailySalesLog[] = [];
+    [...byOwner.docs, ...byUser.docs].forEach(d => {
+      if (!seenIds.has(d.id)) { seenIds.add(d.id); allLogs.push({ id: d.id, ...d.data() } as DailySalesLog); }
+    });
+    setDailySalesLogs(allLogs);
+    // Only a total failure is worth reporting: if one leg succeeded the data is complete enough
+    setReconLoadFailed(byOwner.failed && byUser.failed);
   };
 
   useEffect(() => { fetchData(); }, [user]);
@@ -684,6 +695,19 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
                   </div>
                   <span className="text-[9px] font-bold text-slate-400 uppercase">Outlet filter applies from above</span>
                 </div>
+
+                {reconLoadFailed && (
+                  <div className="flex items-start gap-3 p-5 bg-rose-50 border border-rose-100 rounded-2xl">
+                    <AlertTriangle size={18} className="text-rose-600 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-sm font-black text-rose-900 uppercase tracking-tight">Couldn't load crew sales</p>
+                      <p className="text-xs font-medium text-rose-800 mt-1">
+                        The crew figures below are <strong>not</strong> zero — they failed to load, so this comparison is meaningless
+                        until it succeeds. Check the browser console for the Firestore error (usually a missing index or a rules change).
+                      </p>
+                    </div>
+                  </div>
+                )}
 
                 {/* Summary cards */}
                 <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
