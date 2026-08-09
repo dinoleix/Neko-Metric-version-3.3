@@ -134,6 +134,10 @@ const App: React.FC = () => {
             // If user is crew, set them to terminal immediately
             if (profile.role === 'crew') {
               setActiveTab('crew-terminal');
+            } else if (profile.role !== 'admin') {
+              // The CEO Dashboard is admin-only (group net profit, per-outlet
+              // margins), so viewers land on Sales Hub instead of an empty tab
+              setActiveTab('sales');
             }
           } else {
             // Profile missing from database, auto-create a default record
@@ -145,10 +149,12 @@ const App: React.FC = () => {
             };
             await setDoc(doc(db, 'users', u.uid), newProfile);
             setUserProfile(newProfile);
+            setActiveTab('sales'); // default viewer — CEO Dashboard is admin-only
           }
         } catch (err) {
           console.error("Error fetching user profile:", err);
           setUserProfile({ uid: u.uid, email: u.email || '', role: 'viewer', createdAt: Date.now() });
+          setActiveTab('sales'); // default viewer — CEO Dashboard is admin-only
         }
       } else {
         setUser(null);
@@ -335,7 +341,7 @@ const App: React.FC = () => {
           <div className="pb-2 px-4">
             <p className="text-[10px] font-black uppercase tracking-widest text-slate-600">Executive</p>
           </div>
-          <NavItem tab="exec-dashboard" icon={<Crown size={18} />} label="CEO Dashboard" />
+          {isAdmin && <NavItem tab="exec-dashboard" icon={<Crown size={18} />} label="CEO Dashboard" />}
 
           <div className="pt-4 pb-2 px-4">
             <p className="text-[10px] font-black uppercase tracking-widest text-slate-600">Intelligence</p>
@@ -408,7 +414,7 @@ const App: React.FC = () => {
 
       <main className="flex-1 overflow-y-auto">
         <div className="max-w-7xl mx-auto p-6 md:p-10">
-          {isReadOnly && activeTab !== 'exec-dashboard' && activeTab !== 'sales' && activeTab !== 'expenses' && activeTab !== 'items' && activeTab !== 'waste' && activeTab !== 'waste-v2' && activeTab !== 'pnl' && activeTab !== 'pnl-insights' && activeTab !== 'partnership' && (
+          {isReadOnly && activeTab !== 'sales' && activeTab !== 'expenses' && activeTab !== 'items' && activeTab !== 'waste' && activeTab !== 'waste-v2' && activeTab !== 'pnl' && activeTab !== 'pnl-insights' && activeTab !== 'partnership' && (
             <div className="bg-emerald-50 border border-emerald-100 p-4 rounded-xl flex items-center gap-3 mb-8">
                <Eye className="text-emerald-600" size={18} />
                <p className="text-emerald-800 text-xs font-bold uppercase tracking-widest">You are in Executive Read-Only mode</p>
@@ -416,7 +422,7 @@ const App: React.FC = () => {
           )}
 
           <Suspense fallback={<TabLoader />}>
-          {activeTab === 'exec-dashboard' && <ExecDashboard user={user} dataOwnerId={dataOwnerId} />}
+          {activeTab === 'exec-dashboard' && isAdmin && <ExecDashboard user={user} dataOwnerId={dataOwnerId} />}
           {activeTab === 'dashboard' && !isReadOnly && <Dashboard user={user} dataOwnerId={dataOwnerId} />}
           {activeTab === 'sales' && <SalesHub user={user} dataOwnerId={dataOwnerId} />}
           {activeTab === 'online-profit' && <OnlineProfitCenter user={user} dataOwnerId={dataOwnerId} />}

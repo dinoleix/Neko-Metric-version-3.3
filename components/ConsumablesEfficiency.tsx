@@ -18,8 +18,9 @@ import {
   CartesianGrid, XAxis, YAxis, Tooltip as ChartTooltip, Legend, ReferenceLine,
 } from 'recharts';
 import {
-  Flame, Loader2, AlertTriangle, CheckCircle2, Info, TrendingUp, TrendingDown, Minus, Settings2,
+  Flame, Loader2, AlertTriangle, CheckCircle2, Info, Settings2,
 } from 'lucide-react';
+import { num, inrCompact, Tile, DeltaChip } from '../reportKit';
 
 /**
  * Tracks consumption of a physical consumable (gas cylinders, oil, packaging)
@@ -73,38 +74,12 @@ interface MonthRow {
   rollSales: number | null;
 }
 
-const num = (n: number, d = 2) => n.toLocaleString('en-IN', { maximumFractionDigits: d });
-const inrCompact = (n: number) =>
-  n >= 100000 ? `₹${(n / 100000).toFixed(1)}L` : n >= 1000 ? `₹${(n / 1000).toFixed(0)}k` : `₹${Math.round(n)}`;
-
 const median = (values: number[]): number | null => {
   if (values.length === 0) return null;
   const s = [...values].sort((a, b) => a - b);
   const mid = Math.floor(s.length / 2);
   return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 };
-
-/** Like CrewReports' TrendChip, but consumption ratios invert: up is bad. */
-const DeltaChip = ({ pct }: { pct: number | null }) => {
-  if (pct === null) return null;
-  const flat = Math.abs(pct) < 3;
-  const Dir = flat ? Minus : pct > 0 ? TrendingUp : TrendingDown;
-  const tone = flat ? 'text-slate-400' : pct > 0 ? 'text-rose-600' : 'text-emerald-600';
-  return (
-    <span className="inline-flex items-center gap-1 px-2 py-1 bg-slate-50 border border-slate-100 rounded-lg text-[10px] font-semibold text-slate-600">
-      vs baseline <Dir size={11} className={tone} />
-      <span className={tone}>{flat ? 'flat' : `${pct > 0 ? '+' : ''}${pct.toFixed(0)}%`}</span>
-    </span>
-  );
-};
-
-const Tile = ({ label, value, sub, tone = 'text-slate-900' }: { label: string; value: string; sub?: string; tone?: string }) => (
-  <div className="bg-white ring-1 ring-slate-100 shadow-sm rounded-2xl px-5 py-4">
-    <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-widest mb-1.5">{label}</p>
-    <p className={`text-2xl font-black tracking-tighter ${tone}`}>{value}</p>
-    {sub && <p className="text-[10px] font-medium text-slate-400 mt-1">{sub}</p>}
-  </div>
-);
 
 const ConsumablesEfficiency: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
   const now = new Date();
@@ -400,7 +375,8 @@ const ConsumablesEfficiency: React.FC<{ user: User; dataOwnerId: string }> = ({ 
               </p>
             </div>
           </div>
-          <DeltaChip pct={deviationPct} />
+          {/* Consumption ratios invert: using MORE per dish is bad */}
+          <DeltaChip pct={deviationPct} polarity="higher-is-bad" label="vs baseline" />
         </div>
       )}
 
