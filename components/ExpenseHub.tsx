@@ -9,7 +9,6 @@ import {
   StoreRental, 
   Employee, 
   MonthlyPayroll, 
-  BankTransaction,
   CogsAdjustment, 
   DEFAULT_COGS, 
   DEFAULT_LABOUR, 
@@ -80,7 +79,6 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [monthlyPayrolls, setMonthlyPayrolls] = useState<MonthlyPayroll[]>([]);
   const [adjustments, setAdjustments] = useState<CogsAdjustment[]>([]);
-  const [bankTxns, setBankTxns] = useState<BankTransaction[]>([]);
   const [loading, setLoading] = useState(false);
   
   const [cogsKeywords, setCogsKeywords] = useState<string[]>(DEFAULT_COGS);
@@ -112,15 +110,13 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
       // Fetch data for selected year and the one before it to support cross-year trajectory analysis
       const yearRange = [yearInt.toString(), (yearInt - 1).toString()];
       const settingsRef = doc(db, 'category_settings', dataOwnerId);
-      const [snapSnap, rentArr, empArr, payArr, adjSnap, bankSnap, setSnap] = await Promise.all([
+      const [snapSnap, rentArr, empArr, payArr, adjSnap, setSnap] = await Promise.all([
         getDocs(query(collection(db, 'expense_snapshots'), where('userId', '==', dataOwnerId), where('year', 'in', yearRange))),
         getCachedCollection<StoreRental>('rentals', dataOwnerId),
         getCachedCollection<Employee>('employees', dataOwnerId),
         getCachedCollection<MonthlyPayroll>('monthly_payrolls', dataOwnerId),
-        // Bounded reads: cogs_adjustments carries a `year` (zigzag-merge, no composite index needed);
-        // bank_statement_imports is consumed only for selectedYear, so window it by ISO date.
+        // Bounded read: cogs_adjustments carries a `year` (zigzag-merge, no composite index needed)
         getDocs(query(collection(db, 'cogs_adjustments'), where('userId', '==', dataOwnerId), where('year', 'in', yearRange))),
-        getDocs(query(collection(db, 'bank_statement_imports'), where('userId', '==', dataOwnerId), where('isVerified', '==', true), where('date', '>=', `${yearInt}-01-01`), where('date', '<=', `${yearInt}-12-31`))),
         getDoc(settingsRef)
       ]);
       
@@ -137,7 +133,6 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
       setEmployees(empArr);
       setMonthlyPayrolls(payArr);
       setAdjustments(adjSnap.docs.map(d => ({ ...d.data(), id: d.id } as CogsAdjustment)));
-      setBankTxns(bankSnap.docs.map(d => ({ ...d.data(), id: d.id } as BankTransaction)));
     } catch (err: any) {
       console.error(err);
     } finally {
@@ -230,40 +225,13 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
     let fixedRent = 0;
     let isPayrollFiscal = false;
 
-    // Add Verified Bank Transactions
-    const monthIdx = selectedMonth === 'All Months' ? null : (MONTH_NAMES.indexOf(selectedMonth) + 1).toString().padStart(2, '0');
-    const datePrefix = monthIdx ? `${selectedYear}-${monthIdx}` : `${selectedYear}`;
-    
-    bankTxns
-      .filter(t => t.date.startsWith(datePrefix))
-      .filter(t => t.type === 'debit')
-      .filter(t => t.pushedToPurchases === true) // Only bank transactions explicitly pushed to purchases count here
-      .forEach(t => {
-        const amt = Number(t.amount);
-        const cat = t.category || 'UNCATEGORIZED';
-        
-        if (cat === 'COGS') {
-          csvCogs += amt;
-          // BUG-08 fix: also update cogsBucketAgg so pie/bar charts match the headline COGS total
-          cogsBucketAgg['UNCATEGORIZED'] = (cogsBucketAgg['UNCATEGORIZED'] || 0) + amt;
-        } else if (cat === 'SALARIES') csvLabour += amt;
-        else if (cat === 'RENTALS') fixedRent += amt;
-        else if (cat === 'OPERATIONS') {
-          csvOps += amt;
-          if (!opsCatMap[t.description]) opsCatMap[t.description] = { amount: amt, source: 'Bank' };
-          else { opsCatMap[t.description].amount += amt; if (opsCatMap[t.description].source !== 'Bank') opsCatMap[t.description].source = 'Mixed'; }
-        } else if (cat === 'UNCATEGORIZED') {
-          csvUncat += amt;
-          if (!uncatCatMap[t.description]) uncatCatMap[t.description] = { amount: amt, source: 'Bank' };
-          else { uncatCatMap[t.description].amount += amt; if (uncatCatMap[t.description].source !== 'Bank') uncatCatMap[t.description].source = 'Mixed'; }
-        } else {
-          // Others (Loans, taxes etc) map to Ops for simplified PnL in this view, or separate
-          csvOps += amt;
-          const key = `${cat}: ${t.description}`;
-          if (!opsCatMap[key]) opsCatMap[key] = { amount: amt, source: 'Bank' };
-          else { opsCatMap[key].amount += amt; if (opsCatMap[key].source !== 'Bank') opsCatMap[key].source = 'Mixed'; }
-        }
-      });
+    // NOTE: pushed bank transactions are deliberately NOT added here.
+    // handlePushToPurchases (BankReconciliation) creates a real document in the
+    // `purchases` collection, which a Data Catalog sync then aggregates into
+    // expense_snapshots.purchaseByCategory — already counted above. Adding the
+    // bank row again counted every pushed transaction TWICE, and routing the
+    // RENTALS ones into fixedRent double-counted rent a second way, on top of
+    // rentals.currentRent. P&L Command never had this block and was correct.
 
     if (viewMode === 'combined' || viewMode === 'purchase') {
       const relevantMonths = selectedMonth === 'All Months' ? MONTH_NAMES : [selectedMonth];
