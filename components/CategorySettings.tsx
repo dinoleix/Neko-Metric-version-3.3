@@ -35,6 +35,7 @@ import {
   Loader2, 
   CheckCircle2,
   ChevronDown,
+  ChevronRight,
   Sparkles,
   Utensils,
   Coffee,
@@ -131,7 +132,8 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
   const [curItemPrice, setCurItemPrice] = useState('');
   const [skuSearchTerm, setSkuSearchTerm] = useState('');
   const [masterSearchTerm, setMasterSearchTerm] = useState('');
-  const [masterView, setMasterView] = useState<'detailed' | 'sheet'>('detailed');
+  const [masterView, setMasterView] = useState<'grouped' | 'detailed' | 'sheet'>('grouped');
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [isAnalyzingAI, setIsAnalyzingAI] = useState(false);
   const [aiPlan, setAiPlan] = useState<{ canonical: string; action: 'normalize' | 'retain'; members: string[] }[] | null>(null);
   const [aiPlanSelected, setAiPlanSelected] = useState<Set<number>>(new Set());
@@ -144,6 +146,8 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
   const [costsGapFilter, setCostsGapFilter] = useState<'all' | 'no-ingredient' | 'no-tier1' | 'no-tier2' | 'no-any-tier' | 'incomplete'>('all');
   /** Master SKU → year*12 + monthIdx of its last sale. Derived; see fetchData. */
   const [lastSoldStamp, setLastSoldStamp] = useState<Record<string, number>>({});
+  /** Raw source string → last-sold stamp, for the Master Menu (which works in sources). */
+  const [lastSoldSourceStamp, setLastSoldSourceStamp] = useState<Record<string, number>>({});
   const [activityFilter, setActivityFilter] = useState<'3' | '6' | '12' | 'ever'>('3');
 
   // Multi-select state
@@ -243,7 +247,8 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
        * un-archive, and a seasonal item returns to the list on its own. Uses the
        * item_snapshots already in memory, so it costs no extra reads. Source
        * names are normalized to master names first, exactly as masterList is. */
-      const lastSold: Record<string, number> = {}; // master SKU → year*12 + monthIdx
+      const lastSold: Record<string, number> = {};       // master SKU → year*12 + monthIdx
+      const lastSoldSource: Record<string, number> = {};  // raw source string → same
       itemSnapDocs.docs.forEach(d => {
         const data = d.data() as ItemMonthlySnapshot;
         const mIdx = MONTH_NAMES.indexOf(data.month);
@@ -254,9 +259,14 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
           const clean = name.trim();
           const master = normMap[clean] || clean;
           if (!lastSold[master] || stamp > lastSold[master]) lastSold[master] = stamp;
+          // Kept separately: the Master Menu works in SOURCE strings, and once a
+          // source is normalized the Uploader rewrites it at import, so the source
+          // itself stops appearing in new snapshots.
+          if (!lastSoldSource[clean] || stamp > lastSoldSource[clean]) lastSoldSource[clean] = stamp;
         });
       });
       setLastSoldStamp(lastSold);
+      setLastSoldSourceStamp(lastSoldSource);
 
       const finalMappings: Record<string, { category: SkuCategory, segment?: string, isInherited?: boolean }> = {};
       const initialCosts: Record<string, { ingredient: string, tier1: string, tier2: string }> = {};
@@ -543,25 +553,6 @@ ${allSourceStrings.join('\n')}`;
     } catch (err) { setError("AI Classification failed."); } finally { setIsMappingAI(false); }
   };
 
-  const filteredMasterItems = useMemo(() => allSourceStrings.filter(s => s.toLowerCase().includes(masterSearchTerm.toLowerCase())), [allSourceStrings, masterSearchTerm]);
-
-  const masterMapStatus = (source: string): string => {
-    const target = normalizationMap[source];
-    if (!target) return 'Unmapped';
-    return target === source ? 'Retained' : 'Normalized';
-  };
-
-  // Export the currently filtered source → master-SKU mappings to a real .xlsx
-  const exportMasterExcel = async () => {
-    const XLSX = await import('xlsx');
-    const headers = ['Source String (CSV)', 'Target Master SKU', 'Status'];
-    const rows = filteredMasterItems.map(source => [source, normalizationMap[source] || '', masterMapStatus(source)]);
-    const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
-    ws['!cols'] = headers.map((h, i) => ({ wch: Math.min(48, Math.max(h.length, ...rows.slice(0, 80).map(r => String(r[i] ?? '').length), 10) + 2) }));
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Master Menu');
-    XLSX.writeFile(wb, `master-menu_${new Date().toISOString().slice(0, 10)}.xlsx`);
-  };
   /**
    * Activity window, in months back from the current IST month.
    * An item with no recorded sale at all is treated as inactive — it is either
@@ -592,6 +583,79 @@ ${allSourceStrings.join('\n')}`;
       return stamp !== undefined && nowStamp - stamp < 3;
     }).length,
     [skuList, lastSoldStamp, nowStamp]);
+
+  /**
+   * Activity for a SOURCE string, deliberately asymmetric.
+   *
+   * A mapped source is always shown: normalizing it makes the Uploader rewrite
+   * it to the master at import, so it stops appearing in new snapshots and its
+   * last-seen date freezes. Filtering it out would silently hide your existing
+   * mappings and look like they had been lost.
+   *
+   * Recency therefore only hides UNMAPPED strings that stopped selling — which
+   * turns the list into a work queue: "what is still selling that I haven't
+   * grouped yet?"
+   */
+  const isSourceActive = (source: string) => {
+    if (activityFilter === 'ever') return true;
+    if (normalizationMap[source]) return true;
+    const stamp = lastSoldSourceStamp[source];
+    if (stamp === undefined) return false;
+    return nowStamp - stamp < parseInt(activityFilter);
+  };
+
+  const sourceLastSoldLabel = (source: string): string | null => {
+    const stamp = lastSoldSourceStamp[source];
+    if (stamp === undefined) return null;
+    return `${MONTH_NAMES[stamp % 12].slice(0, 3)} ${String(Math.floor(stamp / 12)).slice(2)}`;
+  };
+
+  const filteredMasterItems = useMemo(
+    () => allSourceStrings.filter(s => s.toLowerCase().includes(masterSearchTerm.toLowerCase()) && isSourceActive(s)),
+    [allSourceStrings, masterSearchTerm, activityFilter, normalizationMap, lastSoldSourceStamp, nowStamp]);
+
+  /**
+   * Sources grouped under the master they resolve to. Unmapped strings form
+   * their own single-member group and sort first — they are the work.
+   */
+  const masterGroups = useMemo(() => {
+    const groups: Record<string, { master: string; sources: string[]; mapped: boolean; lastSold?: number }> = {};
+    filteredMasterItems.forEach(source => {
+      const target = normalizationMap[source];
+      const master = target || source;
+      const g = groups[master] || (groups[master] = { master, sources: [], mapped: false, lastSold: undefined });
+      g.sources.push(source);
+      if (target) g.mapped = true;
+      const st = lastSoldSourceStamp[source];
+      if (st !== undefined && (g.lastSold === undefined || st > g.lastSold)) g.lastSold = st;
+    });
+    return Object.values(groups).sort((a, b) =>
+      (a.mapped ? 1 : 0) - (b.mapped ? 1 : 0) ||   // unmapped first — that's the queue
+      b.sources.length - a.sources.length ||        // then biggest families
+      a.master.localeCompare(b.master));
+  }, [filteredMasterItems, normalizationMap, lastSoldSourceStamp]);
+
+  const unmappedActiveCount = useMemo(
+    () => filteredMasterItems.filter(s => !normalizationMap[s]).length,
+    [filteredMasterItems, normalizationMap]);
+
+  const masterMapStatus = (source: string): string => {
+    const target = normalizationMap[source];
+    if (!target) return 'Unmapped';
+    return target === source ? 'Retained' : 'Normalized';
+  };
+
+  // Export the currently filtered source → master-SKU mappings to a real .xlsx
+  const exportMasterExcel = async () => {
+    const XLSX = await import('xlsx');
+    const headers = ['Source String (CSV)', 'Target Master SKU', 'Status'];
+    const rows = filteredMasterItems.map(source => [source, normalizationMap[source] || '', masterMapStatus(source)]);
+    const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    ws['!cols'] = headers.map((h, i) => ({ wch: Math.min(48, Math.max(h.length, ...rows.slice(0, 80).map(r => String(r[i] ?? '').length), 10) + 2) }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Master Menu');
+    XLSX.writeFile(wb, `master-menu_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
 
   const filteredSkuList = useMemo(() => skuList.filter(s => s.toLowerCase().includes(skuSearchTerm.toLowerCase()) && isActive(s)), [skuList, skuSearchTerm, activityFilter, lastSoldStamp, nowStamp]);
   
@@ -832,7 +896,7 @@ ${allSourceStrings.join('\n')}`;
                    <div className="flex flex-wrap gap-4 items-center">
                       {/* Detailed / Spreadsheet view toggle */}
                       <div className="flex bg-white border border-slate-100 p-1 rounded-xl shadow-sm gap-1">
-                         {([['detailed', LayoutGrid, 'Detailed'], ['sheet', Table2, 'Spreadsheet']] as const).map(([v, Icon, label]) => (
+                         {([['grouped', Layers, 'Grouped'], ['detailed', LayoutGrid, 'Detailed'], ['sheet', Table2, 'Spreadsheet']] as const).map(([v, Icon, label]) => (
                            <button key={v} onClick={() => setMasterView(v)} className={`px-3 py-2 rounded-lg flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest transition-all ${masterView === v ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-slate-700'}`}>
                               <Icon size={13} /> {label}
                            </button>
@@ -841,11 +905,117 @@ ${allSourceStrings.join('\n')}`;
                       <button onClick={exportMasterExcel} disabled={filteredMasterItems.length === 0} className="flex items-center gap-2 px-4 py-3 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-100 transition-all disabled:opacity-40">
                          <FileSpreadsheet size={14} /> Excel
                       </button>
+                      {/* Recency hides only UNMAPPED strings — see isSourceActive */}
+                      <div className={`px-4 py-3 rounded-xl border flex items-center gap-2 shadow-sm ${activityFilter === 'ever' ? 'bg-white border-slate-100' : 'bg-indigo-50 border-indigo-200'}`}>
+                         <Clock size={14} className={activityFilter === 'ever' ? 'text-slate-400' : 'text-indigo-600'} />
+                         <select value={activityFilter} onChange={e => setActivityFilter(e.target.value as typeof activityFilter)} className="bg-transparent font-bold text-xs outline-none uppercase min-w-[190px]">
+                            <option value="3">Selling in last 3 months</option>
+                            <option value="6">Selling in last 6 months</option>
+                            <option value="12">Selling in last 12 months</option>
+                            <option value="ever">Every string ever seen ({allSourceStrings.length})</option>
+                         </select>
+                      </div>
                       <div className="relative"><Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={16} /><input type="text" placeholder="Search item strings..." value={masterSearchTerm} onChange={e => setMasterSearchTerm(e.target.value)} className="pl-11 pr-4 py-3 bg-white border border-slate-100 rounded-xl text-sm outline-none shadow-sm min-w-[240px]"/></div>
                       <button onClick={analyzeSimilarWithAI} disabled={isAnalyzingAI || isNormalizingAI} className="px-6 py-4 bg-indigo-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest flex items-center gap-2 hover:bg-indigo-700 transition-all shadow-xl disabled:opacity-50">{isAnalyzingAI ? <Loader2 size={16} className="animate-spin" /> : <Layers size={16} />} Analyze Similar</button>
                       <button onClick={autoNormalizeWithAI} disabled={isNormalizingAI || isAnalyzingAI} className="px-6 py-4 bg-slate-900 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest flex items-center gap-2 hover:bg-slate-800 transition-all shadow-xl disabled:opacity-50">{isNormalizingAI ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />} AI Normalize</button>
                    </div>
                 </div>
+                {masterView === 'grouped' && (
+                  <div className="p-6 md:p-8 space-y-3 max-h-[800px] overflow-y-auto custom-scrollbar">
+                     <div className="flex flex-wrap items-center gap-3 pb-2">
+                        <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+                           {masterGroups.length} master SKU{masterGroups.length === 1 ? '' : 's'} · {filteredMasterItems.length} source string{filteredMasterItems.length === 1 ? '' : 's'}
+                        </span>
+                        {unmappedActiveCount > 0 && (
+                           <span className="px-2.5 py-1 bg-amber-50 text-amber-700 border border-amber-100 rounded-lg text-[10px] font-black uppercase tracking-widest">
+                              {unmappedActiveCount} still unmapped
+                           </span>
+                        )}
+                     </div>
+
+                     {masterGroups.length === 0 && (
+                        <p className="py-16 text-center text-sm font-medium text-slate-400">
+                           No item strings match. Widen the activity window or clear the search.
+                        </p>
+                     )}
+
+                     {masterGroups.map(g => {
+                        const collapsed = collapsedGroups.has(g.master);
+                        const isFamily = g.sources.length > 1;
+                        const soldLabel = g.lastSold !== undefined
+                          ? `${MONTH_NAMES[g.lastSold % 12].slice(0, 3)} ${String(Math.floor(g.lastSold / 12)).slice(2)}`
+                          : null;
+                        return (
+                          <div key={g.master} className={`rounded-2xl border overflow-hidden ${g.mapped ? 'border-slate-200 bg-white' : 'border-amber-200 bg-amber-50/40'}`}>
+                             <div
+                               onClick={() => { const n = new Set(collapsedGroups); n.has(g.master) ? n.delete(g.master) : n.add(g.master); setCollapsedGroups(n); }}
+                               className="px-5 py-4 flex items-center justify-between gap-4 cursor-pointer hover:bg-slate-50/60 transition-colors"
+                             >
+                                <div className="flex items-center gap-3 min-w-0">
+                                   {isFamily ? (collapsed ? <ChevronRight size={14} className="text-slate-400 shrink-0" /> : <ChevronDown size={14} className="text-slate-400 shrink-0" />)
+                                     : <span className="w-3.5 shrink-0" />}
+                                   <div className="min-w-0">
+                                      <p className="text-sm font-black text-slate-900 uppercase truncate">{g.master}</p>
+                                      <p className="text-[10px] font-bold text-slate-400 uppercase">
+                                         {g.mapped
+                                           ? `${g.sources.length} source string${g.sources.length === 1 ? '' : 's'} → costed once`
+                                           : 'not mapped yet — will cost as its own SKU'}
+                                         {soldLabel && ` · last sold ${soldLabel}`}
+                                      </p>
+                                   </div>
+                                </div>
+                                <div className="flex items-center gap-2 shrink-0">
+                                   {isFamily && (
+                                     <span className="px-2 py-1 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded-lg text-[9px] font-black uppercase">
+                                        {g.sources.length} grouped
+                                     </span>
+                                   )}
+                                   {!g.mapped && (
+                                     <button
+                                       onClick={ev => { ev.stopPropagation(); setNormalizationMap({ ...normalizationMap, [g.master]: g.master }); }}
+                                       className="inline-flex items-center gap-1 px-2.5 py-1 bg-white text-amber-700 border border-amber-200 rounded-lg text-[9px] font-black uppercase hover:bg-amber-100"
+                                     >
+                                        <Anchor size={10} /> Retain
+                                     </button>
+                                   )}
+                                </div>
+                             </div>
+
+                             {!collapsed && (
+                               <div className="border-t border-slate-100 divide-y divide-slate-50">
+                                  {g.sources.map(source => (
+                                    <div key={source} className="px-5 py-3 flex flex-wrap items-center gap-3 justify-between">
+                                       <div className="min-w-0 flex-1">
+                                          <p className="text-xs font-bold text-slate-700 uppercase truncate">{source}</p>
+                                          <p className="text-[9px] font-bold text-slate-400 uppercase">
+                                             {sourceLastSoldLabel(source) ? `last sold ${sourceLastSoldLabel(source)}` : 'never sold'}
+                                             {normalizationMap[source] === source && ' · retained'}
+                                             {normalizationMap[source] && normalizationMap[source] !== source && ' · normalized'}
+                                          </p>
+                                       </div>
+                                       <div className="flex items-center gap-2">
+                                          <input
+                                            type="text"
+                                            value={normalizationMap[source] || ''}
+                                            onChange={e => setNormalizationMap({ ...normalizationMap, [source]: e.target.value })}
+                                            placeholder={source}
+                                            className="w-56 px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-black text-slate-700 outline-none uppercase focus:border-indigo-400 focus:bg-white"
+                                          />
+                                          {normalizationMap[source] && (
+                                            <button onClick={() => { const n = { ...normalizationMap }; delete n[source]; setNormalizationMap(n); }}
+                                              className="p-1.5 text-slate-300 hover:text-rose-500"><RotateCcw size={13} /></button>
+                                          )}
+                                       </div>
+                                    </div>
+                                  ))}
+                               </div>
+                             )}
+                          </div>
+                        );
+                     })}
+                  </div>
+                )}
+
                 {masterView === 'sheet' && (
                   <div className="p-6 md:p-8 overflow-x-auto max-h-[800px] overflow-y-auto custom-scrollbar">
                      <table className="w-full text-left border-collapse min-w-[720px]">
