@@ -246,11 +246,16 @@ const ExecDashboard: React.FC<{ user: User; dataOwnerId: string }> = ({ user, da
   const windowKeys: PeriodKey[] = useMemo(
     () => monthWindow(anchorMonth, anchorYear, windowMonths), [anchorMonth, anchorYear, windowMonths]);
 
-  /** One month's figures, classified exactly as PnLHub does so the numbers agree. */
-  const periodFigures = useMemo(() => (month: string, year: string) => {
-    const sales = salesLeg.data.filter(s => s.month === month && s.year === year && inScope(s.outletId));
-    const exp = expenseLeg.data.filter(s => s.month === month && s.year === year && inScope(s.outletId));
-    const adj = cogsLeg.data.filter(a => a.month === month && a.year === year && inScope(a.outletId));
+  /**
+   * One month's figures, classified exactly as PnLHub does so the numbers agree.
+   * `only` scopes to a single outlet (for the league table); omitted uses the
+   * current outlet filter.
+   */
+  const periodFigures = useMemo(() => (month: string, year: string, only?: string) => {
+    const scope = (oId: string) => only ? oId === only : inScope(oId);
+    const sales = salesLeg.data.filter(s => s.month === month && s.year === year && scope(s.outletId));
+    const exp = expenseLeg.data.filter(s => s.month === month && s.year === year && scope(s.outletId));
+    const adj = cogsLeg.data.filter(a => a.month === month && a.year === year && scope(a.outletId));
 
     const posGoodGross = sales.reduce((a, s) => a + (s.posGoodGross || 0), 0);
     const onlineGoodGross = sales.reduce((a, s) => a + (s.onlineGoodGross || 0), 0);
@@ -275,7 +280,7 @@ const ExecDashboard: React.FC<{ user: User; dataOwnerId: string }> = ({ user, da
     // scoped to one period; in this multi-month loop that would apply one month's
     // payroll to every month and look entirely plausible.
     let rent = 0, fixedLabour = 0, payrollEstimated = false;
-    (outlet === 'all' ? outletIds : [outlet]).forEach(oId => {
+    (only ? [only] : outlet === 'all' ? outletIds : [outlet]).forEach(oId => {
       const rental = rentalsLeg.data.find(r => r.outletId === oId);
       const mult = proration(rental, month, year);
       if (rental) rent += (rental.currentRent || 0) * mult;
@@ -361,6 +366,71 @@ const ExecDashboard: React.FC<{ user: User; dataOwnerId: string }> = ({ user, da
     });
     return row;
   }), [windowKeys, periodFigures, costMeasure]);
+
+  /* ── Block C: outlet league ────────────────────────────────────────────── */
+  const league = useMemo(() => {
+    const rankOf = (month: string, year: string) =>
+      outletIds.map(o => ({ o, p: periodFigures(month, year, o).netProfit }))
+        .sort((a, b) => b.p - a.p).map(r => r.o);
+    const prevRank = rankOf(prev.month, prev.year);
+
+    const rows = outletIds.map(oId => {
+      const cur = periodFigures(anchorMonth, anchorYear, oId);
+      const before = periodFigures(prev.month, prev.year, oId);
+      const spark = windowKeys.map(w => ({ label: w.label, v: periodFigures(w.month, w.year, oId).gross }));
+      const growth = (a: number, b: number) => b > 0 ? ((a - b) / b) * 100 : null;
+      return {
+        oId, name: getOutletName(oId), cur, before, spark,
+        revGrowth: growth(cur.gross, before.gross),
+        profitGrowth: growth(cur.netProfit, before.netProfit),
+        marginPp: cur.margin !== null && before.margin !== null ? cur.margin - before.margin : null,
+        // An outlet with sales but no cost data used to compute profit = revenue − 0
+        // and rank FIRST. It now reports no profit and sorts last.
+        costless: cur.hasSales && !cur.hasExpense,
+        prevIdx: prevRank.indexOf(oId),
+      };
+    });
+    rows.sort((a, b) => (a.costless ? 1 : 0) - (b.costless ? 1 : 0) || b.cur.netProfit - a.cur.netProfit);
+
+    // GLOBAL / Unassigned are excluded from the league but included in group
+    // totals, so the rows have never summed to the header. Disclose the residue.
+    const unattributed = [...salesLeg.data]
+      .filter(s => s.month === anchorMonth && s.year === anchorYear && (s.outletId === 'GLOBAL' || s.outletId === 'Unassigned'))
+      .reduce((a, s) => a + (s.posGoodGross || 0) + (s.onlineGoodGross || 0) + (s.eventRevenue || 0), 0);
+
+    return { rows, unattributed };
+  }, [outletIds, periodFigures, anchorMonth, anchorYear, prev, windowKeys, salesLeg.data]);
+
+  /* ── Block D: channel mix + online drag ────────────────────────────────── */
+  const channel = useMemo(() => {
+    const sales = salesLeg.data.filter(s => s.month === anchorMonth && s.year === anchorYear && inScope(s.outletId));
+    const sum = (f: (s: SalesMonthlySnapshot) => number) => sales.reduce((a, s) => a + (f(s) || 0), 0);
+    const posGross = sum(s => s.posGoodGross), onlineGross = sum(s => s.onlineGoodGross), events = sum(s => s.eventRevenue);
+    const comm = sum(s => s.onlineGoodComm), ads = sum(s => s.onlineGoodAds);
+    const gstOnComm = sum(s => (s as any).onlineGoodGstOnComm || 0), tds = sum(s => (s as any).onlineGoodTds || 0);
+    const onlineNet = sum(s => s.onlineGoodNet), posTax = sum(s => s.posGoodTax);
+    // Exactly OnlineProfitCenter's formula — any deviation makes the two disagree
+    const takeRate = onlineGross > 0 ? ((comm + ads + gstOnComm + tds) / onlineGross) * 100 : null;
+    const anyPlatformDetail = sales.some(s => s.platformBreakdown && Object.keys(s.platformBreakdown).length > 0);
+    const optionalMissing = anyPlatformDetail && gstOnComm === 0 && tds === 0;
+
+    const platMap: Record<string, { gross: number; drag: number }> = {};
+    sales.forEach(s => Object.entries(s.platformBreakdown || {}).forEach(([p, v]: [string, any]) => {
+      const e = platMap[p] || (platMap[p] = { gross: 0, drag: 0 });
+      e.gross += Number(v?.gross) || 0;
+      e.drag += (Number(v?.commission) || 0) + (Number(v?.ads) || 0) + (Number(v?.gstOnComm) || 0) + (Number(v?.tds) || 0);
+    }));
+    const platforms = Object.entries(platMap)
+      .map(([name, v]) => ({ name, gross: v.gross, take: v.gross > 0 ? (v.drag / v.gross) * 100 : 0 }))
+      .sort((a, b) => b.gross - a.gross).slice(0, 6);
+
+    return {
+      posGross, onlineGross, events, total: posGross + onlineGross + events,
+      takeRate, drag: comm + ads + gstOnComm + tds, platforms, anyPlatformDetail, optionalMissing,
+      onlinePaise: onlineGross > 0 ? (onlineNet / onlineGross) * 100 : null,
+      posPaise: posGross > 0 ? ((posGross - posTax) / posGross) * 100 : null,
+    };
+  }, [salesLeg.data, anchorMonth, anchorYear, outlet]);
 
   /* ── Alerts ────────────────────────────────────────────────────────────── */
   const alerts = useMemo(() => {
@@ -573,6 +643,167 @@ const ExecDashboard: React.FC<{ user: User; dataOwnerId: string }> = ({ user, da
               </ResponsiveContainer>
             )}
           </Card>
+
+          {/* ── Block C: outlet league ──────────────────────────────────── */}
+          <Card title="Outlet league"
+            sub={`Ranked by net profit for ${anchorMonth}. Fixed costs are prorated for outlets closed mid-month.`}>
+            {expenseLeg.failed ? <Unavailable what="Cost data could not be loaded" why="Revenue is shown; profit and margin are suppressed rather than shown as revenue." /> : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50">
+                    <tr className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                      <th className="px-4 py-3 text-left sticky left-0 bg-slate-50">Outlet</th>
+                      <th className="px-4 py-3 text-right">Revenue</th>
+                      <th className="px-4 py-3 text-right">Net profit</th>
+                      <th className="px-4 py-3 text-right">Margin</th>
+                      <th className="px-4 py-3 text-left w-32">Cost split</th>
+                      <th className="px-4 py-3 text-right w-28">Trend</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {league.rows.map((r, i) => {
+                      const maxSpark = Math.max(...r.spark.map(s => s.v), 1);
+                      return (
+                        <tr key={r.oId} className="hover:bg-slate-50/50">
+                          <td className="px-4 py-3 sticky left-0 bg-white">
+                            <div className="flex items-center gap-2.5">
+                              <span className="w-6 h-6 rounded-lg bg-slate-100 text-slate-500 text-[10px] font-black flex items-center justify-center shrink-0">{i + 1}</span>
+                              <div>
+                                <p className="font-bold text-slate-800 whitespace-nowrap">{r.name}</p>
+                                {r.prevIdx >= 0 && r.prevIdx !== i && (
+                                  <p className={`text-[9px] font-bold ${r.prevIdx > i ? 'text-emerald-600' : 'text-rose-600'}`}>
+                                    {r.prevIdx > i ? '▲' : '▼'} {Math.abs(r.prevIdx - i)} vs {prev.month.slice(0, 3)}
+                                  </p>
+                                )}
+                                {r.prevIdx < 0 && <p className="text-[9px] font-bold text-slate-400">new</p>}
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 text-right tabular-nums">
+                            <span className="font-bold text-slate-800">{inr(r.cur.gross)}</span>
+                            <div className="mt-0.5"><DeltaChip pct={r.revGrowth} /></div>
+                          </td>
+                          <td className="px-4 py-3 text-right tabular-nums">
+                            {r.costless
+                              ? <span className="text-slate-400">—</span>
+                              : <><span className={`font-bold ${r.cur.netProfit >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{inr(r.cur.netProfit)}</span>
+                                  <div className="mt-0.5"><DeltaChip pct={r.profitGrowth} /></div></>}
+                          </td>
+                          <td className="px-4 py-3 text-right tabular-nums">
+                            {r.costless ? <span className="text-slate-400">—</span> : (
+                              <><span className="font-bold text-slate-700">{pct(r.cur.margin)}</span>
+                                {r.marginPp !== null && <p className="text-[9px] font-bold text-slate-400">{r.marginPp >= 0 ? '+' : ''}{r.marginPp.toFixed(1)} pp</p>}</>
+                            )}
+                          </td>
+                          <td className="px-4 py-3">
+                            {r.costless ? <span className="text-[10px] font-medium text-amber-600">no cost data</span> : (
+                              <div className="flex h-2.5 rounded-full overflow-hidden bg-slate-100" title={PILLARS.map(p => `${p.label} ${inr(r.cur.pillar[p.key])}`).join(' · ')}>
+                                {PILLARS.map(p => {
+                                  const w = r.cur.totalCost > 0 ? (r.cur.pillar[p.key] / r.cur.totalCost) * 100 : 0;
+                                  return w > 0 ? <div key={p.key} style={{ width: `${w}%`, backgroundColor: p.color }} /> : null;
+                                })}
+                              </div>
+                            )}
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="flex items-end gap-0.5 h-8 justify-end">
+                              {r.spark.map((s, j) => (
+                                <div key={j} title={`${s.label}: ${inr(s.v)}`}
+                                  style={{ height: `${Math.max(6, (s.v / maxSpark) * 100)}%`, backgroundColor: j === r.spark.length - 1 ? PACE_THIS : '#cbd5e1' }}
+                                  className="w-1.5 rounded-sm" />
+                              ))}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                {league.unattributed > 0 && (
+                  <p className="text-[11px] font-medium text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 mt-3">
+                    {inr(league.unattributed)} recorded against Global/Mixed and not attributed to any outlet — the rows above will not sum to the group total.
+                  </p>
+                )}
+              </div>
+            )}
+          </Card>
+
+          {/* ── Block D: channel mix + online drag ──────────────────────── */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <Card title="Channel mix"
+              sub={isLive ? 'Delivery-app revenue appears only once the monthly CSV is imported, so the live month understates online.' : undefined}>
+              {channel.total === 0 ? (
+                <p className="text-sm font-medium text-slate-400 py-8 text-center">No recorded sales for {anchorMonth} {anchorYear}.</p>
+              ) : (
+                <>
+                  <div className="flex h-8 rounded-xl overflow-hidden mb-4" role="img" aria-label="Channel mix">
+                    {[
+                      { k: 'Counter', v: channel.posGross, c: PACE_THIS },
+                      { k: 'Delivery apps', v: channel.onlineGross, c: '#d97706' },
+                      { k: 'Events', v: channel.events, c: CHART.muted },
+                    ].filter(s => s.v > 0).map(s => (
+                      <div key={s.k} style={{ width: `${(s.v / channel.total) * 100}%`, backgroundColor: s.c }}
+                        title={`${s.k}: ${inr(s.v)}`}
+                        className="flex items-center justify-center border-r-2 border-white last:border-r-0">
+                        <span className="text-[10px] font-black text-white px-1 truncate">
+                          {((s.v / channel.total) * 100).toFixed(0)}%
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="space-y-1.5">
+                    {[{ k: 'Counter', v: channel.posGross, c: PACE_THIS },
+                      { k: 'Delivery apps', v: channel.onlineGross, c: '#d97706' },
+                      { k: 'Events', v: channel.events, c: CHART.muted }].filter(s => s.v > 0).map(s => (
+                      <div key={s.k} className="flex items-center justify-between text-xs">
+                        <span className="flex items-center gap-2 font-semibold text-slate-600">
+                          <span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: s.c }} />{s.k}
+                        </span>
+                        <span className="font-bold text-slate-800 tabular-nums">{inr(s.v)}</span>
+                      </div>
+                    ))}
+                  </div>
+                  {channel.onlinePaise !== null && channel.posPaise !== null && (
+                    <p className="text-xs font-medium text-slate-600 mt-4 p-3 bg-slate-50 rounded-xl leading-relaxed">
+                      A rupee sold on delivery apps is worth <strong>{channel.onlinePaise.toFixed(0)} paise</strong>;
+                      at the counter it is worth <strong>{channel.posPaise.toFixed(0)} paise</strong>.
+                    </p>
+                  )}
+                </>
+              )}
+            </Card>
+
+            <Card title="Delivery-app drag"
+              sub={channel.optionalMissing ? 'GST-on-commission and TDS are not recorded for this month, so the rate below is a floor.' : undefined}>
+              {channel.onlineGross === 0 ? (
+                <p className="text-sm font-medium text-slate-400 py-8 text-center">No delivery-app sales for {anchorMonth} {anchorYear}.</p>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 gap-3 mb-4">
+                    <Tile label="Effective take rate" value={pct(channel.takeRate)} sub="commission + ads + GST + TDS" />
+                    <Tile label="Kept by platforms" value={inr(channel.drag)} tone="text-rose-600" sub={`of ${inrCompact(channel.onlineGross)} billed`} />
+                  </div>
+                  {!channel.anyPlatformDetail ? (
+                    <p className="text-[11px] font-medium text-slate-500 bg-slate-50 rounded-lg px-3 py-2">
+                      Per-platform detail isn't stored for this month. Re-sync it in Data Catalog to populate it.
+                    </p>
+                  ) : (
+                    <ResponsiveContainer width="100%" height={Math.max(140, channel.platforms.length * 38 + 32)}>
+                      <BarChart data={channel.platforms} layout="vertical" margin={{ top: 0, right: 44, bottom: 0, left: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke={CHART.grid} horizontal={false} />
+                        <XAxis type="number" tickFormatter={(v: number) => `${v.toFixed(0)}%`} tick={CHART.tick} tickLine={false} axisLine={false} />
+                        <YAxis type="category" dataKey="name" tick={CHART.tick} tickLine={false} axisLine={false} width={82} />
+                        <ChartTooltip contentStyle={CHART.tooltip} formatter={(v: any) => pct(Number(v))} />
+                        {/* One hue: bar length already encodes magnitude — a colour ramp
+                            on top would double-encode it */}
+                        <Bar dataKey="take" name="Take rate" fill="#d97706" radius={[0, 4, 4, 0]} maxBarSize={22} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  )}
+                </>
+              )}
+            </Card>
+          </div>
 
           <div className="flex items-center gap-2 text-[11px] font-medium text-slate-400">
             <Clock size={12} />
