@@ -20,7 +20,9 @@ import {
   ItemCost,
   TrackedConsumable,
   CREW_PURCHASE_CATEGORIES,
-  CREW_EXPENSE_CATEGORIES
+  CREW_EXPENSE_CATEGORIES,
+  MONTH_NAMES,
+  istNow
 } from '../types';
 import { 
   Settings2, 
@@ -49,6 +51,7 @@ import {
   Tag,
   Flame,
   AlertTriangle,
+  Clock,
   Info,
   Trash2,
   ListFilter,
@@ -139,6 +142,9 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
   // contributes zero to theoretical spend in Waste Radar and Margin Intelligence,
   // which reads as efficiency rather than as a gap.
   const [costsGapFilter, setCostsGapFilter] = useState<'all' | 'no-ingredient' | 'no-tier1' | 'no-tier2' | 'no-any-tier' | 'incomplete'>('all');
+  /** Master SKU → year*12 + monthIdx of its last sale. Derived; see fetchData. */
+  const [lastSoldStamp, setLastSoldStamp] = useState<Record<string, number>>({});
+  const [activityFilter, setActivityFilter] = useState<'3' | '6' | '12' | 'ever'>('3');
 
   // Multi-select state
   const [selectedSkus, setSelectedSkus] = useState<Set<string>>(new Set());
@@ -225,6 +231,32 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
       });
       const masterList = Array.from(uniqueMasterSkus).sort();
       setSkuList(masterList);
+
+      /* Last month each master SKU actually sold.
+       *
+       * skuList is the union of every item name across ALL history, so a dish
+       * delisted years ago stays in it forever. Deleting its cost record does
+       * not help — the name comes from the sales snapshots, not from item_costs,
+       * so it would just reappear uncosted.
+       *
+       * Derived rather than stored: nothing to archive, nothing to remember to
+       * un-archive, and a seasonal item returns to the list on its own. Uses the
+       * item_snapshots already in memory, so it costs no extra reads. Source
+       * names are normalized to master names first, exactly as masterList is. */
+      const lastSold: Record<string, number> = {}; // master SKU → year*12 + monthIdx
+      itemSnapDocs.docs.forEach(d => {
+        const data = d.data() as ItemMonthlySnapshot;
+        const mIdx = MONTH_NAMES.indexOf(data.month);
+        if (mIdx < 0 || !data.year) return;
+        const stamp = parseInt(data.year) * 12 + mIdx;
+        Object.entries(data.items || {}).forEach(([name, v]: [string, any]) => {
+          if ((Number(v?.quantity) || 0) <= 0) return; // listed but unsold ≠ sold
+          const clean = name.trim();
+          const master = normMap[clean] || clean;
+          if (!lastSold[master] || stamp > lastSold[master]) lastSold[master] = stamp;
+        });
+      });
+      setLastSoldStamp(lastSold);
 
       const finalMappings: Record<string, { category: SkuCategory, segment?: string, isInherited?: boolean }> = {};
       const initialCosts: Record<string, { ingredient: string, tier1: string, tier2: string }> = {};
@@ -530,7 +562,38 @@ ${allSourceStrings.join('\n')}`;
     XLSX.utils.book_append_sheet(wb, ws, 'Master Menu');
     XLSX.writeFile(wb, `master-menu_${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
-  const filteredSkuList = useMemo(() => skuList.filter(s => s.toLowerCase().includes(skuSearchTerm.toLowerCase())), [skuList, skuSearchTerm]);
+  /**
+   * Activity window, in months back from the current IST month.
+   * An item with no recorded sale at all is treated as inactive — it is either
+   * historic or was never sold, and either way it is not current work.
+   */
+  const nowStamp = useMemo(() => {
+    const n = istNow();
+    return n.getUTCFullYear() * 12 + n.getUTCMonth();
+  }, []);
+
+  const isActive = (masterSku: string) => {
+    if (activityFilter === 'ever') return true;
+    const stamp = lastSoldStamp[masterSku];
+    if (stamp === undefined) return false;
+    return nowStamp - stamp < parseInt(activityFilter);
+  };
+
+  /** "Jul 26", or null when the SKU has never sold. */
+  const lastSoldLabel = (masterSku: string): string | null => {
+    const stamp = lastSoldStamp[masterSku];
+    if (stamp === undefined) return null;
+    return `${MONTH_NAMES[stamp % 12].slice(0, 3)} ${String(Math.floor(stamp / 12)).slice(2)}`;
+  };
+
+  const activeCount = useMemo(
+    () => skuList.filter(s => {
+      const stamp = lastSoldStamp[s];
+      return stamp !== undefined && nowStamp - stamp < 3;
+    }).length,
+    [skuList, lastSoldStamp, nowStamp]);
+
+  const filteredSkuList = useMemo(() => skuList.filter(s => s.toLowerCase().includes(skuSearchTerm.toLowerCase()) && isActive(s)), [skuList, skuSearchTerm, activityFilter, lastSoldStamp, nowStamp]);
   
   /**
    * A cost counts as "defined" only when it is a positive number. Blank and 0 are
@@ -540,11 +603,12 @@ ${allSourceStrings.join('\n')}`;
    */
   const hasCost = (v: string | undefined) => (parseFloat(v || '') || 0) > 0;
 
+
   const filteredCostsList = useMemo(() => {
     return skuList.filter(s => {
       const matchesSearch = s.toLowerCase().includes(costsSearchTerm.toLowerCase());
       const matchesSegment = costsSegmentFilter === 'all' || (skuMappings[s]?.segment === costsSegmentFilter);
-      if (!matchesSearch || !matchesSegment) return false;
+      if (!matchesSearch || !matchesSegment || !isActive(s)) return false;
 
       // Read the live edit buffer, not the saved record, so an item stops
       // matching the moment you type its cost in
@@ -559,12 +623,12 @@ ${allSourceStrings.join('\n')}`;
         default: return true;
       }
     });
-  }, [skuList, costsSearchTerm, costsSegmentFilter, skuMappings, costsGapFilter, editingCosts]);
+  }, [skuList, costsSearchTerm, costsSegmentFilter, skuMappings, costsGapFilter, editingCosts, activityFilter, lastSoldStamp, nowStamp]);
 
   /** Counts for the filter labels, so the size of each gap is visible before selecting it. */
   const costGapCounts = useMemo(() => {
     let noIng = 0, noT1 = 0, noT2 = 0, noAnyTier = 0, incomplete = 0;
-    skuList.forEach(s => {
+    skuList.filter(isActive).forEach(s => {
       const c = editingCosts[s] || { ingredient: '', tier1: '', tier2: '' };
       const ing = hasCost(c.ingredient), t1 = hasCost(c.tier1), t2 = hasCost(c.tier2);
       if (!ing) noIng++;
@@ -573,8 +637,8 @@ ${allSourceStrings.join('\n')}`;
       if (!t1 && !t2) noAnyTier++;
       if (!ing || !t1 || !t2) incomplete++;
     });
-    return { noIng, noT1, noT2, noAnyTier, incomplete, total: skuList.length };
-  }, [skuList, editingCosts]);
+    return { noIng, noT1, noT2, noAnyTier, incomplete, total: skuList.filter(isActive).length };
+  }, [skuList, editingCosts, activityFilter, lastSoldStamp, nowStamp]);
 
   const toggleSkuSelection = (sku: string) => {
     const next = new Set(selectedSkus);
@@ -945,6 +1009,23 @@ ${allSourceStrings.join('\n')}`;
                                {menuSegments.map(s => <option key={s} value={s}>{s}</option>)}
                             </select>
                          </div>
+                         {/* Activity window. skuList is the union of every item ever
+                             sold, so without this the list never shrinks. Derived from
+                             item_snapshots already in memory — no extra reads. */}
+                         <div className={`px-4 py-2.5 rounded-xl border flex items-center gap-2 shadow-sm ${activityFilter === 'ever' ? 'bg-white border-slate-100' : 'bg-indigo-50 border-indigo-200'}`}>
+                            <Clock size={14} className={activityFilter === 'ever' ? 'text-slate-400' : 'text-indigo-600'} />
+                            <select
+                              value={activityFilter}
+                              onChange={e => { setActivityFilter(e.target.value as typeof activityFilter); setSelectedSkus(new Set()); }}
+                              className="bg-transparent font-bold text-xs outline-none uppercase min-w-[170px]"
+                            >
+                               <option value="3">Sold in last 3 months</option>
+                               <option value="6">Sold in last 6 months</option>
+                               <option value="12">Sold in last 12 months</option>
+                               <option value="ever">Ever sold ({skuList.length})</option>
+                            </select>
+                         </div>
+
                          {/* Costing-gap filter. Counts are shown inline so the size of
                              each gap is visible without having to select it first. */}
                          <div className={`px-4 py-2.5 rounded-xl border flex items-center gap-2 shadow-sm ${costsGapFilter === 'all' ? 'bg-white border-slate-100' : 'bg-amber-50 border-amber-200'}`}>
@@ -1012,7 +1093,14 @@ ${allSourceStrings.join('\n')}`;
                                            <button onClick={() => toggleSkuSelection(itemName)} className={`shrink-0 transition-colors ${isSelected ? 'text-indigo-600' : 'text-slate-300 hover:text-slate-500'}`}>
                                               {isSelected ? <CheckSquare size={16} /> : <Square size={16} />}
                                            </button>
-                                           <span className="text-xs font-black text-slate-800 uppercase truncate max-w-[220px]">{itemName}</span>
+                                           <div className="min-w-0">
+                                             <span className="text-xs font-black text-slate-800 uppercase truncate max-w-[220px] block">{itemName}</span>
+                                             {/* Visible even with the activity filter off, so a stale
+                                                 SKU is identifiable without changing the filter */}
+                                             <span className="text-[9px] font-bold text-slate-400 uppercase">
+                                               {lastSoldLabel(itemName) ? `last sold ${lastSoldLabel(itemName)}` : 'never sold'}
+                                             </span>
+                                           </div>
                                         </div>
                                      </td>
                                      <td className="px-3 py-2 text-[10px] font-bold text-slate-500 uppercase">{skuMappings[itemName]?.segment || 'UNSEGMENTED'}</td>
