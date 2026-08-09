@@ -48,6 +48,7 @@ import {
   ArrowRightLeft,
   Tag,
   Flame,
+  AlertTriangle,
   Info,
   Trash2,
   ListFilter,
@@ -134,6 +135,10 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
   const [costsSearchTerm, setCostsSearchTerm] = useState('');
   const [costsSegmentFilter, setCostsSegmentFilter] = useState('all');
   const [costsView, setCostsView] = useState<'cards' | 'sheet'>('cards');
+  // Surfaces SKUs with missing costing. An item with no ingredient cost silently
+  // contributes zero to theoretical spend in Waste Radar and Margin Intelligence,
+  // which reads as efficiency rather than as a gap.
+  const [costsGapFilter, setCostsGapFilter] = useState<'all' | 'no-ingredient' | 'no-tier1' | 'no-tier2' | 'no-any-tier' | 'incomplete'>('all');
 
   // Multi-select state
   const [selectedSkus, setSelectedSkus] = useState<Set<string>>(new Set());
@@ -527,13 +532,49 @@ ${allSourceStrings.join('\n')}`;
   };
   const filteredSkuList = useMemo(() => skuList.filter(s => s.toLowerCase().includes(skuSearchTerm.toLowerCase())), [skuList, skuSearchTerm]);
   
+  /**
+   * A cost counts as "defined" only when it is a positive number. Blank and 0 are
+   * treated identically on purpose: a 0 ingredient cost is not a real cost, and
+   * downstream it behaves exactly like a missing one — the item contributes
+   * nothing to theoretical spend and inflates apparent efficiency.
+   */
+  const hasCost = (v: string | undefined) => (parseFloat(v || '') || 0) > 0;
+
   const filteredCostsList = useMemo(() => {
     return skuList.filter(s => {
       const matchesSearch = s.toLowerCase().includes(costsSearchTerm.toLowerCase());
       const matchesSegment = costsSegmentFilter === 'all' || (skuMappings[s]?.segment === costsSegmentFilter);
-      return matchesSearch && matchesSegment;
+      if (!matchesSearch || !matchesSegment) return false;
+
+      // Read the live edit buffer, not the saved record, so an item stops
+      // matching the moment you type its cost in
+      const c = editingCosts[s] || { ingredient: '', tier1: '', tier2: '' };
+      const ing = hasCost(c.ingredient), t1 = hasCost(c.tier1), t2 = hasCost(c.tier2);
+      switch (costsGapFilter) {
+        case 'no-ingredient': return !ing;
+        case 'no-tier1': return !t1;
+        case 'no-tier2': return !t2;
+        case 'no-any-tier': return !t1 && !t2;
+        case 'incomplete': return !ing || !t1 || !t2;
+        default: return true;
+      }
     });
-  }, [skuList, costsSearchTerm, costsSegmentFilter, skuMappings]);
+  }, [skuList, costsSearchTerm, costsSegmentFilter, skuMappings, costsGapFilter, editingCosts]);
+
+  /** Counts for the filter labels, so the size of each gap is visible before selecting it. */
+  const costGapCounts = useMemo(() => {
+    let noIng = 0, noT1 = 0, noT2 = 0, noAnyTier = 0, incomplete = 0;
+    skuList.forEach(s => {
+      const c = editingCosts[s] || { ingredient: '', tier1: '', tier2: '' };
+      const ing = hasCost(c.ingredient), t1 = hasCost(c.tier1), t2 = hasCost(c.tier2);
+      if (!ing) noIng++;
+      if (!t1) noT1++;
+      if (!t2) noT2++;
+      if (!t1 && !t2) noAnyTier++;
+      if (!ing || !t1 || !t2) incomplete++;
+    });
+    return { noIng, noT1, noT2, noAnyTier, incomplete, total: skuList.length };
+  }, [skuList, editingCosts]);
 
   const toggleSkuSelection = (sku: string) => {
     const next = new Set(selectedSkus);
@@ -902,6 +943,23 @@ ${allSourceStrings.join('\n')}`;
                             <select value={costsSegmentFilter} onChange={e => { setCostsSegmentFilter(e.target.value); setSelectedSkus(new Set()); }} className="bg-transparent font-bold text-xs outline-none uppercase min-w-[140px]">
                                <option value="all">All Segments</option>
                                {menuSegments.map(s => <option key={s} value={s}>{s}</option>)}
+                            </select>
+                         </div>
+                         {/* Costing-gap filter. Counts are shown inline so the size of
+                             each gap is visible without having to select it first. */}
+                         <div className={`px-4 py-2.5 rounded-xl border flex items-center gap-2 shadow-sm ${costsGapFilter === 'all' ? 'bg-white border-slate-100' : 'bg-amber-50 border-amber-200'}`}>
+                            <AlertTriangle size={14} className={costsGapFilter === 'all' ? 'text-slate-400' : 'text-amber-600'} />
+                            <select
+                              value={costsGapFilter}
+                              onChange={e => { setCostsGapFilter(e.target.value as typeof costsGapFilter); setSelectedSkus(new Set()); }}
+                              className="bg-transparent font-bold text-xs outline-none uppercase min-w-[190px]"
+                            >
+                               <option value="all">All items ({costGapCounts.total})</option>
+                               <option value="no-ingredient">No ingredient cost ({costGapCounts.noIng})</option>
+                               <option value="no-tier1">No Tier 1 price ({costGapCounts.noT1})</option>
+                               <option value="no-tier2">No Tier 2 price ({costGapCounts.noT2})</option>
+                               <option value="no-any-tier">No tier price at all ({costGapCounts.noAnyTier})</option>
+                               <option value="incomplete">Anything incomplete ({costGapCounts.incomplete})</option>
                             </select>
                          </div>
                          <div className="relative">
