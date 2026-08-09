@@ -143,9 +143,14 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
 
       if (setSnap.exists()) {
         const data = setSnap.data() as CategorySettings;
-        if (data.cogsKeywords) setCogsKeywords(data.cogsKeywords);
-        if (data.labourKeywords) setLabourKeywords(data.labourKeywords);
-        if (data.opsKeywords) setOpsKeywords(data.opsKeywords);
+        // Normalize on read. Keywords are stored exactly as typed, and every
+        // comparison below is against an upper-cased category — without this,
+        // a keyword saved as "Vegetables" or " Milk " silently failed to match
+        // here (and only here), dropping that spend out of COGS into unmapped.
+        const norm = (l: string[]) => l.map(k => (k || '').trim().toUpperCase());
+        if (data.cogsKeywords) setCogsKeywords(norm(data.cogsKeywords));
+        if (data.labourKeywords) setLabourKeywords(norm(data.labourKeywords));
+        if (data.opsKeywords) setOpsKeywords(norm(data.opsKeywords));
       }
       
       setSalesSnaps(sSnaps.docs.map(d => d.data() as SalesMonthlySnapshot));

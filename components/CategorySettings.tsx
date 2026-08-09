@@ -272,8 +272,17 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
     try {
       // dataOwnerId, not user.uid — fetchData reads from dataOwnerId, so writing
       // to user.uid meant a delegated admin's edits landed on a doc nobody reads
+      // Store keywords canonically (trimmed, upper-cased, de-duped). Every consumer
+      // compares against an upper-cased category, so saving them as typed left
+      // matching dependent on each screen remembering to normalize on read.
+      const canon = (l: string[]) =>
+        Array.from(new Set((l || []).map(k => (k || '').trim().toUpperCase()).filter(Boolean)));
+
       await setDoc(doc(db, 'category_settings', dataOwnerId), {
-        cogsKeywords, labourKeywords, opsKeywords, cogsBucketMapping, menuSegments,
+        cogsKeywords: canon(cogsKeywords),
+        labourKeywords: canon(labourKeywords),
+        opsKeywords: canon(opsKeywords),
+        cogsBucketMapping, menuSegments,
         trackedConsumables, updatedAt: Date.now()
       }, { merge: true });
       setSuccess(true); setTimeout(() => setSuccess(false), 3000);

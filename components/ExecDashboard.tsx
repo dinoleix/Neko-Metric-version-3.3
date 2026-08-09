@@ -52,20 +52,33 @@ const ExecDashboard: React.FC<{ user: User; dataOwnerId: string }> = ({ user, da
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [rentals, setRentals] = useState<StoreRental[]>([]);
   const [payrolls, setPayrolls] = useState<MonthlyPayroll[]>([]);
+  // Classification must follow the owner's configured keywords, not the built-in
+  // defaults — this screen previously used DEFAULT_LABOUR directly, so any custom
+  // category the owner had set up was classified differently here than in P&L
+  // Command, Expense Hub and Margin Intelligence.
+  const [labourKeywords, setLabourKeywords] = useState<string[]>(DEFAULT_LABOUR);
   const [loading, setLoading] = useState(true);
 
   const fetchData = async () => {
     setLoading(true);
     try {
       const constraints = [where('userId', '==', dataOwnerId)];
-      const [sSnap, eSnap, aSnap, empArr, rentArr, payArr] = await Promise.all([
+      const [sSnap, eSnap, aSnap, empArr, rentArr, payArr, setSnap] = await Promise.all([
         getDocs(query(collection(db, 'sales_snapshots'), ...constraints)),
         getDocs(query(collection(db, 'expense_snapshots'), ...constraints)),
         getDocs(query(collection(db, 'cogs_adjustments'), ...constraints)),
         getCachedCollection<Employee>('employees', dataOwnerId),
         getCachedCollection<StoreRental>('rentals', dataOwnerId),
-        getCachedCollection<MonthlyPayroll>('monthly_payrolls', dataOwnerId)
+        getCachedCollection<MonthlyPayroll>('monthly_payrolls', dataOwnerId),
+        getDoc(doc(db, 'category_settings', dataOwnerId))
       ]);
+
+      // Normalized on read: keywords are stored exactly as the owner typed them,
+      // and every comparison below is against an upper-cased category.
+      if (setSnap.exists()) {
+        const s = setSnap.data() as CategorySettings;
+        if (s.labourKeywords) setLabourKeywords(s.labourKeywords.map(k => (k || '').trim().toUpperCase()));
+      }
       setSalesSnaps(sSnap.docs.map(d => d.data() as SalesMonthlySnapshot));
       setExpenseSnaps(eSnap.docs.map(d => d.data() as ExpenseMonthlySnapshot));
       setAdjustments(aSnap.docs.map(d => d.data() as CogsAdjustment));
@@ -119,7 +132,7 @@ const ExecDashboard: React.FC<{ user: User; dataOwnerId: string }> = ({ user, da
     currentExpenses.forEach(s => {
       const processMap = (map: Record<string, number> | undefined) => {
         Object.entries(map || {}).forEach(([cat, amt]) => {
-          if (DEFAULT_LABOUR.includes(cat.trim().toUpperCase())) csvLabourFromExpenses += Math.abs(Number(amt) || 0);
+          if (labourKeywords.includes(cat.trim().toUpperCase())) csvLabourFromExpenses += Math.abs(Number(amt) || 0);
         });
       };
       processMap(s.expenseByCategory);
@@ -167,7 +180,7 @@ const ExecDashboard: React.FC<{ user: User; dataOwnerId: string }> = ({ user, da
         let oCSVLabour = 0;
         oExp.forEach(s => {
           const pm = (map: Record<string, number> | undefined) => Object.entries(map || {}).forEach(([cat, amt]) => {
-            if (DEFAULT_LABOUR.includes(cat.trim().toUpperCase())) oCSVLabour += Math.abs(Number(amt) || 0);
+            if (labourKeywords.includes(cat.trim().toUpperCase())) oCSVLabour += Math.abs(Number(amt) || 0);
           });
           pm(s.expenseByCategory);
           pm((s as any).crewExpenseByCategory);
@@ -194,7 +207,7 @@ const ExecDashboard: React.FC<{ user: User; dataOwnerId: string }> = ({ user, da
       reportingPeriod: `${latestMonth} ${latestYear}`,
       onlinePercentage
     };
-  }, [salesSnaps, expenseSnaps, adjustments, payrolls, employees, rentals]);
+  }, [salesSnaps, expenseSnaps, adjustments, payrolls, employees, rentals, labourKeywords]);
 
   if (loading) {
     return (
