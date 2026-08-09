@@ -148,6 +148,8 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
   const [lastSoldStamp, setLastSoldStamp] = useState<Record<string, number>>({});
   /** Raw source string → last-sold stamp, for the Master Menu (which works in sources). */
   const [lastSoldSourceStamp, setLastSoldSourceStamp] = useState<Record<string, number>>({});
+  /** Normalized source → the menu_normalization doc id(s) currently stored for it. */
+  const [normDocIds, setNormDocIds] = useState<Record<string, string[]>>({});
   const [activityFilter, setActivityFilter] = useState<'3' | '6' | '12' | 'ever'>('3');
 
   // Multi-select state
@@ -212,11 +214,19 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
       setAllSourceStrings(Array.from(rawUniqueStrings).sort());
 
       const normMap: Record<string, string> = {};
+      const normIds: Record<string, string[]> = {};
       normSnap.docs.forEach(d => {
         const data = d.data() as MenuNormalization;
-        normMap[data.sourceName] = data.masterName;
+        // Keyed on the normalized source, because the doc id has always been
+        // upper-cased — two source strings differing only in case or punctuation
+        // could previously share one document (see normDocId).
+        const key = (data.sourceName || '').trim().toUpperCase();
+        if (!key) return;
+        normMap[key] = data.masterName;
+        (normIds[key] = normIds[key] || []).push(d.id);
       });
       setNormalizationMap(normMap);
+      setNormDocIds(normIds);
 
       const dbMappings: Record<string, { category: SkuCategory, segment?: string }> = {};
       const sortedSkuDocs = skuMapSnaps.docs
@@ -336,22 +346,67 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
     } catch (err) { setError("Sync failed."); } finally { setSaving(false); }
   };
 
+  /**
+   * Document id for a source string's normalization record.
+   *
+   * The old scheme was `${uid}_norm_${SOURCE.toUpperCase().replace(/[^a-zA-Z0-9]/g,'_')}`,
+   * which is NOT injective: "CHIK-1" and "CHIK 1" both became "CHIK_1", as did
+   * "chik1" and "CHIK1". Two different source strings therefore shared one
+   * document, the second save overwrote the first with merge:true, and on reload
+   * the losing source read back as unmapped — you retain it, save, and it asks
+   * to be retained again.
+   *
+   * Appending a hash of the exact source makes the id injective while keeping it
+   * readable. Records are found by query (userId ==), never by id, so existing
+   * documents keep working; the save path deletes superseded ids explicitly.
+   */
+  const normDocId = (sourceName: string): string => {
+    const clean = sourceName.trim().toUpperCase();
+    let h = 0;
+    for (let i = 0; i < clean.length; i++) h = ((h << 5) - h + clean.charCodeAt(i)) | 0;
+    const slug = clean.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 80);
+    return `${dataOwnerId}_norm_${slug}_${Math.abs(h).toString(36)}`;
+  };
+
   const handleSaveNormalization = async () => {
     setSaving(true); setSuccess(false);
     try {
-      const entries = Object.entries(normalizationMap);
-      for (let i = 0; i < entries.length; i += 400) {
+      // Only write entries with a real target. Sources whose mapping was cleared
+      // are DELETED below — previously they were merely skipped, so the old
+      // document survived and fetchData read the mapping straight back.
+      const entries = (Object.entries(normalizationMap) as [string, string][]).filter(([, master]) => !!(master || '').trim());
+      const keep = new Set(entries.map(([source]) => source.trim().toUpperCase()));
+
+      const ops: { id: string; data?: any }[] = [];
+      entries.forEach(([sourceName, masterName]) => {
+        ops.push({
+          id: normDocId(sourceName),
+          data: {
+            sourceName: sourceName.trim().toUpperCase(),
+            masterName: masterName.trim().toUpperCase(),
+            userId: dataOwnerId,
+            updatedAt: Date.now(),
+          },
+        });
+      });
+      // Delete every stored doc whose source is no longer mapped, plus any
+      // legacy duplicate ids for sources that are (collisions from the old
+      // scheme left stale rows behind).
+      (Object.entries(normDocIds) as [string, string[]][]).forEach(([source, ids]) => {
+        const wanted = keep.has(source) ? normDocId(source) : null;
+        ids.forEach(id => { if (id !== wanted) ops.push({ id }); });
+      });
+
+      for (let i = 0; i < ops.length; i += 400) {
         const batch = writeBatch(db);
-        entries.slice(i, i + 400).forEach(([sourceName, masterName]) => {
-          if (!masterName) return;
-          const safeId = sourceName.trim().toUpperCase().replace(/[^a-zA-Z0-9]/g, '_');
-          batch.set(doc(db, 'menu_normalization', `${user.uid}_norm_${safeId}`), {
-            sourceName, masterName, userId: user.uid, updatedAt: Date.now()
-          }, { merge: true });
+        ops.slice(i, i + 400).forEach(op => {
+          const ref = doc(db, 'menu_normalization', op.id);
+          if (op.data) batch.set(ref, op.data, { merge: true });
+          else batch.delete(ref);
         });
         await batch.commit();
       }
-      invalidateCached('menu_normalization', user.uid);
+      invalidateCached('menu_normalization', dataOwnerId);
       setSuccess(true); setTimeout(() => setSuccess(false), 3000);
       fetchData();
     } catch (err) { setError("Normalization save failed."); } finally { setSaving(false); }

@@ -1041,12 +1041,18 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
       } else if (fileType === 'item' || fileType === 'platform_item') {
         const normSnap = await getDocs(query(collection(db, 'menu_normalization'), where('userId', '==', dataOwnerId)));
         const normMap: Record<string, string> = {};
-        normSnap.docs.forEach(d => { const data = d.data() as MenuNormalization; normMap[data.sourceName] = data.masterName; });
+        // Key on the upper-cased source: item names arrive from the CSV in whatever
+        // case the POS exported, while stored sourceNames are canonical upper case.
+        // Matching raw meant a row reading "Chik1" silently failed to normalize.
+        normSnap.docs.forEach(d => {
+          const data = d.data() as MenuNormalization;
+          normMap[(data.sourceName || '').trim().toUpperCase()] = data.masterName;
+        });
 
         const outletAggs: Record<string, any> = {};
         csvData.forEach(row => {
           const rawName = (row[mapping['itemName']] || '').toString().trim();
-          const masterName = (normMap[rawName] || rawName).trim().toUpperCase();
+          const masterName = (normMap[rawName.toUpperCase()] || rawName).trim().toUpperCase();
           const qty = cleanNumber(row[mapping['itemQuantity']]);
           const total = cleanNumber(row[mapping['itemTotal']]);
           const dateStr = (row[mapping['date']] || '').toString().trim();
