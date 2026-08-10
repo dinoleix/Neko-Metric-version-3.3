@@ -3,7 +3,7 @@ import type { User } from 'firebase/auth';
 import { collection, getDocs, addDoc, doc, updateDoc, deleteDoc, query, where } from 'firebase/firestore';
 import { db } from '../firebase';
 import { Product, CREW_PURCHASE_CATEGORIES, CREW_EXPENSE_CATEGORIES } from '../types';
-import { X, Plus, Search, Edit2, Trash2, Tag, Loader2, Package, Check } from 'lucide-react';
+import { X, Plus, Search, Edit2, Trash2, Tag, Loader2, Package, Check, Copy, AlertTriangle } from 'lucide-react';
 
 const ALL_PRODUCT_CATEGORIES = Array.from(
   new Set([...CREW_PURCHASE_CATEGORIES, ...CREW_EXPENSE_CATEGORIES])
@@ -30,6 +30,10 @@ const ProductCatalog: React.FC<Props> = ({ user, ownerId, onSelect, onClose }) =
   const [fPrice, setFPrice] = useState('');
   const [fQty, setFQty] = useState('');
   const [fUnit, setFUnit] = useState('');
+
+  const [showDuplicatesOnly, setShowDuplicatesOnly] = useState(false);
+  const [keepSelection, setKeepSelection] = useState<Record<string, string>>({});
+  const [mergingName, setMergingName] = useState<string | null>(null);
 
   useEffect(() => { loadProducts(); }, []);
 
@@ -67,6 +71,11 @@ const ProductCatalog: React.FC<Props> = ({ user, ownerId, onSelect, onClose }) =
 
   const handleSave = async () => {
     if (!fName.trim() || !fCategory) return;
+    const canonical = fName.trim().toUpperCase();
+    if (products.some(p => p.name === canonical && p.id !== editingProduct?.id)) {
+      alert(`"${canonical}" already exists in your product list. Use the existing entry instead of adding a duplicate.`);
+      return;
+    }
     setSaving(true);
     try {
       const data = {
@@ -126,6 +135,35 @@ const ProductCatalog: React.FC<Props> = ({ user, ownerId, onSelect, onClose }) =
     return Object.entries(map).sort(([a], [b]) => a.localeCompare(b));
   }, [filtered]);
 
+  // Names are already trim().toUpperCase()'d on save, so an exact-match name
+  // collision means the same item was genuinely added more than once — not a
+  // casing difference (that class of bug already lives in item_costs/CategorySettings).
+  const duplicateGroups = useMemo(() => {
+    const map: Record<string, Product[]> = {};
+    products.forEach(p => { (map[p.name] ||= []).push(p); });
+    return Object.entries(map)
+      .filter(([, group]) => group.length > 1)
+      .sort(([a], [b]) => a.localeCompare(b));
+  }, [products]);
+
+  const handleMergeGroup = async (name: string, group: Product[]) => {
+    const oldest = [...group].sort((a, b) => a.createdAt - b.createdAt)[0];
+    const keepId = keepSelection[name] || oldest.id!;
+    const toDelete = group.filter(p => p.id !== keepId);
+    if (toDelete.length === 0) return;
+    if (!confirm(`Delete ${toDelete.length} duplicate "${name}" entr${toDelete.length !== 1 ? 'ies' : 'y'}? This can't be undone.`)) return;
+    setMergingName(name);
+    try {
+      await Promise.all(toDelete.map(p => deleteDoc(doc(db, 'products', p.id!))));
+      setProducts(prev => prev.filter(p => !toDelete.some(d => d.id === p.id)));
+      setKeepSelection(prev => { const next = { ...prev }; delete next[name]; return next; });
+    } catch (err) {
+      console.error('Error merging duplicates:', err);
+    } finally {
+      setMergingName(null);
+    }
+  };
+
   return (
     <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center">
       <div className="bg-white w-full max-w-lg max-h-[90vh] rounded-t-[3rem] sm:rounded-[3rem] flex flex-col shadow-2xl overflow-hidden">
@@ -166,6 +204,21 @@ const ProductCatalog: React.FC<Props> = ({ user, ownerId, onSelect, onClose }) =
             <Plus size={14} /> Add
           </button>
         </div>
+
+        {duplicateGroups.length > 0 && (
+          <div className="px-6 pb-3 shrink-0">
+            <button
+              onClick={() => setShowDuplicatesOnly(v => !v)}
+              className={`w-full flex items-center gap-2 px-4 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all border-2 ${
+                showDuplicatesOnly ? 'bg-amber-500 text-white border-amber-500' : 'bg-amber-50 text-amber-600 border-amber-100'
+              }`}
+            >
+              <Copy size={14} />
+              {duplicateGroups.length} duplicate product{duplicateGroups.length !== 1 ? 's' : ''} found
+              <span className="ml-auto">{showDuplicatesOnly ? 'Hide' : 'Review'}</span>
+            </button>
+          </div>
+        )}
 
         {/* Inline Add/Edit Form */}
         {showForm && (
@@ -239,6 +292,77 @@ const ProductCatalog: React.FC<Props> = ({ user, ownerId, onSelect, onClose }) =
               <Loader2 size={20} className="animate-spin" />
               <span className="text-xs font-bold uppercase tracking-widest">Loading…</span>
             </div>
+          ) : showDuplicatesOnly ? (
+            duplicateGroups.length === 0 ? (
+              <div className="py-16 text-center">
+                <Check size={40} className="mx-auto text-emerald-200 mb-3" />
+                <p className="text-xs font-black text-slate-300 uppercase tracking-widest">No duplicates left</p>
+              </div>
+            ) : (
+              <div className="space-y-5 pt-2">
+                {duplicateGroups.map(([name, group]) => {
+                  const oldest = [...group].sort((a, b) => a.createdAt - b.createdAt)[0];
+                  const keepId = keepSelection[name] || oldest.id!;
+                  const pricesDiffer = new Set(group.map(p => p.pricePerUnit ?? null)).size > 1;
+                  return (
+                    <div key={name} className="bg-amber-50/60 rounded-[1.75rem] p-4 border-2 border-amber-100">
+                      <div className="flex items-center gap-2 mb-3">
+                        <AlertTriangle size={13} className="text-amber-500 shrink-0" />
+                        <p className="text-sm font-black text-slate-900 uppercase truncate">{name}</p>
+                        <div className="ml-auto flex items-center gap-2 shrink-0">
+                          {pricesDiffer && (
+                            <span className="text-[9px] font-black text-rose-600 bg-rose-100 px-2 py-0.5 rounded-full uppercase tracking-widest">
+                              Prices differ
+                            </span>
+                          )}
+                          <span className="text-[9px] font-black text-amber-600 uppercase tracking-widest">{group.length} entries</span>
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        {[...group].sort((a, b) => a.createdAt - b.createdAt).map(p => (
+                          <label
+                            key={p.id}
+                            className={`flex items-center gap-3 px-4 py-3 rounded-2xl border-2 cursor-pointer transition-all ${
+                              keepId === p.id ? 'bg-white border-emerald-300' : 'bg-white/60 border-transparent'
+                            }`}
+                          >
+                            <input
+                              type="radio"
+                              name={`keep-${name}`}
+                              checked={keepId === p.id}
+                              onChange={() => setKeepSelection(prev => ({ ...prev, [name]: p.id! }))}
+                              className="accent-emerald-500"
+                            />
+                            <div className="min-w-0 flex-1">
+                              <p className="text-[10px] font-bold text-slate-500">{p.category}</p>
+                              <p className="text-[9px] font-bold text-slate-400">
+                                {p.unit ? `per ${p.unit} · ` : ''}{new Date(p.createdAt).toLocaleDateString('en-IN')}
+                              </p>
+                            </div>
+                            <div className="text-right shrink-0">
+                              <p className={`text-base font-black ${p.pricePerUnit != null ? 'text-slate-900' : 'text-slate-300'}`}>
+                                {p.pricePerUnit != null ? `₹${p.pricePerUnit.toLocaleString('en-IN')}` : 'No price'}
+                              </p>
+                            </div>
+                            {keepId === p.id && (
+                              <span className="text-[9px] font-black text-emerald-600 uppercase tracking-widest shrink-0">Keep</span>
+                            )}
+                          </label>
+                        ))}
+                      </div>
+                      <button
+                        onClick={() => handleMergeGroup(name, group)}
+                        disabled={mergingName === name}
+                        className="w-full mt-3 py-3 bg-amber-500 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest disabled:opacity-50 flex items-center justify-center gap-2 active:scale-95 transition-all"
+                      >
+                        {mergingName === name ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                        Delete {group.length - 1} Duplicate{group.length - 1 !== 1 ? 's' : ''}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )
           ) : grouped.length === 0 ? (
             <div className="py-16 text-center">
               <Package size={40} className="mx-auto text-slate-200 mb-3" />

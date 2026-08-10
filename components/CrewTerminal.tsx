@@ -1233,6 +1233,11 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
   const handleNewProductSave = async () => {
     const cat = npCategory || category;
     if (!npName.trim() || !cat) return;
+    const canonical = npName.trim().toUpperCase();
+    if (catalogProducts.some(p => p.name === canonical)) {
+      alert(`"${canonical}" already exists in your product list. Use the existing entry instead of adding a duplicate.`);
+      return;
+    }
     setNpSaving(true);
     try {
       const ownerId = profile.ownerId || user.uid;
@@ -1495,6 +1500,13 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
       setTransferring(false);
     }
   };
+
+  // Edit mode renders the simple single-field form (see save-logic comment above),
+  // so a purchase originally built with multiple bill items has nowhere to show
+  // them — surface the preserved items read-only instead of letting them vanish.
+  const editingEntryItems = (activeMode === 'edit' && editingId)
+    ? entries.find(e => e.id === editingId)?.items
+    : undefined;
 
   return (
     <div className="animate-in fade-in duration-500 pb-24">
@@ -2736,7 +2748,32 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
                           <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={16} />
                         </div>
                       </div>
+                      {/* Items originally added via the bill builder — that UI only
+                          shows for new purchases, so display what was saved, read-only */}
+                      {editingEntryItems && editingEntryItems.length > 0 && (
+                        <div className="space-y-2">
+                          <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">
+                            Items in This Purchase
+                          </label>
+                          <div className="space-y-2">
+                            {editingEntryItems.map((item, idx) => (
+                              <div key={idx} className="flex items-center justify-between gap-3 bg-slate-50 border-2 border-slate-100 rounded-2xl px-5 py-3.5">
+                                <div className="min-w-0">
+                                  <p className="text-sm font-black text-slate-900 uppercase truncate">{item.productName}</p>
+                                  <p className="text-[10px] font-bold text-slate-400 mt-0.5">{item.quantity} × ₹{item.pricePerUnit.toLocaleString('en-IN')}</p>
+                                </div>
+                                <p className="text-sm font-black text-slate-900 shrink-0">₹{item.amount.toLocaleString('en-IN')}</p>
+                              </div>
+                            ))}
+                          </div>
+                          <p className="text-[10px] font-medium text-slate-400 ml-1">
+                            To change individual items, delete this purchase and re-enter it.
+                          </p>
+                        </div>
+                      )}
+
                       {/* Product — auto-fills description, price, qty */}
+                      {(!editingEntryItems || editingEntryItems.length === 0) && (
                       <div className="space-y-2">
                         <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Product (Optional)</label>
                         <div className="flex gap-2.5">
@@ -2812,6 +2849,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
                           </div>
                         )}
                       </div>
+                      )}
                     </div>
                   )}
 
