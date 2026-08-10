@@ -239,9 +239,19 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
         }
       });
 
+      // Canonicalize to uppercase: rawUniqueStrings is a case-sensitive Set, so
+      // the same item entered with different casing across two uploads/months
+      // (e.g. "Enoki Mushrooms" vs "ENOKI MUSHROOMS") produces two separate
+      // master entries here. They're indistinguishable in the UI — item names
+      // render via CSS text-transform:uppercase regardless of actual case — so
+      // a user editing what looks like one row is really editing one of two,
+      // and handleSaveCosts writes every entry in editingCosts on save: the
+      // untouched duplicate (still '0') can overwrite the one just edited,
+      // silently, in the same batch. Costs/mappings already match by uppercase
+      // (see ~line 301), so canonicalizing here removes the duplicate outright.
       const uniqueMasterSkus = new Set<string>();
       rawUniqueStrings.forEach(s => {
-        uniqueMasterSkus.add(normMap[s] || s);
+        uniqueMasterSkus.add((normMap[s] || s).trim().toUpperCase());
       });
       const masterList = Array.from(uniqueMasterSkus).sort();
       setSkuList(masterList);
@@ -267,7 +277,7 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
         Object.entries(data.items || {}).forEach(([name, v]: [string, any]) => {
           if ((Number(v?.quantity) || 0) <= 0) return; // listed but unsold ≠ sold
           const clean = name.trim();
-          const master = normMap[clean] || clean;
+          const master = (normMap[clean] || clean).trim().toUpperCase(); // same canonicalization as masterList, above
           if (!lastSold[master] || stamp > lastSold[master]) lastSold[master] = stamp;
           // Kept separately: the Master Menu works in SOURCE strings, and once a
           // source is normalized the Uploader rewrites it at import, so the source
@@ -287,7 +297,7 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
         if (dbMappings[upperMaster]) {
           finalMappings[masterName] = { ...dbMappings[upperMaster], isInherited: false };
         } else {
-          const sources = Array.from(rawUniqueStrings).filter(s => (normMap[s] || s) === masterName);
+          const sources = Array.from(rawUniqueStrings).filter(s => (normMap[s] || s).trim().toUpperCase() === masterName);
           for (const src of sources) {
             const upperSrc = src.trim().toUpperCase();
             if (dbMappings[upperSrc]) {
