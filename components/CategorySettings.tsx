@@ -421,13 +421,15 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
         entries.slice(i, i + 400).forEach(([itemName, val]) => {
           const data = val as { category: SkuCategory; segment?: string };
           const safeId = itemName.trim().toUpperCase().replace(/[^a-zA-Z0-9]/g, '_');
-          batch.set(doc(db, 'sku_mappings', `${user.uid}_sku_${safeId}`), {
-            itemName, category: data.category || 'UNMAPPED', segment: data.segment || '', userId: user.uid, updatedAt: Date.now()
+          // dataOwnerId, not user.uid — fetchData reads from dataOwnerId, so writing
+          // to user.uid means a delegated admin's edits land on a doc nobody reads.
+          batch.set(doc(db, 'sku_mappings', `${dataOwnerId}_sku_${safeId}`), {
+            itemName, category: data.category || 'UNMAPPED', segment: data.segment || '', userId: dataOwnerId, updatedAt: Date.now()
           }, { merge: true });
         });
         await batch.commit();
       }
-      invalidateCached('sku_mappings', user.uid);
+      invalidateCached('sku_mappings', dataOwnerId);
       setSuccess(true); setTimeout(() => setSuccess(false), 3000);
     } catch (err) { setError("Product mapping failed."); } finally { setSaving(false); }
   };
@@ -450,20 +452,22 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
           
           const masterNameUpper = itemName.trim().toUpperCase();
           const safeId = masterNameUpper.replace(/[^a-zA-Z0-9]/g, '_');
-          
-          batch.set(doc(db, 'item_costs', `${user.uid}_cost_${safeId}`), { 
-            userId: user.uid, 
-            itemName: masterNameUpper, 
-            costPerUnit: ingVal, 
-            tier1ServingsCost: t1Val, 
-            tier2ServingsCost: t2Val, 
-            updatedAt: Date.now() 
+
+          // dataOwnerId, not user.uid — fetchData reads from dataOwnerId, so writing
+          // to user.uid means a delegated admin's edits land on a doc nobody reads.
+          batch.set(doc(db, 'item_costs', `${dataOwnerId}_cost_${safeId}`), {
+            userId: dataOwnerId,
+            itemName: masterNameUpper,
+            costPerUnit: ingVal,
+            tier1ServingsCost: t1Val,
+            tier2ServingsCost: t2Val,
+            updatedAt: Date.now()
           }, { merge: true });
         });
-        
+
         await batch.commit();
       }
-      invalidateCached('item_costs', user.uid);
+      invalidateCached('item_costs', dataOwnerId);
 
       setSuccess(true);
       setTimeout(() => setSuccess(false), 3000);
@@ -1667,13 +1671,15 @@ ${allSourceStrings.join('\n')}`;
                           setSaving(true); 
                           try { 
                             const totalCost = newServingItems.reduce((sum, item) => sum + item.price, 0); 
-                            const data = { name: newServingName.toUpperCase(), items: newServingItems, totalCost, userId: user.uid, updatedAt: Date.now() };
+                            // dataOwnerId, not user.uid — fetchData reads from dataOwnerId, so writing
+                            // to user.uid means a delegated admin's edits land on a doc nobody reads.
+                            const data = { name: newServingName.toUpperCase(), items: newServingItems, totalCost, userId: dataOwnerId, updatedAt: Date.now() };
                             if (editingServingId) {
                               await setDoc(doc(db, 'serving_options', editingServingId), data, { merge: true });
-                              invalidateCached('serving_options', user.uid);
+                              invalidateCached('serving_options', dataOwnerId);
                             } else {
                               await addDoc(collection(db, 'serving_options'), data);
-                              invalidateCached('serving_options', user.uid);
+                              invalidateCached('serving_options', dataOwnerId);
                             }
                             resetServingForm();
                             fetchData(); 
@@ -1696,7 +1702,7 @@ ${allSourceStrings.join('\n')}`;
                         <button onClick={() => onEditServing(opt)} className="p-2 text-indigo-400 hover:text-indigo-600 bg-white rounded-lg shadow-sm border border-indigo-50">
                           <Edit3 size={16}/>
                         </button>
-                        <button onClick={async () => { if(confirm("Permanently delete this template?")) { await deleteDoc(doc(db, 'serving_options', opt.id!)); invalidateCached('serving_options', user.uid); fetchData(); } }} className="p-2 text-rose-300 hover:text-rose-500 bg-white rounded-lg shadow-sm border border-rose-50">
+                        <button onClick={async () => { if(confirm("Permanently delete this template?")) { await deleteDoc(doc(db, 'serving_options', opt.id!)); invalidateCached('serving_options', dataOwnerId); fetchData(); } }} className="p-2 text-rose-300 hover:text-rose-500 bg-white rounded-lg shadow-sm border border-rose-50">
                           <Trash2 size={16}/>
                         </button>
                       </div>
