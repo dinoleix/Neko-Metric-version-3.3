@@ -1,59 +1,29 @@
-import { GoogleGenAI } from "@google/genai";
-
-let aiInstance: any = null;
-
-export function getGeminiAI(): any {
-  if (!aiInstance) {
-    let apiKey = "";
-    try {
-      apiKey = (import.meta as any).env?.VITE_GEMINI_API_KEY || "";
-      if (!apiKey && typeof process !== 'undefined' && process.env) {
-        apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY || "";
-      }
-    } catch (e) {
-      // Ignore errors from environment variable access
-    }
-
-    if (!apiKey) {
-      throw new Error("GEMINI_API_KEY environment variable is required. Please set it in your environment settings.");
-    }
-    try {
-      aiInstance = new GoogleGenAI({ apiKey });
-    } catch (err: any) {
-      console.error("Failed to initialize GoogleGenAI:", err);
-      // If "Illegal constructor" happens, it might be due to some environment issue
-      throw err;
-    }
-  }
-  return aiInstance;
-}
-
 /**
- * Compatibility shim for older code that expects an 'ai.models.generateContent' interface.
+ * Compatibility shim: same `ai.models.generateContent` shape every caller in
+ * this codebase already uses, but routed through the /api/gemini serverless
+ * proxy instead of the browser SDK — the Gemini key now lives server-side
+ * only (GEMINI_API_KEY, no VITE_ prefix) and never reaches the client bundle.
  */
 export const ai = {
   get models() {
     return {
       generateContent: async (params: { model?: string; contents: string | any[]; config?: any }) => {
-        const client = getGeminiAI();
-        const modelName = params.model || "gemini-1.5-flash";
-        
-        // The new SDK uses client.models.generateContent
-        const result = await client.models.generateContent({
-          model: modelName,
-          contents: Array.isArray(params.contents) ? params.contents : [{ role: 'user', parts: [{ text: params.contents }] }],
-          generationConfig: params.config
+        const res = await fetch('/api/gemini', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: params.model,
+            contents: params.contents,
+            config: params.config,
+          }),
         });
-        
-        // Ensure we return an object that satisfies GenerateContentResponse expected by Uploader.tsx
-        return {
-          text: result.text || "",
-          data: (result as any).data,
-          functionCalls: (result as any).functionCalls,
-          executableCode: (result as any).executableCode,
-          codeExecutionResult: (result as any).codeExecutionResult,
-          response: result
-        };
+
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || `Gemini request failed (${res.status})`);
+        }
+
+        return await res.json();
       }
     };
   }

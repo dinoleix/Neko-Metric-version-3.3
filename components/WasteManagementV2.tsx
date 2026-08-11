@@ -71,7 +71,9 @@ import {
   X,
   BarChart2,
   Download,
+  Sparkles,
 } from 'lucide-react';
+import { generateLeakageInsight } from '../wasteInsightService';
 
 type WasteTab = 'audit' | 'drift' | 'staff' | 'serving';
 
@@ -81,6 +83,119 @@ const PILLARS: { id: CogsBucket, label: string, icon: any, color: string, ring: 
   { id: 'FOOD SERVINGS', label: 'Food Packaging', icon: Box, color: 'text-amber-400', ring: 'ring-amber-500', hex: '#f59e0b' },
   { id: 'DRINKS SERVINGS', label: 'Drinks Packaging', icon: Grape, color: 'text-rose-500', ring: 'ring-rose-500', hex: '#f43f5e' }
 ];
+
+// Extracted so the same actual-vs-theoretical reconciliation can be run for
+// a prior period (AI month-over-month comparison) without re-running the
+// whole component's useMemo or duplicating the math.
+function reconcilePeriod(
+  filteredItemSnaps: ItemMonthlySnapshot[],
+  filteredExpSnaps: ExpenseMonthlySnapshot[],
+  filteredAdjustments: CogsAdjustment[],
+  rentals: StoreRental[],
+  itemCosts: ItemCost[],
+  skuMappings: Record<string, { category: SkuCategory, segment?: string }>,
+  normalizationMap: Record<string, string>,
+) {
+  const targets: Record<CogsBucket, number> = { 'FOOD': 0, 'DRINKS': 0, 'FOOD SERVINGS': 0, 'DRINKS SERVINGS': 0, 'UNCATEGORIZED': 0 };
+  const itemAnalysis: Record<string, { qty: number, revenue: number, category: SkuCategory, segment: string, theoreticalIng: number, theoreticalServ: number, hasCost: boolean }> = {};
+  const staffItems: Record<string, { qty: number, potentialRevenue: number, theoreticalCost: number, segment: string, category: SkuCategory, hasCost: boolean }> = {};
+
+  filteredItemSnaps.forEach(snap => {
+    const rental = rentals.find(r => r.outletId === snap.outletId);
+    const tier = rental?.tier || 'TIER_1';
+
+    Object.entries(snap.items).forEach(([name, data]: [string, any]) => {
+      const masterName = (normalizationMap[name.trim().toUpperCase()] || name).trim().toUpperCase();
+      const costRec = itemCosts.find(c => (c.itemName || '').trim().toUpperCase() === masterName);
+      const mapping = skuMappings[masterName] || { category: 'UNMAPPED', segment: 'UNMAPPED' };
+
+      const ingUnitCost = costRec ? (Number(costRec.costPerUnit) || 0) : 0;
+      let servUnitCost = 0;
+      if (costRec) {
+        servUnitCost = tier === 'TIER_1' ? (costRec.tier1ServingsCost ?? costRec.servingsCostPerUnit ?? 0) : (costRec.tier2ServingsCost ?? costRec.servingsCostPerUnit ?? 0);
+      }
+
+      const activeCategory = (mapping.category === 'UNMAPPED' && costRec) ? 'FOOD' : mapping.category;
+      const qty = data.quantity || 0;
+
+      if (activeCategory === 'FOOD') {
+        targets['FOOD'] += (qty * ingUnitCost);
+        targets['FOOD SERVINGS'] += (qty * servUnitCost);
+      } else if (activeCategory === 'DRINKS') {
+        targets['DRINKS'] += (qty * ingUnitCost);
+        targets['DRINKS SERVINGS'] += (qty * servUnitCost);
+      }
+
+      if (!itemAnalysis[masterName]) itemAnalysis[masterName] = { qty: 0, revenue: 0, category: activeCategory as SkuCategory, segment: mapping.segment || 'UNMAPPED', theoreticalIng: 0, theoreticalServ: 0, hasCost: !!costRec };
+      itemAnalysis[masterName].qty += qty;
+      itemAnalysis[masterName].revenue += (data.revenue || 0);
+      itemAnalysis[masterName].theoreticalIng += (qty * ingUnitCost);
+      itemAnalysis[masterName].theoreticalServ += (qty * servUnitCost);
+
+      if (data.staffQuantity > 0) {
+        if (!staffItems[masterName]) staffItems[masterName] = { qty: 0, potentialRevenue: 0, theoreticalCost: 0, segment: mapping.segment || 'UNMAPPED', category: mapping.category, hasCost: !!costRec };
+        staffItems[masterName].qty += data.staffQuantity;
+        staffItems[masterName].potentialRevenue += (data.staffPotentialRevenue || 0);
+        staffItems[masterName].theoreticalCost += (data.staffTheoreticalCost || 0);
+      }
+    });
+  });
+
+  const staffDrilldown = Object.entries(staffItems).sort((a, b) => b[1].theoreticalCost - a[1].theoreticalCost);
+  const actuals: Record<CogsBucket, number> = { 'FOOD': 0, 'DRINKS': 0, 'FOOD SERVINGS': 0, 'DRINKS SERVINGS': 0, 'UNCATEGORIZED': 0 };
+  filteredExpSnaps.forEach(snap => {
+    const buckets = cogsBucketsOf(snap);
+    (Object.keys(buckets) as CogsBucket[]).forEach(b => { actuals[b] += buckets[b]; });
+  });
+
+  const closingBk = closingByBucket(filteredAdjustments);
+  const openingBk = openingByBucket(filteredAdjustments);
+  actuals['FOOD'] = Math.max(0, actuals['FOOD'] + openingBk['FOOD'] - closingBk['FOOD']);
+  actuals['DRINKS'] = Math.max(0, actuals['DRINKS'] + openingBk['DRINKS'] - closingBk['DRINKS']);
+  actuals['FOOD SERVINGS'] = Math.max(0, actuals['FOOD SERVINGS'] + openingBk['FOOD SERVINGS'] - closingBk['FOOD SERVINGS']);
+  actuals['DRINKS SERVINGS'] = Math.max(0, actuals['DRINKS SERVINGS'] + openingBk['DRINKS SERVINGS'] - closingBk['DRINKS SERVINGS']);
+
+  const totalRevenue = Object.values(itemAnalysis).reduce((acc, i) => acc + i.revenue, 0);
+  const totalUniqueProducts = Object.keys(itemAnalysis).length;
+  const unmappedProductCount = Object.values(itemAnalysis).filter(i => !i.hasCost).length;
+  const unmappedSkuPercent = totalUniqueProducts > 0 ? (unmappedProductCount / totalUniqueProducts) * 100 : 0;
+
+  const coverageByBucket: Record<string, number> = { 'FOOD': 1, 'DRINKS': 1, 'FOOD SERVINGS': 1, 'DRINKS SERVINGS': 1 };
+  ['FOOD', 'DRINKS'].forEach(cat => {
+    const catItems = Object.values(itemAnalysis).filter(i => i.category === cat);
+    const catRev = catItems.reduce((acc, i) => acc + i.revenue, 0);
+    const mappedCatRev = catItems.filter(i => i.hasCost).reduce((acc, i) => acc + i.revenue, 0);
+    const coverage = catRev > 0 ? mappedCatRev / catRev : 1;
+    coverageByBucket[cat] = coverage;
+    coverageByBucket[`${cat} SERVINGS`] = coverage;
+  });
+
+  const pillarMetrics = PILLARS.map(p => {
+    const actual = Math.max(0, actuals[p.id] || 0);
+    const theoretical = targets[p.id] || 0;
+    const coverage = coverageByBucket[p.id] || 1;
+    const adjustedActual = actual * coverage;
+    const variance = Math.max(0, adjustedActual - theoretical);
+    const leakage = adjustedActual > 0 ? (variance / adjustedActual) * 100 : 0;
+    return { ...p, actual, theoretical, variance, leakage, coveragePct: coverage * 100 };
+  });
+
+  const totalActualCOGS = Object.values(actuals).reduce((a, b) => a + (b || 0), 0);
+  const totalTheoreticalCOGS = Object.values(targets).reduce((a, b) => a + (b || 0), 0);
+
+  const ingMappedActual = (actuals['FOOD'] * coverageByBucket['FOOD']) + (actuals['DRINKS'] * coverageByBucket['DRINKS']);
+  const packMappedActual = (actuals['FOOD SERVINGS'] * coverageByBucket['FOOD SERVINGS']) + (actuals['DRINKS SERVINGS'] * coverageByBucket['DRINKS SERVINGS']);
+  const ingWaste = Math.max(0, ingMappedActual - (targets['FOOD'] + targets['DRINKS']));
+  const packWaste = Math.max(0, packMappedActual - (targets['FOOD SERVINGS'] + targets['DRINKS SERVINGS']));
+  const coverageGap = totalActualCOGS - (ingMappedActual + packMappedActual);
+  const totalWastage = ingWaste + packWaste;
+
+  return {
+    pillarMetrics, itemAnalysis, staffDrilldown, totalRevenue, totalUniqueProducts,
+    unmappedProductCount, unmappedSkuPercent, totalActualCOGS, totalTheoreticalCOGS,
+    ingWaste, packWaste, coverageGap, totalWastage, targets,
+  };
+}
 
 const WasteManagementV2: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
   const [itemSnaps, setItemSnaps] = useState<ItemMonthlySnapshot[]>([]);
@@ -92,6 +207,11 @@ const WasteManagementV2: React.FC<{ user: User; dataOwnerId: string }> = ({ user
   const [rentals, setRentals] = useState<StoreRental[]>([]);
   const [loading, setLoading] = useState(false);
   const [hasGenerated, setHasGenerated] = useState(false);
+
+  // --- AI Leakage Analysis state ---
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiInsight, setAiInsight] = useState<string | null>(null);
+  const [aiError, setAiError] = useState<string | null>(null);
 
   const [activeTab, setActiveTab] = useState<WasteTab>('audit');
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear().toString());
@@ -238,6 +358,8 @@ const WasteManagementV2: React.FC<{ user: User; dataOwnerId: string }> = ({ user
 
   const generateAudit = async () => {
     setLoading(true);
+    setAiInsight(null);
+    setAiError(null);
     try {
       const periodConstraints = [
         where('userId', '==', dataOwnerId),
@@ -268,119 +390,11 @@ const WasteManagementV2: React.FC<{ user: User; dataOwnerId: string }> = ({ user
     const filteredExpSnaps = expenseSnaps.filter(s => storeFilter === 'all' ? currentActiveIds.includes(s.outletId) : s.outletId === storeFilter);
     const filteredAdjustments = adjustments.filter(a => storeFilter === 'all' ? currentActiveIds.includes(a.outletId) : a.outletId === storeFilter);
 
-    const targets: Record<CogsBucket, number> = { 'FOOD': 0, 'DRINKS': 0, 'FOOD SERVINGS': 0, 'DRINKS SERVINGS': 0, 'UNCATEGORIZED': 0 };
-    const itemAnalysis: Record<string, { qty: number, revenue: number, category: SkuCategory, segment: string, theoreticalIng: number, theoreticalServ: number, hasCost: boolean }> = {};
-    const staffItems: Record<string, { qty: number, potentialRevenue: number, theoreticalCost: number, segment: string, category: SkuCategory, hasCost: boolean }> = {};
+    const r = reconcilePeriod(filteredItemSnaps, filteredExpSnaps, filteredAdjustments, rentals, itemCosts, skuMappings, normalizationMap);
+    const { pillarMetrics, itemAnalysis, staffDrilldown, totalRevenue, unmappedProductCount, unmappedSkuPercent, totalActualCOGS, totalTheoreticalCOGS, ingWaste, packWaste, coverageGap, totalWastage, targets } = r;
 
-    filteredItemSnaps.forEach(snap => {
-      const rental = rentals.find(r => r.outletId === snap.outletId);
-      const tier = rental?.tier || 'TIER_1';
-
-      Object.entries(snap.items).forEach(([name, data]: [string, any]) => {
-        const masterName = (normalizationMap[name.trim().toUpperCase()] || name).trim().toUpperCase();
-        const costRec = itemCosts.find(c => (c.itemName || '').trim().toUpperCase() === masterName);
-        const mapping = skuMappings[masterName] || { category: 'UNMAPPED', segment: 'UNMAPPED' };
-        
-        const ingUnitCost = costRec ? (Number(costRec.costPerUnit) || 0) : 0;
-        let servUnitCost = 0;
-        if (costRec) {
-          servUnitCost = tier === 'TIER_1' ? (costRec.tier1ServingsCost ?? costRec.servingsCostPerUnit ?? 0) : (costRec.tier2ServingsCost ?? costRec.servingsCostPerUnit ?? 0);
-        }
-
-        const activeCategory = (mapping.category === 'UNMAPPED' && costRec) ? 'FOOD' : mapping.category;
-        const qty = data.quantity || 0;
-
-        if (activeCategory === 'FOOD') {
-          targets['FOOD'] += (qty * ingUnitCost);
-          targets['FOOD SERVINGS'] += (qty * servUnitCost);
-        } else if (activeCategory === 'DRINKS') {
-          targets['DRINKS'] += (qty * ingUnitCost);
-          targets['DRINKS SERVINGS'] += (qty * servUnitCost);
-        }
-
-        if (!itemAnalysis[masterName]) itemAnalysis[masterName] = { qty: 0, revenue: 0, category: activeCategory as SkuCategory, segment: mapping.segment || 'UNMAPPED', theoreticalIng: 0, theoreticalServ: 0, hasCost: !!costRec };
-        itemAnalysis[masterName].qty += qty;
-        itemAnalysis[masterName].revenue += (data.revenue || 0);
-        itemAnalysis[masterName].theoreticalIng += (qty * ingUnitCost);
-        itemAnalysis[masterName].theoreticalServ += (qty * servUnitCost);
-
-        // AGGREGATE STAFF CONSUMPTION (Now using snapshot fields)
-        if (data.staffQuantity > 0) {
-          if (!staffItems[masterName]) staffItems[masterName] = { qty: 0, potentialRevenue: 0, theoreticalCost: 0, segment: mapping.segment || 'UNMAPPED', category: mapping.category, hasCost: !!costRec };
-          staffItems[masterName].qty += data.staffQuantity;
-          staffItems[masterName].potentialRevenue += (data.staffPotentialRevenue || 0);
-          staffItems[masterName].theoreticalCost += (data.staffTheoreticalCost || 0);
-        }
-      });
-    });
-
-    const staffDrilldown = Object.entries(staffItems).sort((a, b) => b[1].theoreticalCost - a[1].theoreticalCost);
-    const actuals: Record<CogsBucket, number> = { 'FOOD': 0, 'DRINKS': 0, 'FOOD SERVINGS': 0, 'DRINKS SERVINGS': 0, 'UNCATEGORIZED': 0 };
-    // cogsBucketsOf merges cogsBucketAgg with crewCogsBucketAgg. The crew
-    // aggregate has been written by crewSnapshotService all along but was read
-    // by nothing, so crew-entered material never counted as actual consumption.
-    filteredExpSnaps.forEach(snap => {
-      const buckets = cogsBucketsOf(snap);
-      (Object.keys(buckets) as CogsBucket[]).forEach(b => { actuals[b] += buckets[b]; });
-    });
-
-    // Consumption = Opening + Purchases − Closing, per bucket. Opening was
-    // previously omitted, which understated actual consumption — and because
-    // leakage is 1 − theoretical/actual, a lower actual UNDERSTATES leakage.
-    const closingBk = closingByBucket(filteredAdjustments);
-    const openingBk = openingByBucket(filteredAdjustments);
-    const totalFoodIngOffset = closingBk['FOOD'];
-    const totalDrinkIngOffset = closingBk['DRINKS'];
-    const totalFoodPackOffset = closingBk['FOOD SERVINGS'];
-    const totalDrinkPackOffset = closingBk['DRINKS SERVINGS'];
-
-    actuals['FOOD'] = Math.max(0, actuals['FOOD'] + openingBk['FOOD'] - totalFoodIngOffset);
-    actuals['DRINKS'] = Math.max(0, actuals['DRINKS'] + openingBk['DRINKS'] - totalDrinkIngOffset);
-    actuals['FOOD SERVINGS'] = Math.max(0, actuals['FOOD SERVINGS'] + openingBk['FOOD SERVINGS'] - totalFoodPackOffset);
-    actuals['DRINKS SERVINGS'] = Math.max(0, actuals['DRINKS SERVINGS'] + openingBk['DRINKS SERVINGS'] - totalDrinkPackOffset);
-
-    const totalRevenue = Object.values(itemAnalysis).reduce((acc, i) => acc + i.revenue, 0);
-    const totalUniqueProducts = Object.keys(itemAnalysis).length;
-    const unmappedProductCount = Object.values(itemAnalysis).filter(i => !i.hasCost).length;
-    const unmappedSkuPercent = totalUniqueProducts > 0 ? (unmappedProductCount / totalUniqueProducts) * 100 : 0;
-    
-    // Revenue coverage per category
-    const coverageByBucket: Record<string, number> = { 'FOOD': 1, 'DRINKS': 1, 'FOOD SERVINGS': 1, 'DRINKS SERVINGS': 1 };
-    ['FOOD', 'DRINKS'].forEach(cat => {
-      const catItems = Object.values(itemAnalysis).filter(i => i.category === cat);
-      const catRev = catItems.reduce((acc, i) => acc + i.revenue, 0);
-      const mappedCatRev = catItems.filter(i => i.hasCost).reduce((acc, i) => acc + i.revenue, 0);
-      const coverage = catRev > 0 ? mappedCatRev / catRev : 1;
-      coverageByBucket[cat] = coverage;
-      coverageByBucket[`${cat} SERVINGS`] = coverage;
-    });
-
-    const pillarMetrics = PILLARS.map(p => {
-      const actual = Math.max(0, actuals[p.id] || 0);
-      const theoretical = targets[p.id] || 0;
-      const coverage = coverageByBucket[p.id] || 1;
-      
-      // Adjusted Actual: We only compare the portion of the actual cost that corresponds to mapped revenue
-      const adjustedActual = actual * coverage;
-      const variance = Math.max(0, adjustedActual - theoretical);
-      const leakage = adjustedActual > 0 ? (variance / adjustedActual) * 100 : 0;
-      
-      return { ...p, actual, theoretical, variance, leakage, coveragePct: coverage * 100 };
-    });
-
-    const totalActualCOGS = Object.values(actuals).reduce((a, b) => a + (b || 0), 0);
-    const totalTheoreticalCOGS = Object.values(targets).reduce((a, b) => a + (b || 0), 0);
-    
-    const ingMappedActual = (actuals['FOOD'] * coverageByBucket['FOOD']) + (actuals['DRINKS'] * coverageByBucket['DRINKS']);
-    const packMappedActual = (actuals['FOOD SERVINGS'] * coverageByBucket['FOOD SERVINGS']) + (actuals['DRINKS SERVINGS'] * coverageByBucket['DRINKS SERVINGS']);
-    
-    const ingWaste = Math.max(0, ingMappedActual - (targets['FOOD'] + targets['DRINKS']));
-    const packWaste = Math.max(0, packMappedActual - (targets['FOOD SERVINGS'] + targets['DRINKS SERVINGS']));
-    const coverageGap = totalActualCOGS - (ingMappedActual + packMappedActual);
-    const totalWastage = ingWaste + packWaste;
-
-    return { 
-      pillarMetrics, totalActual: totalActualCOGS, totalTheoretical: totalTheoreticalCOGS, totalRevenue, totalWastage, 
+    return {
+      pillarMetrics, totalActual: totalActualCOGS, totalTheoretical: totalTheoreticalCOGS, totalRevenue, totalWastage,
       unmappedSkuPercent, unmappedProductCount,
       itemDrilldown: Object.entries(itemAnalysis).filter(([_, d]) => d.category !== 'MISC' && d.qty > 0 && (segmentFilter === 'all' || d.segment === segmentFilter)).sort((a,b) => (activeDrilldown === 'ingredients' ? b[1].theoreticalIng - a[1].theoreticalIng : b[1].theoreticalServ - a[1].theoreticalServ)),
       availableSegments: Array.from(new Set(Object.values(itemAnalysis).map(i => i.segment))).filter(Boolean).sort(),
@@ -396,6 +410,63 @@ const WasteManagementV2: React.FC<{ user: User; dataOwnerId: string }> = ({ user
       ]
     };
   }, [itemSnaps, expenseSnaps, itemCosts, skuMappings, normalizationMap, adjustments, hasGenerated, storeFilter, selectedMonth, selectedYear, rentals, activeDrilldown, segmentFilter, availableOutlets]);
+
+  const handleAskAI = async () => {
+    if (!intelligence) return;
+    setAiLoading(true);
+    setAiError(null);
+    try {
+      const monthIdx = MONTH_NAMES.indexOf(selectedMonth);
+      const prevMonth = monthIdx === 0 ? MONTH_NAMES[11] : MONTH_NAMES[monthIdx - 1];
+      const prevYear = monthIdx === 0 ? (parseInt(selectedYear) - 1).toString() : selectedYear;
+
+      const prevConstraints = [
+        where('userId', '==', dataOwnerId),
+        where('year', '==', prevYear),
+        where('month', '==', prevMonth)
+      ];
+      const [iSnap, eSnap, adjSnap] = await Promise.all([
+        getDocs(query(collection(db, 'item_snapshots'), ...prevConstraints)),
+        getDocs(query(collection(db, 'expense_snapshots'), ...prevConstraints)),
+        getDocs(query(collection(db, 'cogs_adjustments'), ...prevConstraints))
+      ]);
+
+      const currentActiveIds = availableOutlets.map(o => o.id);
+      const inScope = (outletId: string) => storeFilter === 'all' ? currentActiveIds.includes(outletId) : outletId === storeFilter;
+      const prevItemSnaps = iSnap.docs.map(d => d.data() as ItemMonthlySnapshot).filter(s => inScope(s.outletId));
+      const prevExpSnaps = eSnap.docs.map(d => d.data() as ExpenseMonthlySnapshot).filter(s => inScope(s.outletId));
+      const prevAdjustments = adjSnap.docs.map(d => d.data() as CogsAdjustment).filter(a => inScope(a.outletId));
+
+      const prevReconciled = (prevItemSnaps.length || prevExpSnaps.length)
+        ? reconcilePeriod(prevItemSnaps, prevExpSnaps, prevAdjustments, rentals, itemCosts, skuMappings, normalizationMap)
+        : null;
+
+      const scopeLabel = storeFilter === 'all' ? 'All Active Outlets' : (availableOutlets.find(o => o.id === storeFilter)?.name ?? storeFilter);
+
+      const insight = await generateLeakageInsight({
+        scopeLabel,
+        period: `${selectedMonth} ${selectedYear}`,
+        prevPeriod: `${prevMonth} ${prevYear}`,
+        totalRevenue: intelligence.totalRevenue,
+        totalWastage: intelligence.totalWastage,
+        current: intelligence.pillarMetrics,
+        previous: prevReconciled ? prevReconciled.pillarMetrics : null,
+        topItems: intelligence.itemDrilldown.slice(0, 8).map(([name, d]) => ({
+          name,
+          category: d.category,
+          theoreticalCost: Math.round(d.theoreticalIng + d.theoreticalServ),
+          revenue: Math.round(d.revenue),
+        })),
+      });
+
+      setAiInsight(insight);
+    } catch (err) {
+      console.error(err);
+      setAiError('Failed to generate AI analysis. Please try again.');
+    } finally {
+      setAiLoading(false);
+    }
+  };
 
   const exportAuditPDF = useCallback(() => {
     if (!intelligence) return;
@@ -795,6 +866,27 @@ const WasteManagementV2: React.FC<{ user: User; dataOwnerId: string }> = ({ user
                     </div>
                   ))}
                 </section>
+
+                <section className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm">
+                  <div className="flex items-center justify-between gap-4 flex-wrap">
+                    <div className="flex items-center gap-4">
+                      <div className="p-3 bg-indigo-50 text-indigo-600 rounded-2xl shadow-inner shrink-0"><Sparkles size={20} /></div>
+                      <div>
+                        <h3 className="text-sm font-black text-slate-900 uppercase tracking-widest">AI Leakage Analysis</h3>
+                        <p className="text-[11px] font-medium text-slate-400">Explains this period's leakage across all 4 pillars, vs last month</p>
+                      </div>
+                    </div>
+                    <button onClick={handleAskAI} disabled={aiLoading} className="flex items-center gap-2 px-6 py-2.5 bg-indigo-600 text-white rounded-xl font-black uppercase text-[10px] tracking-widest hover:bg-indigo-700 transition-all shadow-lg disabled:opacity-50 shrink-0">
+                      {aiLoading ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+                      {aiLoading ? 'Analyzing…' : aiInsight ? 'Re-analyze' : 'Analyze with AI'}
+                    </button>
+                  </div>
+                  {aiError && <p className="mt-5 text-xs font-bold text-rose-500">{aiError}</p>}
+                  {aiInsight && !aiLoading && (
+                    <p className="mt-6 text-sm text-slate-700 leading-relaxed whitespace-pre-line animate-in fade-in duration-500">{aiInsight}</p>
+                  )}
+                </section>
+
                 <section className="bg-white p-12 rounded-[3.5rem] border border-slate-100 shadow-sm overflow-hidden">
                   <div className="flex flex-col md:flex-row md:items-center justify-between mb-16 gap-8">
                     <div><h3 className="text-3xl font-black text-slate-900 tracking-tight flex items-center gap-3"><BarChartHorizontal className="text-indigo-600" /> Strategic Yield Waterfall</h3><p className="text-slate-400 text-sm font-medium mt-1 uppercase tracking-widest">Revenue Erosion Audit: Snapshot Aggregated Data</p></div>

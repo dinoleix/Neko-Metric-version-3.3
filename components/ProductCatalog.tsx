@@ -303,7 +303,8 @@ const ProductCatalog: React.FC<Props> = ({ user, ownerId, onSelect, onClose }) =
                 {duplicateGroups.map(([name, group]) => {
                   const oldest = [...group].sort((a, b) => a.createdAt - b.createdAt)[0];
                   const keepId = keepSelection[name] || oldest.id!;
-                  const pricesDiffer = new Set(group.map(p => p.pricePerUnit ?? null)).size > 1;
+                  const lineTotal = (p: Product) => (p.pricePerUnit != null && p.quantity != null) ? p.pricePerUnit * p.quantity : null;
+                  const pricesDiffer = new Set(group.map(p => lineTotal(p) ?? p.pricePerUnit ?? null)).size > 1;
                   return (
                     <div key={name} className="bg-amber-50/60 rounded-[1.75rem] p-4 border-2 border-amber-100">
                       <div className="flex items-center gap-2 mb-3">
@@ -336,12 +337,18 @@ const ProductCatalog: React.FC<Props> = ({ user, ownerId, onSelect, onClose }) =
                             <div className="min-w-0 flex-1">
                               <p className="text-[10px] font-bold text-slate-500">{p.category}</p>
                               <p className="text-[9px] font-bold text-slate-400">
-                                {p.unit ? `per ${p.unit} · ` : ''}{new Date(p.createdAt).toLocaleDateString('en-IN')}
+                                {p.quantity != null ? `${p.quantity}${p.unit ? ` ${p.unit}` : ''} × ` : ''}
+                                {p.pricePerUnit != null ? `₹${p.pricePerUnit.toLocaleString('en-IN')}${p.unit ? `/${p.unit}` : ''}` : ''}
+                                {' · '}{new Date(p.createdAt).toLocaleDateString('en-IN')}
                               </p>
                             </div>
                             <div className="text-right shrink-0">
-                              <p className={`text-base font-black ${p.pricePerUnit != null ? 'text-slate-900' : 'text-slate-300'}`}>
-                                {p.pricePerUnit != null ? `₹${p.pricePerUnit.toLocaleString('en-IN')}` : 'No price'}
+                              <p className={`text-base font-black ${lineTotal(p) != null ? 'text-slate-900' : 'text-slate-300'}`}>
+                                {lineTotal(p) != null
+                                  ? `₹${lineTotal(p)!.toLocaleString('en-IN')}`
+                                  : p.pricePerUnit != null
+                                    ? `₹${p.pricePerUnit.toLocaleString('en-IN')}/unit`
+                                    : 'No price'}
                               </p>
                             </div>
                             {keepId === p.id && (
