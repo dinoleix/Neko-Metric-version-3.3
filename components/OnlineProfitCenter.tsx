@@ -36,6 +36,7 @@ import {
   Globe,
   DollarSign,
   Percent,
+  Scissors,
   BarChart3,
   SearchX,
   Loader2,
@@ -288,6 +289,13 @@ const OnlineProfitCenter: React.FC<{ user: User; dataOwnerId: string }> = ({ use
     const netPayout = metrics.net;
     const netSales = metrics.gross - metrics.tax;
     const effectiveCommissionRate = metrics.gross > 0 ? ((metrics.commission + metrics.ads + metrics.gstOnComm + metrics.tds) / metrics.gross) * 100 : 0;
+    // The aggregator's actual cut, excluding ad spend (a discretionary period cost,
+    // not a platform fee) and TDS (income tax withheld against PAN, recoverable).
+    // Measured against ex-tax sales so it applies directly to menu sell prices —
+    // the same basis Unit Economics uses, so the two screens agree.
+    const aggregatorTakePercent = netSales > 0
+      ? ((metrics.commission + metrics.gstOnComm) / netSales) * 100
+      : 0;
     const roas = metrics.ads > 0 ? metrics.gross / metrics.ads : 0;
     const totalMixRevenue = metrics.gross + metrics.posGross + metrics.eventRevenue;
     const onlineMix = totalMixRevenue > 0 ? (metrics.gross / totalMixRevenue) * 100 : 0;
@@ -339,14 +347,22 @@ const OnlineProfitCenter: React.FC<{ user: User; dataOwnerId: string }> = ({ use
       });
     });
 
+    // Actual overall online margin % for the period: real fees (commission + ads + GST-on-comm + TDS)
+    // and real COGS both netted against gross once, then distributed to items by revenue share —
+    // avoids double-counting ad spend as if it were a per-item cost.
+    const totalOnlineCogs = Object.values(itemMap).reduce((sum, d) => sum + (d.onlineQty * d.cost), 0);
+    const totalOnlineFees = metrics.commission + metrics.ads + metrics.gstOnComm + metrics.tds;
+    const overallMarginPercent = metrics.gross > 0
+      ? ((metrics.gross - totalOnlineFees - totalOnlineCogs) / metrics.gross) * 100
+      : 0;
+
     const allOnlineItems = Object.entries(itemMap)
       .map(([name, data]) => ({
         name,
         qty: data.onlineQty,
         revenue: data.onlineRev,
         theoreticalCost: data.onlineQty * data.cost,
-        // Estimate net margin after platform cut (using average effective rate)
-        netMargin: data.onlineRev * (1 - effectiveCommissionRate/100) - (data.onlineQty * data.cost)
+        netMargin: data.onlineRev * (overallMarginPercent / 100)
       }))
       .filter(i => i.qty > 0)
       .sort((a, b) => b.qty - a.qty);
@@ -393,6 +409,8 @@ const OnlineProfitCenter: React.FC<{ user: User; dataOwnerId: string }> = ({ use
       netSales,
       netPayout,
       effectiveCommissionRate,
+      aggregatorTakePercent,
+      overallMarginPercent,
       roas,
       topOnlineItems,
       contributionMargin,
@@ -570,7 +588,7 @@ const OnlineProfitCenter: React.FC<{ user: User; dataOwnerId: string }> = ({ use
           {activeTab === 'overview' ? (
             <>
               {/* Executive Overview */}
-              <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6">
+              <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-6">
             <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm flex flex-col justify-between group hover:shadow-xl transition-all">
               <div className="flex justify-between items-start mb-6">
                 <div className="p-3 rounded-2xl bg-indigo-50 text-indigo-600 shadow-inner">
@@ -615,7 +633,23 @@ const OnlineProfitCenter: React.FC<{ user: User; dataOwnerId: string }> = ({ use
               <div>
                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Effective Take Rate</p>
                 <h4 className="text-3xl font-black text-slate-900 tracking-tighter">{analytics.effectiveCommissionRate.toFixed(1)}%</h4>
-                <p className="text-[9px] font-bold text-slate-400 uppercase mt-2">Comm + Ads / Gross Sales</p>
+                <p className="text-[9px] font-bold text-slate-400 uppercase mt-2">Comm + Ads + GST + TDS / Gross</p>
+              </div>
+            </div>
+
+            <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm flex flex-col justify-between group hover:shadow-xl transition-all" title="Commission + GST on commission, as a share of ex-tax online sales. Excludes ad spend (discretionary period cost) and TDS (recoverable income tax). This is the rate applied per unit in Margin Intelligence → Unit Economics.">
+              <div className="flex justify-between items-start mb-6">
+                <div className="p-3 rounded-2xl bg-orange-50 text-orange-600 shadow-inner">
+                  <Scissors size={20} />
+                </div>
+                <div className="px-3 py-1 rounded-full bg-orange-50 text-orange-600 text-[9px] font-black uppercase tracking-widest">
+                  Ex-Ads
+                </div>
+              </div>
+              <div>
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Aggregator Take</p>
+                <h4 className="text-3xl font-black text-slate-900 tracking-tighter">{analytics.aggregatorTakePercent.toFixed(1)}%</h4>
+                <p className="text-[9px] font-bold text-slate-400 uppercase mt-2">Comm + GST / Net Sales</p>
               </div>
             </div>
 
@@ -741,9 +775,12 @@ const OnlineProfitCenter: React.FC<{ user: User; dataOwnerId: string }> = ({ use
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
             {/* Online Menu Performance */}
             <section className="bg-white p-10 rounded-[3rem] border border-slate-100 shadow-sm">
-              <h3 className="text-2xl font-black text-slate-900 tracking-tight mb-8 flex items-center gap-3">
+              <h3 className="text-2xl font-black text-slate-900 tracking-tight mb-1 flex items-center gap-3">
                 <BarChart3 size={24} className="text-indigo-600" /> Digital Best Sellers
               </h3>
+              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-7">
+                Margin applied at blended period rate: {analytics.overallMarginPercent.toFixed(1)}%
+              </p>
               <div className="space-y-4">
                 {analytics.topOnlineItems.length > 0 ? (
                   analytics.topOnlineItems.map((item, i) => (

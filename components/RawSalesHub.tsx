@@ -351,17 +351,28 @@ const RawSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, data
           dObj[`${catField}.${cat}`] = (dObj[`${catField}.${cat}`] || 0) - amt;
           if (settings.cogsKeywords.includes(cat)) { const bucket = settings.cogsBucketMapping?.[cat] || 'FOOD'; dObj[`cogsBucketAgg.${bucket}`] = (dObj[`cogsBucketAgg.${bucket}`] || 0) - amt; }
         } else if (activeView === 'online-items') {
-           const snapId = `${user.uid}_${oId}_${rYear}_${rMonth}`;
-           const key = `item_snapshots_${snapId}`;
-           if (!snapshotImpacts[key]) snapshotImpacts[key] = { ref: doc(db, 'item_snapshots', snapId), deltas: {} };
-           const dObj = snapshotImpacts[key].deltas;
-           const name = (record.itemName || '').trim().toUpperCase();
-           const qty = Number(record.itemQuantity || 0);
-           const total = Number(record.itemTotal || 0);
-           dObj[`items.${name}.quantity`] = (dObj[`items.${name}.quantity`] || 0) - qty;
-           dObj[`items.${name}.revenue`] = (dObj[`items.${name}.revenue`] || 0) - total;
-           if (record.isPlatform) dObj[`items.${name}.onlineQuantity`] = (dObj[`items.${name}.onlineQuantity`] || 0) - qty;
-           else dObj[`items.${name}.posQuantity`] = (dObj[`items.${name}.posQuantity`] || 0) - qty;
+           const itemStatus = (record.orderStatus || '').toUpperCase();
+           const itemIsSettled = ['SETTLED', 'PICKEDUP', 'DELIVERED'].includes(itemStatus);
+           if (itemIsSettled) {
+             const snapId = `${user.uid}_${oId}_${rYear}_${rMonth}`;
+             const key = `item_snapshots_${snapId}`;
+             if (!snapshotImpacts[key]) snapshotImpacts[key] = { ref: doc(db, 'item_snapshots', snapId), deltas: {} };
+             const dObj = snapshotImpacts[key].deltas;
+             const name = (record.itemName || '').trim().toUpperCase();
+             const qty = Number(record.itemQuantity || 0);
+             const total = Number(record.itemTotal || 0);
+             dObj[`items.${name}.quantity`] = (dObj[`items.${name}.quantity`] || 0) - qty;
+             dObj[`items.${name}.revenue`] = (dObj[`items.${name}.revenue`] || 0) - total;
+             if (record.isPlatform) {
+               dObj[`items.${name}.onlineQuantity`] = (dObj[`items.${name}.onlineQuantity`] || 0) - qty;
+               // Keep platformBreakdown in step with onlineQuantity, or online
+               // revenue drifts upward every time a record is removed.
+               const plat = (record.platform || 'UNKNOWN').toUpperCase();
+               dObj[`items.${name}.platformBreakdown.${plat}.quantity`] = (dObj[`items.${name}.platformBreakdown.${plat}.quantity`] || 0) - qty;
+               dObj[`items.${name}.platformBreakdown.${plat}.revenue`] = (dObj[`items.${name}.platformBreakdown.${plat}.revenue`] || 0) - total;
+             }
+             else dObj[`items.${name}.posQuantity`] = (dObj[`items.${name}.posQuantity`] || 0) - qty;
+           }
         }
       }
 

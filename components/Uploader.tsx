@@ -182,12 +182,8 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
   useEffect(() => {
     if (step === 2 && headers.length > 0) {
       loadSavedMapping(headers);
-      if (fileType === 'platform_item') {
-        const matchingHeader = headers.find(h => h && h.toLowerCase() === (month || '').toLowerCase());
-        if (matchingHeader) {
-          setMapping(prev => ({ ...prev, itemQuantity: matchingHeader }));
-        }
-      }
+      // Platform auto-mapping happens inside loadSavedMapping: it calls setMapping
+      // with a full replace, so applying overrides here would race with it and lose.
     }
   }, [step, headers, month, fileType]);
 
@@ -207,6 +203,25 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
 
       // Perform Smart Mapping for unmapped fields
       const smartMapping = performSmartMapping(currentHeaders, baseMapping);
+
+      if (fileType === 'platform_item') {
+        // Quantity lives in a column named after the month ("July"), which the
+        // generic matcher can't know about.
+        const qtyHeader = currentHeaders.find(h => h && h.toLowerCase() === (month || '').toLowerCase());
+        if (qtyHeader) smartMapping.itemQuantity = qtyHeader;
+
+        const priceHeader = currentHeaders.find(h => h && /sell\s*price/i.test(h));
+        if (priceHeader) {
+          smartMapping.sellPrice = priceHeader;
+          // A mapping saved before sellPrice existed points itemTotal at this same
+          // price column. Left in place it would be read as a line total again, so
+          // drop it and let revenue derive from qty × price.
+          if (smartMapping.itemTotal && /price/i.test(smartMapping.itemTotal)) {
+            delete smartMapping.itemTotal;
+          }
+        }
+      }
+
       setMapping(smartMapping);
       if (Object.keys(smartMapping).length > 0) {
         setMappingsLoaded(true);
@@ -620,7 +635,7 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
         };
         targetFields.forEach(f => {
           const val = row[mapping[f.id]];
-          const isNumeric = f.id.toLowerCase().match(/revenue|total|amount|tax|commission|quantity|value|payout|charge|discount|fee|tcs|tds|gst|deduction|addition|adjustment|recovery|redemption|compensation|subtotal|balance/);
+          const isNumeric = f.id.toLowerCase().match(/revenue|total|amount|tax|commission|quantity|value|payout|charge|discount|fee|tcs|tds|gst|deduction|addition|adjustment|recovery|redemption|compensation|subtotal|balance|price/);
           
           if (isNumeric) {
             recordData[f.id] = cleanNumber(val);
@@ -644,6 +659,16 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
           recordData.date = `${year}-${String(mIdx + 1).padStart(2, '0')}-01`;
           recordData.isPlatform = true;
           recordData.platform = onlinePlatform;
+          // Store a true line total on the raw record, not the per-unit price, so
+          // the Data Catalog rebuild (which reads r.itemTotal) stays correct.
+          const totalCol = mapping['itemTotal'];
+          const priceCol = mapping['sellPrice']
+            || (totalCol && /price/i.test(totalCol) ? totalCol : null);
+          if (priceCol) {
+            const unitPrice = cleanNumber(row[priceCol]);
+            recordData.sellPrice = unitPrice;
+            recordData.itemTotal = cleanNumber(row[mapping['itemQuantity']]) * unitPrice;
+          }
         }
 
         if (fileType === 'bank_statement') {
@@ -1050,11 +1075,29 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
         });
 
         const outletAggs: Record<string, any> = {};
+        // Platform exports (Zomato/Swiggy) carry no order-status column at all —
+        // every line in them is an already-settled order. Gate on status only when
+        // the file actually maps one, or platform uploads import nothing.
+        const statusCol = mapping['orderStatus'];
         csvData.forEach(row => {
+          if (statusCol) {
+            const status = (row[statusCol] || '').toString().trim().toUpperCase();
+            if (!['SETTLED', 'PICKEDUP', 'DELIVERED'].includes(status)) return;
+          }
+
           const rawName = (row[mapping['itemName']] || '').toString().trim();
           const masterName = (normMap[rawName.toUpperCase()] || rawName).trim().toUpperCase();
           const qty = cleanNumber(row[mapping['itemQuantity']]);
-          const total = cleanNumber(row[mapping['itemTotal']]);
+          // Platform exports give a per-unit sell price and no line total, so revenue
+          // is qty × price. Detect a price column by header name too: mappings saved
+          // before sellPrice existed point itemTotal at the price column, and reading
+          // that as a line total understates revenue by a factor of qty.
+          const totalCol = mapping['itemTotal'];
+          const unitPriceCol = mapping['sellPrice']
+            || (fileType === 'platform_item' && totalCol && /price/i.test(totalCol) ? totalCol : null);
+          const total = unitPriceCol
+            ? qty * cleanNumber(row[unitPriceCol])
+            : cleanNumber(row[totalCol]);
           const dateStr = (row[mapping['date']] || '').toString().trim();
           const parsedDate = new Date(dateStr);
           const dayIdx = parsedDate.getDate() - 1;

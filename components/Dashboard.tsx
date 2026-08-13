@@ -220,13 +220,21 @@ const Dashboard: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOw
         } else if (file.type === 'item' || file.type === 'platform_item') {
           if (!outletImpacts[oId]) outletImpacts[oId] = { items: {} };
           const name = (data.itemName || 'Unknown').trim().toUpperCase();
-          if (!outletImpacts[oId].items[name]) outletImpacts[oId].items[name] = { qty: 0, rev: 0, posQty: 0, onlineQty: 0, trend: new Array(31).fill(0) };
+          if (!outletImpacts[oId].items[name]) outletImpacts[oId].items[name] = { qty: 0, rev: 0, posQty: 0, onlineQty: 0, trend: new Array(31).fill(0), platforms: {} as Record<string, any> };
           const item = outletImpacts[oId].items[name];
           const qty = Number(data.itemQuantity || 0);
           const totalRev = Number(data.itemTotal || 0);
           item.qty += qty;
           item.rev += totalRev;
-          if (data.isPlatform) item.onlineQty += qty; else item.posQty += qty;
+          if (data.isPlatform) {
+            item.onlineQty += qty;
+            // platformBreakdown must be unwound too, or a delete + re-upload leaves
+            // stale platform revenue behind on items that also sell in-store.
+            const plat = (data.platform || 'UNKNOWN').toUpperCase();
+            if (!item.platforms[plat]) item.platforms[plat] = { quantity: 0, revenue: 0 };
+            item.platforms[plat].quantity += qty;
+            item.platforms[plat].revenue += totalRev;
+          } else item.posQty += qty;
           const d = new Date(data.date);
           if (!isNaN(d.getTime())) { const dayIdx = d.getDate() - 1; if (dayIdx >= 0 && dayIdx < 31) item.trend[dayIdx] += qty; }
         }
@@ -363,6 +371,19 @@ const Dashboard: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOw
                 nextItems[name].onlineQuantity = Math.max(0, (nextItems[name].onlineQuantity || 0) - data.onlineQty);
                 const currentDailyTrend = Array.isArray(nextItems[name].dailyTrend) ? nextItems[name].dailyTrend : new Array(31).fill(0);
                 nextItems[name].dailyTrend = currentDailyTrend.map((v: number, i: number) => Math.max(0, v - data.trend[i]));
+
+                if (data.platforms && nextItems[name].platformBreakdown) {
+                  const nextPb: Record<string, any> = { ...nextItems[name].platformBreakdown };
+                  Object.entries(data.platforms).forEach(([p, pd]: [string, any]) => {
+                    if (!nextPb[p]) return;
+                    const q = Math.max(0, (nextPb[p].quantity || 0) - pd.quantity);
+                    const r = Math.max(0, (nextPb[p].revenue || 0) - pd.revenue);
+                    if (q === 0 && r === 0) delete nextPb[p];
+                    else nextPb[p] = { quantity: q, revenue: r };
+                  });
+                  nextItems[name].platformBreakdown = nextPb;
+                }
+
                 if (nextItems[name].quantity === 0 && nextItems[name].revenue === 0) delete nextItems[name];
               }
             });

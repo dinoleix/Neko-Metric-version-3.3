@@ -267,7 +267,8 @@ const DataCatalog: React.FC<{ user: User; dataOwnerId: string }> = ({ user, data
       // Pre-calculate unified price map for potential revenue calculations
       const itemPrices: Record<string, { total: number, qty: number }> = {};
       sliceItems.forEach(r => {
-        if (r.orderStatus === 'CANCELLED') return;
+        const priceStatus = (r.orderStatus || '').toUpperCase();
+        if (!['SETTLED', 'PICKEDUP', 'DELIVERED'].includes(priceStatus)) return;
         const masterName = (aliasMap[r.itemName] || r.itemName).trim().toUpperCase();
         if (!itemPrices[masterName]) itemPrices[masterName] = { total: 0, qty: 0 };
         itemPrices[masterName].total += (r.itemTotal || 0);
@@ -506,7 +507,9 @@ const DataCatalog: React.FC<{ user: User; dataOwnerId: string }> = ({ user, data
             const dateParts = r.date.split('-');
             const dayIdx = parseInt(dateParts[2]) - 1;
             const isNc = (r.billNo || '').startsWith('NC-');
-            
+            const status = (r.orderStatus || '').toUpperCase();
+            const isSettled = ['SETTLED', 'PICKEDUP', 'DELIVERED'].includes(status);
+
             if (!agg.items[name]) {
               agg.items[name] = { 
                 quantity: 0, 
@@ -532,7 +535,7 @@ const DataCatalog: React.FC<{ user: User; dataOwnerId: string }> = ({ user, data
               const ingCost = costRec ? (Number(costRec.costPerUnit) || 0) : 0;
               const servCost = costRec ? (tier === 'TIER_1' ? (costRec.tier1ServingsCost ?? costRec.servingsCostPerUnit ?? 0) : (costRec.tier2ServingsCost ?? costRec.servingsCostPerUnit ?? 0)) : 0;
               item.staffTheoreticalCost = (item.staffTheoreticalCost || 0) + (qty * (ingCost + servCost));
-            } else {
+            } else if (isSettled) {
               item.quantity += qty;
               if (r.isPlatform) {
                 item.onlineQuantity = (item.onlineQuantity || 0) + qty;
@@ -546,7 +549,7 @@ const DataCatalog: React.FC<{ user: User; dataOwnerId: string }> = ({ user, data
               if (dayIdx >= 0 && dayIdx < 31) item.dailyTrend[dayIdx] += qty;
 
               // Combo Logic: Group items by Order ID, filtering out EXTRAS segment
-              if (r.orderStatus !== 'CANCELLED' && r.orderId) {
+              if (r.orderId) {
                  if (!orderGroups[r.orderId]) orderGroups[r.orderId] = { items: new Set(), revenue: 0 };
                  const mapping = skuMappings.find(m => m.itemName.trim().toUpperCase() === name.trim().toUpperCase());
                  if (mapping?.segment !== 'EXTRAS') {

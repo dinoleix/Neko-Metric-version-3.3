@@ -18,7 +18,6 @@ const ItemSalesHub = lazy(() => import('./components/ItemSalesHub'));
 const PnLHub = lazy(() => import('./components/PnLHub'));
 const PnLHubCrew = lazy(() => import('./components/PnLHubCrew'));
 const PnLAnalytics = lazy(() => import('./components/PnLAnalytics'));
-const WasteManagement = lazy(() => import('./components/WasteManagement'));
 const WasteManagementV2 = lazy(() => import('./components/WasteManagementV2'));
 const IntegrityAudit = lazy(() => import('./components/IntegrityAudit'));
 const Team = lazy(() => import('./components/Team'));
@@ -79,7 +78,7 @@ import {
   Flame
 } from 'lucide-react';
 
-type AppTab = 'exec-dashboard' | 'dashboard' | 'sales' | 'raw-verify' | 'items' | 'pnl' | 'pnl-crew' | 'cash-flow' | 'pnl-insights' | 'waste' | 'waste-v2' | 'integrity' | 'team' | 'rentals' | 'catalog' | 'upload' | 'category-settings' | 'expenses' | 'partnership' | 'crew-terminal' | 'crew-reports' | 'users' | 'bank-management' | 'bank-audit' | 'holidays' | 'online-profit' | 'vendor-management' | 'consumables';
+type AppTab = 'exec-dashboard' | 'dashboard' | 'sales' | 'raw-verify' | 'items' | 'pnl' | 'pnl-crew' | 'cash-flow' | 'pnl-insights' | 'waste-v2' | 'integrity' | 'team' | 'rentals' | 'catalog' | 'upload' | 'category-settings' | 'expenses' | 'partnership' | 'crew-terminal' | 'crew-reports' | 'users' | 'bank-management' | 'bank-audit' | 'holidays' | 'online-profit' | 'vendor-management' | 'consumables';
 
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
@@ -416,7 +415,7 @@ const App: React.FC = () => {
 
       <main className="flex-1 overflow-y-auto">
         <div className="max-w-7xl mx-auto p-6 md:p-10">
-          {isReadOnly && activeTab !== 'sales' && activeTab !== 'expenses' && activeTab !== 'items' && activeTab !== 'waste' && activeTab !== 'waste-v2' && activeTab !== 'pnl' && activeTab !== 'pnl-crew' && activeTab !== 'pnl-insights' && activeTab !== 'partnership' && (
+          {isReadOnly && activeTab !== 'sales' && activeTab !== 'expenses' && activeTab !== 'items' && activeTab !== 'waste-v2' && activeTab !== 'pnl' && activeTab !== 'pnl-crew' && activeTab !== 'pnl-insights' && activeTab !== 'partnership' && (
             <div className="bg-emerald-50 border border-emerald-100 p-4 rounded-xl flex items-center gap-3 mb-8">
                <Eye className="text-emerald-600" size={18} />
                <p className="text-emerald-800 text-xs font-bold uppercase tracking-widest">You are in Executive Read-Only mode</p>
@@ -431,7 +430,6 @@ const App: React.FC = () => {
           {activeTab === 'raw-verify' && !isReadOnly && <RawSalesHub user={user} dataOwnerId={dataOwnerId} />}
           {activeTab === 'expenses' && <ExpenseHub user={user} dataOwnerId={dataOwnerId} />}
           {activeTab === 'items' && <ItemSalesHub user={user} dataOwnerId={dataOwnerId} />}
-          {activeTab === 'waste' && <WasteManagement user={user} dataOwnerId={dataOwnerId} />}
           {activeTab === 'waste-v2' && <WasteManagementV2 user={user} dataOwnerId={dataOwnerId} />}
           {activeTab === 'consumables' && isAdmin && <ConsumablesEfficiency user={user} dataOwnerId={dataOwnerId} />}
 

@@ -72,8 +72,10 @@ import {
   BarChart2,
   Download,
   Sparkles,
+  Smartphone,
 } from 'lucide-react';
 import { generateLeakageInsight } from '../wasteInsightService';
+import { getItemChannelValues, CHANNEL_MODE_OPTIONS, ItemChannelMode } from '../itemChannels';
 
 type WasteTab = 'audit' | 'drift' | 'staff' | 'serving';
 
@@ -95,9 +97,18 @@ function reconcilePeriod(
   itemCosts: ItemCost[],
   skuMappings: Record<string, { category: SkuCategory, segment?: string }>,
   normalizationMap: Record<string, string>,
+  channelMode: ItemChannelMode = 'all',
 ) {
   const targets: Record<CogsBucket, number> = { 'FOOD': 0, 'DRINKS': 0, 'FOOD SERVINGS': 0, 'DRINKS SERVINGS': 0, 'UNCATEGORIZED': 0 };
+  // Always combined (POS + online): actual COGS from expense_snapshots isn't tracked
+  // per sales channel, so the headline leakage %, waterfall, and total revenue must
+  // stay on combined figures — otherwise a channel filter would compare a filtered
+  // theoretical number against an unfiltered actual one.
   const itemAnalysis: Record<string, { qty: number, revenue: number, category: SkuCategory, segment: string, theoreticalIng: number, theoreticalServ: number, hasCost: boolean }> = {};
+  // Channel-scoped view of the same items, used only for the item drilldown table
+  // (and AI insight's "top items"), so users can see which items' theoretical burn
+  // is attributable to online vs in-store without distorting the headline numbers.
+  const itemAnalysisChannel: Record<string, { qty: number, revenue: number, category: SkuCategory, segment: string, theoreticalIng: number, theoreticalServ: number, hasCost: boolean }> = {};
   const staffItems: Record<string, { qty: number, potentialRevenue: number, theoreticalCost: number, segment: string, category: SkuCategory, hasCost: boolean }> = {};
 
   filteredItemSnaps.forEach(snap => {
@@ -131,6 +142,13 @@ function reconcilePeriod(
       itemAnalysis[masterName].revenue += (data.revenue || 0);
       itemAnalysis[masterName].theoreticalIng += (qty * ingUnitCost);
       itemAnalysis[masterName].theoreticalServ += (qty * servUnitCost);
+
+      const { qty: chQty, revenue: chRevenue } = getItemChannelValues(data, channelMode);
+      if (!itemAnalysisChannel[masterName]) itemAnalysisChannel[masterName] = { qty: 0, revenue: 0, category: activeCategory as SkuCategory, segment: mapping.segment || 'UNMAPPED', theoreticalIng: 0, theoreticalServ: 0, hasCost: !!costRec };
+      itemAnalysisChannel[masterName].qty += chQty;
+      itemAnalysisChannel[masterName].revenue += chRevenue;
+      itemAnalysisChannel[masterName].theoreticalIng += (chQty * ingUnitCost);
+      itemAnalysisChannel[masterName].theoreticalServ += (chQty * servUnitCost);
 
       if (data.staffQuantity > 0) {
         if (!staffItems[masterName]) staffItems[masterName] = { qty: 0, potentialRevenue: 0, theoreticalCost: 0, segment: mapping.segment || 'UNMAPPED', category: mapping.category, hasCost: !!costRec };
@@ -191,7 +209,7 @@ function reconcilePeriod(
   const totalWastage = ingWaste + packWaste;
 
   return {
-    pillarMetrics, itemAnalysis, staffDrilldown, totalRevenue, totalUniqueProducts,
+    pillarMetrics, itemAnalysis, itemAnalysisChannel, staffDrilldown, totalRevenue, totalUniqueProducts,
     unmappedProductCount, unmappedSkuPercent, totalActualCOGS, totalTheoreticalCOGS,
     ingWaste, packWaste, coverageGap, totalWastage, targets,
   };
@@ -217,6 +235,7 @@ const WasteManagementV2: React.FC<{ user: User; dataOwnerId: string }> = ({ user
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear().toString());
   const [selectedMonth, setSelectedMonth] = useState(MONTH_NAMES[new Date().getMonth()]);
   const [storeFilter, setStoreFilter] = useState('all');
+  const [channelMode, setChannelMode] = useState<ItemChannelMode>('all');
   const [activeDrilldown, setActiveDrilldown] = useState<'ingredients' | 'packaging'>('ingredients');
   const [segmentFilter, setSegmentFilter] = useState('all');
   const [staffChartView, setStaffChartView] = useState<'bar' | 'pie'>('bar');
@@ -390,13 +409,13 @@ const WasteManagementV2: React.FC<{ user: User; dataOwnerId: string }> = ({ user
     const filteredExpSnaps = expenseSnaps.filter(s => storeFilter === 'all' ? currentActiveIds.includes(s.outletId) : s.outletId === storeFilter);
     const filteredAdjustments = adjustments.filter(a => storeFilter === 'all' ? currentActiveIds.includes(a.outletId) : a.outletId === storeFilter);
 
-    const r = reconcilePeriod(filteredItemSnaps, filteredExpSnaps, filteredAdjustments, rentals, itemCosts, skuMappings, normalizationMap);
-    const { pillarMetrics, itemAnalysis, staffDrilldown, totalRevenue, unmappedProductCount, unmappedSkuPercent, totalActualCOGS, totalTheoreticalCOGS, ingWaste, packWaste, coverageGap, totalWastage, targets } = r;
+    const r = reconcilePeriod(filteredItemSnaps, filteredExpSnaps, filteredAdjustments, rentals, itemCosts, skuMappings, normalizationMap, channelMode);
+    const { pillarMetrics, itemAnalysis, itemAnalysisChannel, staffDrilldown, totalRevenue, unmappedProductCount, unmappedSkuPercent, totalActualCOGS, totalTheoreticalCOGS, ingWaste, packWaste, coverageGap, totalWastage, targets } = r;
 
     return {
       pillarMetrics, totalActual: totalActualCOGS, totalTheoretical: totalTheoreticalCOGS, totalRevenue, totalWastage,
       unmappedSkuPercent, unmappedProductCount,
-      itemDrilldown: Object.entries(itemAnalysis).filter(([_, d]) => d.category !== 'MISC' && d.qty > 0 && (segmentFilter === 'all' || d.segment === segmentFilter)).sort((a,b) => (activeDrilldown === 'ingredients' ? b[1].theoreticalIng - a[1].theoreticalIng : b[1].theoreticalServ - a[1].theoreticalServ)),
+      itemDrilldown: Object.entries(itemAnalysisChannel).filter(([_, d]) => d.category !== 'MISC' && d.qty > 0 && (segmentFilter === 'all' || d.segment === segmentFilter)).sort((a,b) => (activeDrilldown === 'ingredients' ? b[1].theoreticalIng - a[1].theoreticalIng : b[1].theoreticalServ - a[1].theoreticalServ)),
       availableSegments: Array.from(new Set(Object.values(itemAnalysis).map(i => i.segment))).filter(Boolean).sort(),
       staffDrilldown,
       waterfall: [
@@ -409,7 +428,7 @@ const WasteManagementV2: React.FC<{ user: User; dataOwnerId: string }> = ({ user
         { label: 'Realized Margin', val: Math.max(0, totalRevenue - totalActualCOGS), color: '#10b981', isPositive: true, isFinal: true }
       ]
     };
-  }, [itemSnaps, expenseSnaps, itemCosts, skuMappings, normalizationMap, adjustments, hasGenerated, storeFilter, selectedMonth, selectedYear, rentals, activeDrilldown, segmentFilter, availableOutlets]);
+  }, [itemSnaps, expenseSnaps, itemCosts, skuMappings, normalizationMap, adjustments, hasGenerated, storeFilter, channelMode, selectedMonth, selectedYear, rentals, activeDrilldown, segmentFilter, availableOutlets]);
 
   const handleAskAI = async () => {
     if (!intelligence) return;
@@ -637,6 +656,7 @@ const WasteManagementV2: React.FC<{ user: User; dataOwnerId: string }> = ({ user
         </div>
         <div className="flex flex-wrap items-center gap-3 bg-white p-2 rounded-[2rem] border border-slate-100 shadow-sm">
           <div className="bg-slate-50 px-4 py-2 rounded-xl flex items-center gap-2 border border-slate-100"><MapPin size={14} className="text-indigo-500" /><select value={storeFilter} onChange={e => { setStoreFilter(e.target.value); setHasGenerated(false); }} className="bg-transparent font-bold text-xs outline-none uppercase cursor-pointer"><option value="all">All Active Outlets</option>{availableOutlets.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}</select></div>
+          <div className="bg-slate-50 px-4 py-2 rounded-xl flex items-center gap-2 border border-slate-100" title="Filters the item drilldown table only — headline leakage % always reflects combined POS + online, since actual purchases aren't tracked per channel."><Smartphone size={14} className="text-indigo-500" /><select value={channelMode} onChange={e => { setChannelMode(e.target.value as ItemChannelMode); setHasGenerated(false); }} className="bg-transparent font-bold text-xs outline-none uppercase cursor-pointer">{CHANNEL_MODE_OPTIONS.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}</select></div>
           <div className="bg-slate-50 px-4 py-2 rounded-xl flex items-center gap-2 border border-slate-100"><CalendarDays size={14} className="text-indigo-500" /><select value={selectedMonth} onChange={e => { setSelectedMonth(e.target.value); setHasGenerated(false); }} className="bg-transparent font-bold text-xs outline-none uppercase cursor-pointer">{MONTH_NAMES.map(m => <option key={m} value={m}>{m}</option>)}</select><select value={selectedYear} onChange={e => { setSelectedYear(e.target.value); setHasGenerated(false); }} className="bg-transparent font-bold text-xs outline-none cursor-pointer">{YEAR_OPTIONS.map(y => <option key={y} value={y}>{y}</option>)}</select></div>
           <button onClick={generateAudit} disabled={loading} className="flex items-center gap-2 px-6 py-2.5 bg-indigo-600 text-white rounded-xl font-black uppercase text-[10px] tracking-widest hover:bg-indigo-700 transition-all shadow-lg"><Activity size={14} /> Run Audit</button>
         </div>
@@ -908,7 +928,7 @@ const WasteManagementV2: React.FC<{ user: User; dataOwnerId: string }> = ({ user
            {activeTab === 'drift' && (
              <section className="bg-white rounded-[3.5rem] border border-slate-100 shadow-sm overflow-hidden animate-in slide-in-from-right-4 duration-500">
                 <div className="p-12 border-b border-slate-50 flex flex-col md:flex-row md:items-center justify-between gap-8 bg-slate-50/50">
-                  <div className="flex items-center gap-4"><div className="p-4 bg-indigo-50 text-indigo-600 rounded-2xl shadow-inner"><List size={28}/></div><div><h3 className="text-2xl font-black text-slate-900 tracking-tight">Theoretical SKU Drift</h3><p className="text-slate-400 text-sm font-medium uppercase tracking-widest mt-1">Snapshot Aggregated Multi-layer Audit</p></div></div>
+                  <div className="flex items-center gap-4"><div className="p-4 bg-indigo-50 text-indigo-600 rounded-2xl shadow-inner"><List size={28}/></div><div><h3 className="text-2xl font-black text-slate-900 tracking-tight">Theoretical SKU Drift</h3><p className="text-slate-400 text-sm font-medium uppercase tracking-widest mt-1">Snapshot Aggregated Multi-layer Audit{channelMode !== 'all' && ` • ${CHANNEL_MODE_OPTIONS.find(o => o.id === channelMode)?.label} Channel Only`}</p></div></div>
                   <div className="flex flex-wrap items-center gap-4">
                     <div className="bg-white px-4 py-2 rounded-xl border border-slate-100 shadow-sm flex items-center gap-2"><Filter size={14} className="text-indigo-500" /><select value={segmentFilter} onChange={e => setSegmentFilter(e.target.value)} className="bg-transparent font-bold text-[10px] outline-none uppercase cursor-pointer min-w-[120px]"><option value="all">All Segments</option>{intelligence.availableSegments.map(s => <option key={s} value={s}>{s}</option>)}</select></div>
                     <div className="flex bg-white p-1.5 rounded-2xl border border-slate-100 shadow-sm"><button onClick={() => setActiveDrilldown('ingredients')} className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeDrilldown === 'ingredients' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-100' : 'text-slate-500'}`}><Utensils size={14}/> Ingredients</button><button onClick={() => setActiveDrilldown('packaging')} className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeDrilldown === 'packaging' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-100' : 'text-slate-500'}`}><Box size={14}/> Packaging</button></div>

@@ -737,10 +737,15 @@ export const ITEM_TARGET_FIELDS = [
   { id: 'itemTaxes', label: 'Item Taxes', required: false },
 ];
 
+// Zomato/Swiggy item exports report a per-unit "sell price" alongside a quantity
+// and carry no line-total column, so revenue has to be derived as qty × sellPrice.
+// Map sellPrice for those; map itemTotal only when the export genuinely has a
+// line total. If both are mapped, itemTotal wins.
 export const PLATFORM_ITEM_TARGET_FIELDS = [
   { id: 'itemName', label: 'Item Name', required: true },
   { id: 'itemQuantity', label: 'Item Quantity', required: true },
-  { id: 'itemTotal', label: 'Item Total/Revenue', required: false },
+  { id: 'sellPrice', label: 'Unit Sell Price', required: false },
+  { id: 'itemTotal', label: 'Item Total/Revenue (if line total)', required: false },
 ];
 
 export const EXPENSE_TARGET_FIELDS = [

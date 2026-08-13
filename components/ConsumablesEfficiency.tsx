@@ -310,6 +310,13 @@ const ConsumablesEfficiency: React.FC<{ user: User; dataOwnerId: string }> = ({ 
         </div>
       </header>
 
+      <p className="text-[11px] text-slate-400 font-medium leading-relaxed max-w-3xl flex items-start gap-1.5">
+        <Info size={13} className="text-slate-300 shrink-0 mt-0.5" />
+        Dishes and sales always combine in-store and online — unlike quantity-sold, what you purchase (gas, oil, packaging)
+        isn't logged per sales channel, so a channel filter here would divide a combined purchase figure by a filtered
+        one and distort the ratio rather than clarify it.
+      </p>
+
       {error && <p className="text-xs font-bold text-rose-600 bg-rose-50 border border-rose-100 rounded-xl px-4 py-3">{error}</p>}
 
       {/* Controls */}

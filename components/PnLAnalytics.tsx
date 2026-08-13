@@ -57,8 +57,10 @@ import {
   PackageSearch,
   ShoppingCart,
   ListFilter,
-  ArrowRightCircle
+  ArrowRightCircle,
+  Smartphone
 } from 'lucide-react';
+import { getItemChannelValues, CHANNEL_MODE_OPTIONS, ItemChannelMode } from '../itemChannels';
 
 import { 
   PieChart as RePieChart, 
@@ -70,6 +72,19 @@ import {
 } from 'recharts';
 
 type PnlTab = 'overview' | 'menu-engineering' | 'unit-economics';
+
+// Menu list price vs what customers actually paid. No online discounts are run
+// today, so the two are the same. When Zomato/Swiggy promos start, replace this
+// with (actual online net revenue ÷ Σ qty × list price) — item revenue already
+// stores qty × list price, so only the numerator needs sourcing.
+const ONLINE_REALIZATION = 1;
+
+const gradeFor = (marginPercent: number) => {
+  if (marginPercent >= 85) return 'ELITE';
+  if (marginPercent >= 65) return 'HEALTHY';
+  if (marginPercent >= 50) return 'SUBPAR';
+  return 'CRITICAL';
+};
 
 const PnLAnalytics: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
   const [salesSnaps, setSalesSnaps] = useState<SalesMonthlySnapshot[]>([]);
@@ -93,6 +108,7 @@ const PnLAnalytics: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear().toString());
   const [selectedMonth, setSelectedMonth] = useState(MONTH_NAMES[new Date().getMonth()]);
   const [selectedOutlets, setSelectedOutlets] = useState<string[]>(['all']);
+  const [channelMode, setChannelMode] = useState<ItemChannelMode>('all');
   const [selectedSegment, setSelectedSegment] = useState<string>('all');
   const [isOutletDropdownOpen, setIsOutletDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -233,6 +249,23 @@ const PnLAnalytics: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
     const posTax = filteredSalesSnaps.reduce((acc, s) => acc + (s.posGoodTax || 0), 0);
     const platformLeakage = filteredSalesSnaps.reduce((acc, s) => acc + (s.onlineGoodTax || 0) + (s.onlineGoodComm || 0) + (s.onlineGoodAds || 0), 0);
 
+    // Aggregator take for per-unit economics. Commission scales with order value so
+    // it belongs in a unit margin; ad spend is a period cost that doesn't scale per
+    // item, so it stays out (folding it in is what drove item margins negative in
+    // Online Profit Center). GST-on-commission is in because no input credit is
+    // claimed on it. TDS is out — it's income tax withheld against PAN, recoverable,
+    // not a margin cost.
+    const onlineGross = filteredSalesSnaps.reduce((acc, s) => acc + (s.onlineGoodGross || 0), 0);
+    const onlineTax = filteredSalesSnaps.reduce((acc, s) => acc + (s.onlineGoodTax || 0), 0);
+    const onlineComm = filteredSalesSnaps.reduce((acc, s) => acc + (s.onlineGoodComm || 0), 0);
+    const onlineGstOnComm = filteredSalesSnaps.reduce((acc, s) => acc + (s.onlineGoodGstOnComm || 0), 0);
+    // Menu sell prices are ex-tax, so the rate is measured against ex-tax sales —
+    // rating against tax-inclusive gross would understate the deduction.
+    const onlineNetSales = onlineGross - onlineTax;
+    const aggregatorTakePercent = onlineNetSales > 0
+      ? ((onlineComm + onlineGstOnComm) / onlineNetSales) * 100
+      : 0;
+
     let rawCogs = 0;
     let rawOps = 0;
     let rawLabour = 0;
@@ -262,6 +295,8 @@ const PnLAnalytics: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
     const outletTierMap: Record<string, 'TIER_1' | 'TIER_2'> = {};
     rentals.forEach(r => { outletTierMap[r.outletId] = r.tier; });
 
+    // Feeds Menu Engineering + Unit Economics only — the P&L snapshot above is
+    // derived from sales/expense snapshots directly and is unaffected by channelMode.
     const consolidatedItems: Record<string, { qty: number, rev: number, theoreticalCost: number }> = {};
     filteredItemSnaps.forEach(snap => {
       const tier = outletTierMap[snap.outletId] ?? 'TIER_1';
@@ -270,15 +305,16 @@ const PnLAnalytics: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
         const masterName = (normalizationMap[upperName] || name).trim().toUpperCase();
 
         if (!consolidatedItems[masterName]) consolidatedItems[masterName] = { qty: 0, rev: 0, theoreticalCost: 0 };
-        consolidatedItems[masterName].qty += data.quantity;
-        consolidatedItems[masterName].rev += data.revenue;
+        const { qty: chQty, revenue: chRevenue } = getItemChannelValues(data, channelMode);
+        consolidatedItems[masterName].qty += chQty;
+        consolidatedItems[masterName].rev += chRevenue;
 
         const costRec = itemCosts.find(c => (c.itemName || '').trim().toUpperCase() === masterName);
         if (costRec) {
           const servingCost = tier === 'TIER_1'
             ? (costRec.tier1ServingsCost ?? costRec.servingsCostPerUnit ?? 0)
             : (costRec.tier2ServingsCost ?? costRec.servingsCostPerUnit ?? 0);
-          consolidatedItems[masterName].theoreticalCost += data.quantity * (Number(costRec.costPerUnit || 0) + servingCost);
+          consolidatedItems[masterName].theoreticalCost += chQty * (Number(costRec.costPerUnit || 0) + servingCost);
         }
       });
     });
@@ -291,12 +327,22 @@ const PnLAnalytics: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
       const margin = avgPrice - cost;
       const marginPercent = avgPrice > 0 ? (margin / avgPrice) * 100 : 0;
       const profitAmount = margin * data.qty;
-      
-      let grade = 'HEALTHY';
-      if (marginPercent >= 85) grade = 'ELITE';
-      else if (marginPercent >= 65) grade = 'HEALTHY';
-      else if (marginPercent >= 50) grade = 'SUBPAR';
-      else grade = 'CRITICAL';
+
+      // What actually lands with us per unit once the aggregator's cut is removed.
+      // Only meaningful under the Online channel filter — surfaced there only.
+      const realizedPrice = avgPrice * ONLINE_REALIZATION;
+      const netUnitRevenue = realizedPrice * (1 - aggregatorTakePercent / 100);
+      const netUnitProfit = netUnitRevenue - cost;
+      // Denominated on net-of-platform, not the sell price. Online list prices are
+      // deliberately marked up (~32%) to absorb commission, so measuring against the
+      // inflated sell price would understate the margin and make online look worse
+      // than in-store on identical economics. Both channels now answer the same
+      // question: profit as a share of revenue actually retained.
+      const netUnitMarginPercent = netUnitRevenue > 0 ? (netUnitProfit / netUnitRevenue) * 100 : 0;
+      const netProfitAmount = netUnitProfit * data.qty;
+
+      const grade = gradeFor(marginPercent);
+      const netGrade = gradeFor(netUnitMarginPercent);
 
       return { 
         name, 
@@ -307,10 +353,15 @@ const PnLAnalytics: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
         price: avgPrice, 
         cost, 
         margin, 
-        marginPercent, 
+        marginPercent,
         profitAmount,
-        grade, 
-        hasCost: !!costRec 
+        netUnitRevenue,
+        netUnitProfit,
+        netUnitMarginPercent,
+        netProfitAmount,
+        grade,
+        netGrade,
+        hasCost: !!costRec
       };
     });
 
@@ -359,9 +410,10 @@ const PnLAnalytics: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
       return {
       snapshot: { goodRev, posTax, platformLeakage, coGS, grossProfit, grossMargin, totalOpEx, netProfit, netMargin },
       itemAnalysis: itemAnalysis.sort((a, b) => b.revenue - a.revenue),
+      aggregatorTakePercent, onlineComm, onlineGstOnComm, onlineNetSales,
       segmentAnalysis, categorySummary, topSegment, worstSegment, uniqueSegments
     };
-  }, [salesSnaps, expenseSnaps, itemSnaps, itemCosts, skuMappings, normalizationMap, selectedYear, selectedMonth, selectedOutlets, cogsKeywords, labourKeywords, opsKeywords, hasSearched, rentals, adjustments, availableOutlets]);
+  }, [salesSnaps, expenseSnaps, itemSnaps, itemCosts, skuMappings, normalizationMap, selectedYear, selectedMonth, selectedOutlets, channelMode, cogsKeywords, labourKeywords, opsKeywords, hasSearched, rentals, adjustments, availableOutlets]);
 
   const filteredItemsForLedger = useMemo(() => {
     if (!intelligence) return [];
@@ -420,6 +472,9 @@ const PnLAnalytics: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
                 </div>
               )}
            </div>
+           {activeTab !== 'overview' && (
+             <div className="bg-slate-50 px-4 py-2.5 rounded-xl border border-slate-100 flex items-center gap-2" title="Applies to Menu Engineering and Unit Economics only — the Overview P&L always reflects combined POS + online."><Smartphone size={14} className="text-indigo-500" /><select value={channelMode} onChange={e => setChannelMode(e.target.value as ItemChannelMode)} className="bg-transparent font-bold text-xs outline-none uppercase">{CHANNEL_MODE_OPTIONS.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}</select></div>
+           )}
            <div className="bg-slate-50 px-4 py-2.5 rounded-xl border border-slate-100 flex items-center gap-2"><CalendarDays size={14} className="text-indigo-500" /><select value={selectedMonth} onChange={e => { setSelectedMonth(e.target.value); setHasSearched(false); }} className="bg-transparent font-bold text-xs outline-none uppercase">{MONTH_NAMES.map(m => <option key={m} value={m}>{m}</option>)}</select><select value={selectedYear} onChange={e => { setSelectedYear(e.target.value); setHasSearched(false); }} className="bg-transparent font-bold text-xs outline-none">{YEAR_OPTIONS.map(y => <option key={y} value={y}>{y}</option>)}</select></div>
            <button onClick={generateReport} disabled={loading} className="px-6 py-2.5 bg-indigo-600 text-white rounded-xl font-black uppercase text-[10px] tracking-widest hover:bg-indigo-700 shadow-lg flex items-center gap-2">{loading ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} Build Intelligence</button>
         </div>
@@ -605,14 +660,23 @@ const PnLAnalytics: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
 
                          <div className="hidden md:flex items-center gap-6 bg-white px-6 py-2.5 rounded-xl border border-slate-100 shadow-sm">
                             <div className="text-right">
-                               <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-0.5">Focus Profit</p>
-                               <p className="text-sm font-black text-emerald-600">₹{Math.round(filteredItemsForLedger.reduce((acc, i) => acc + i.profitAmount, 0)).toLocaleString()}</p>
+                               <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-0.5">Focus Profit{channelMode === 'online' && ' (Net)'}</p>
+                               <p className="text-sm font-black text-emerald-600">₹{Math.round(filteredItemsForLedger.reduce((acc, i) => acc + (channelMode === 'online' ? i.netProfitAmount : i.profitAmount), 0)).toLocaleString()}</p>
                             </div>
                             <div className="h-8 w-px bg-slate-100" />
                             <div className="text-right">
-                               <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-0.5">Focus Margin</p>
-                               <p className="text-sm font-black text-indigo-600">{(filteredItemsForLedger.reduce((acc, i) => acc + i.marginPercent, 0) / (filteredItemsForLedger.length || 1)).toFixed(1)}%</p>
+                               <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-0.5">Focus Margin{channelMode === 'online' && ' (Net)'}</p>
+                               <p className="text-sm font-black text-indigo-600">{(filteredItemsForLedger.reduce((acc, i) => acc + (channelMode === 'online' ? i.netUnitMarginPercent : i.marginPercent), 0) / (filteredItemsForLedger.length || 1)).toFixed(1)}%</p>
                             </div>
+                            {channelMode === 'online' && (
+                              <>
+                                <div className="h-8 w-px bg-slate-100" />
+                                <div className="text-right" title="Commission + GST on commission, as a share of ex-tax online sales. Excludes ad spend (a period cost, not per-unit) and TDS (recoverable income tax).">
+                                   <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-0.5">Platform Take</p>
+                                   <p className="text-sm font-black text-rose-600">{intelligence.aggregatorTakePercent.toFixed(1)}%</p>
+                                </div>
+                              </>
+                            )}
                          </div>
                       </div>
                    </div>
@@ -624,14 +688,30 @@ const PnLAnalytics: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
                                <th className="px-10 py-6 text-[10px] font-black text-slate-400 uppercase tracking-widest">Master SKU Detail</th>
                                <th className="px-10 py-6 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Revenue (₹)</th>
                                <th className="px-10 py-6 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Unit Sell (₹)</th>
+                               {channelMode === 'online' && (
+                                 <th className="px-10 py-6 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right" title="Unit sell price less the aggregator's commission + GST on commission.">Net of Platform (₹)</th>
+                               )}
                                <th className="px-10 py-6 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Unit Cost (₹)</th>
-                               <th className="px-10 py-6 text-[10px] font-black text-slate-400 uppercase text-center">Unit Margin %</th>
+                               {channelMode === 'online' && (
+                                 <th className="px-10 py-6 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right" title="Net of Platform less unit cost — actual profit per unit sold online, before ads and fixed costs.">True Profit/Unit (₹)</th>
+                               )}
+                               <th className="px-10 py-6 text-[10px] font-black text-slate-400 uppercase text-center" title={channelMode === 'online' ? 'Profit as a share of revenue retained after the aggregator\'s cut — directly comparable to in-store margin.' : 'Profit as a share of unit sell price.'}>{channelMode === 'online' ? 'Unit Margin % (Net)' : 'Unit Margin %'}</th>
                                <th className="px-10 py-6 text-[10px] font-black text-slate-400 uppercase text-right">Profit Amount (₹)</th>
                                <th className="px-10 py-6 text-[10px] font-black text-slate-400 uppercase text-center">Audit</th>
                             </tr>
                          </thead>
                          <tbody className="divide-y divide-slate-50">
-                            {filteredItemsForLedger.sort((a,b) => b.profitAmount - a.profitAmount).map((item) => (
+                            {[...filteredItemsForLedger]
+                              .sort((a,b) => (channelMode === 'online' ? b.netProfitAmount - a.netProfitAmount : b.profitAmount - a.profitAmount))
+                              .map((item) => {
+                              // Online view reports margin, profit and grade net of the
+                              // aggregator's cut — showing gross margin beside a net
+                              // per-unit profit would read as a contradiction.
+                              const isOnlineView = channelMode === 'online';
+                              const shownMarginPercent = isOnlineView ? item.netUnitMarginPercent : item.marginPercent;
+                              const shownProfitAmount = isOnlineView ? item.netProfitAmount : item.profitAmount;
+                              const shownGrade = isOnlineView ? item.netGrade : item.grade;
+                              return (
                                <tr key={item.name} className="hover:bg-slate-50/50 transition-colors group">
                                   <td className="px-10 py-6">
                                      <div className="flex items-center gap-4">
@@ -646,23 +726,29 @@ const PnLAnalytics: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
                                   </td>
                                   <td className="px-10 py-6 text-right font-black text-slate-900">₹{item.revenue.toLocaleString()}</td>
                                   <td className="px-10 py-6 text-right font-black text-slate-700">₹{item.price.toFixed(0)}</td>
+                                  {channelMode === 'online' && (
+                                    <td className="px-10 py-6 text-right font-black text-amber-600">₹{item.netUnitRevenue.toFixed(0)}</td>
+                                  )}
                                   <td className="px-10 py-6 text-right font-black text-rose-500">₹{item.cost.toFixed(1)}</td>
+                                  {channelMode === 'online' && (
+                                    <td className={`px-10 py-6 text-right font-black ${item.netUnitProfit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>₹{item.netUnitProfit.toFixed(0)}</td>
+                                  )}
                                   <td className="px-10 py-6">
                                      <div className="flex items-center justify-center gap-3">
-                                        <GradeBadge grade={item.grade} />
+                                        <GradeBadge grade={shownGrade} />
                                         <div className="flex flex-col items-center gap-1">
-                                           <span className={`text-[10px] font-black ${item.marginPercent >= 65 ? 'text-emerald-600' : (item.marginPercent < 50 ? 'text-rose-600' : 'text-amber-600')}`}>
-                                              {item.marginPercent.toFixed(1)}%
+                                           <span className={`text-[10px] font-black ${shownMarginPercent >= 65 ? 'text-emerald-600' : (shownMarginPercent < 50 ? 'text-rose-600' : 'text-amber-600')}`}>
+                                              {shownMarginPercent.toFixed(1)}%
                                            </span>
                                            <div className="w-16 h-1 bg-slate-100 rounded-full overflow-hidden">
-                                              <div className={`h-full rounded-full ${item.marginPercent >= 65 ? 'bg-emerald-500' : (item.marginPercent < 50 ? 'bg-rose-500' : 'bg-amber-500')}`} style={{ width: `${Math.min(100, item.marginPercent)}%` }} />
+                                              <div className={`h-full rounded-full ${shownMarginPercent >= 65 ? 'bg-emerald-500' : (shownMarginPercent < 50 ? 'bg-rose-500' : 'bg-amber-500')}`} style={{ width: `${Math.min(100, Math.max(0, shownMarginPercent))}%` }} />
                                            </div>
                                         </div>
                                      </div>
                                   </td>
                                   <td className="px-10 py-6 text-right">
-                                     <p className="text-md font-black text-slate-900 uppercase tracking-tighter">₹{Math.round(item.profitAmount).toLocaleString()}</p>
-                                     <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest">Total Contribution</p>
+                                     <p className="text-md font-black text-slate-900 uppercase tracking-tighter">₹{Math.round(shownProfitAmount).toLocaleString()}</p>
+                                     <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest">{isOnlineView ? 'Net of Platform' : 'Total Contribution'}</p>
                                   </td>
                                   <td className="px-10 py-6">
                                      <div className="flex justify-center">
@@ -674,7 +760,8 @@ const PnLAnalytics: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
                                      </div>
                                   </td>
                                </tr>
-                            ))}
+                              );
+                            })}
                          </tbody>
                       </table>
                    </div>
