@@ -21,6 +21,14 @@ export interface CrewAggregate {
   crewCogsBucketAgg: Record<string, number>;
   crewQtyByCategory: Record<string, number>;
   crewQtyMetaByCategory: Record<string, CrewQtyMeta>;
+  // Unpaid-but-committed spend, tallied separately so the paid figures above
+  // keep their exact meaning. Nothing reads these unless a screen opts in —
+  // see the accrual toggle in P&L Command (Crew).
+  crewPendingTotalPurchase: number;
+  crewPendingTotalExpense: number;
+  crewPendingPurchaseByCategory: Record<string, number>;
+  crewPendingExpenseByCategory: Record<string, number>;
+  crewPendingCogsBucketAgg: Record<string, number>;
 }
 
 const emptyBuckets = (): Record<string, number> =>
@@ -37,6 +45,11 @@ export const emptyCrewAggregate = (): CrewAggregate => ({
   crewCogsBucketAgg: emptyBuckets(),
   crewQtyByCategory: {},
   crewQtyMetaByCategory: {},
+  crewPendingTotalPurchase: 0,
+  crewPendingTotalExpense: 0,
+  crewPendingPurchaseByCategory: {},
+  crewPendingExpenseByCategory: {},
+  crewPendingCogsBucketAgg: emptyBuckets(),
 });
 
 /**
@@ -57,8 +70,17 @@ const unitsForEntry = (e: DailyCounterEntry): { units: number; fromItems: boolea
   return lines > 0 ? { units: lines, fromItems: true } : { units: 0, fromItems: false };
 };
 
-/** Only 'paid' entries feed reporting — 'pending' and 'cancelled' are excluded. */
+/** Only 'paid' entries feed the headline figures. */
 export const isReportable = (e: Pick<DailyCounterEntry, 'status'>) => e.status === 'paid';
+
+/**
+ * Committed but not yet settled. Tallied into the crewPending* fields so a
+ * screen can present an accrual view on request.
+ *
+ * 'cancelled' is never counted by either helper — a cancelled bill is not a
+ * liability, and including it would overstate spend in every view.
+ */
+export const isPending = (e: Pick<DailyCounterEntry, 'status'>) => e.status === 'pending';
 
 /**
  * Aggregates entries into the crew_* fields. Pure — no reads, no writes — so
@@ -76,9 +98,28 @@ export const aggregateCrewEntries = (
   const agg = emptyCrewAggregate();
 
   for (const e of entries) {
-    if (!isReportable(e)) continue;
+    const reportable = isReportable(e);
+    const pending = isPending(e);
+    if (!reportable && !pending) continue; // cancelled
+
     const amt = Number(e.amount || 0);
     const cat = (e.category || 'UNCATEGORIZED').trim().toUpperCase();
+    const bucketKey = keywords.includes(cat) ? (cogsBucketMapping[cat] || 'FOOD') : 'UNCATEGORIZED';
+
+    if (pending) {
+      if (e.type === 'purchase') {
+        agg.crewPendingTotalPurchase += amt;
+        agg.crewPendingPurchaseByCategory[cat] = (agg.crewPendingPurchaseByCategory[cat] || 0) + amt;
+      } else {
+        agg.crewPendingTotalExpense += amt;
+        agg.crewPendingExpenseByCategory[cat] = (agg.crewPendingExpenseByCategory[cat] || 0) + amt;
+      }
+      agg.crewPendingCogsBucketAgg[bucketKey] = (agg.crewPendingCogsBucketAgg[bucketKey] || 0) + amt;
+      // Physical units stay paid-only on purpose: Consumables Efficiency reads
+      // crewQtyByCategory, and folding unsettled bills into it would move that
+      // screen's numbers without anyone asking for it.
+      continue;
+    }
 
     if (e.type === 'purchase') {
       agg.crewTotalPurchase += amt;
@@ -88,8 +129,7 @@ export const aggregateCrewEntries = (
       agg.crewExpenseByCategory[cat] = (agg.crewExpenseByCategory[cat] || 0) + amt;
     }
 
-    const bucket = keywords.includes(cat) ? (cogsBucketMapping[cat] || 'FOOD') : 'UNCATEGORIZED';
-    agg.crewCogsBucketAgg[bucket] = (agg.crewCogsBucketAgg[bucket] || 0) + amt;
+    agg.crewCogsBucketAgg[bucketKey] = (agg.crewCogsBucketAgg[bucketKey] || 0) + amt;
 
     // Units are tallied for EVERY category, not just configured consumables, so
     // adding a new tracked consumable later needs no backfill. Runs across both

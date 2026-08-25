@@ -136,6 +136,28 @@ service cloud.firestore {
       allow delete: if isDocOwner() || isFieldOwner();
     }
 
+    // fc_ingredients / fc_recipes — Recipe Costing module. Deliberately isolated
+    // from the P&L collections: nothing outside this module reads or writes them.
+    match /fc_ingredients/{docId} {
+      allow read: if canRead() || isFieldOwner() || isLinkedViaOwnerField();
+      allow create: if isAuthenticated() && (
+        request.resource.data.userId == request.auth.uid ||
+        request.resource.data.ownerId == request.auth.uid
+      );
+      allow update: if isDocOwner() || isLinkedToOwner() || isFieldOwner();
+      allow delete: if isDocOwner() || isFieldOwner();
+    }
+
+    match /fc_recipes/{docId} {
+      allow read: if canRead() || isFieldOwner() || isLinkedViaOwnerField();
+      allow create: if isAuthenticated() && (
+        request.resource.data.userId == request.auth.uid ||
+        request.resource.data.ownerId == request.auth.uid
+      );
+      allow update: if isDocOwner() || isLinkedToOwner() || isFieldOwner();
+      allow delete: if isDocOwner() || isFieldOwner();
+    }
+
     // crew_categories — custom terminal categories; admin-only writes, crew read-only
     match /crew_categories/{docId} {
       allow read: if canRead() || isFieldOwner() || isLinkedViaOwnerField();

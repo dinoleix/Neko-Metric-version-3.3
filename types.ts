@@ -183,6 +183,15 @@ export interface ExpenseMonthlySnapshot {
   crewExpenseByCategory?: Record<string, number>;
   crewPurchaseByCategory?: Record<string, number>;
   crewCogsBucketAgg?: Record<string, number>;
+  // Committed-but-unsettled crew spend, kept apart from the paid figures above so
+  // the defaults never change. Only read when a screen opts into an accrual view
+  // (P&L Command (Crew)). Absent on snapshots built before this existed — treat
+  // undefined as "not yet recounted", not as zero pending.
+  crewPendingTotalExpense?: number;
+  crewPendingTotalPurchase?: number;
+  crewPendingExpenseByCategory?: Record<string, number>;
+  crewPendingPurchaseByCategory?: Record<string, number>;
+  crewPendingCogsBucketAgg?: Record<string, number>;
   // Physical units purchased per category, for consumption tracking (gas cylinders etc).
   // Meaningless for mixed-unit categories — only read for tracked single-unit consumables.
   crewQtyByCategory?: Record<string, number>;
@@ -894,3 +903,106 @@ export const istDateString = (offsetDays = 0): string => {
   const d = new Date(Date.now() + (5.5 * 60 * 60 + offsetDays * 24 * 60 * 60) * 1000);
   return d.toISOString().split('T')[0];
 };
+
+// ---------------------------------------------------------------------------
+// RECIPE COSTING — self-contained module.
+//
+// Deliberately isolated from item_costs / products / purchases: nothing here is
+// read by the P&L screens and nothing here reads them. Wiring the computed cost
+// into `item_costs` is a later, separate decision.
+// ---------------------------------------------------------------------------
+
+/** Measurement family. Quantities only convert within the same family. */
+export type UnitDimension = 'weight' | 'volume' | 'count';
+
+/** Units the UI offers. Each normalizes to a base unit: g, ml, or pc. */
+export type MeasureUnit = 'g' | 'kg' | 'ml' | 'l' | 'pc';
+
+export interface UnitSpec {
+  dimension: UnitDimension;
+  /** Multiplier to the family's base unit (g / ml / pc). */
+  toBase: number;
+  label: string;
+}
+
+export const MEASURE_UNITS: Record<MeasureUnit, UnitSpec> = {
+  g:  { dimension: 'weight', toBase: 1,    label: 'Gram' },
+  kg: { dimension: 'weight', toBase: 1000, label: 'Kilogram' },
+  ml: { dimension: 'volume', toBase: 1,    label: 'Millilitre' },
+  l:  { dimension: 'volume', toBase: 1000, label: 'Litre' },
+  pc: { dimension: 'count',  toBase: 1,    label: 'Piece' },
+};
+
+export const BASE_UNIT_LABEL: Record<UnitDimension, string> = {
+  weight: 'g',
+  volume: 'ml',
+  count: 'pc',
+};
+
+export const RECIPE_INGREDIENT_CATEGORIES = [
+  'Dairy', 'Meat & Seafood', 'Vegetables', 'Fruits', 'Dry Goods & Grains',
+  'Sauces & Condiments', 'Spices', 'Tea & Coffee', 'Syrups & Purees',
+  'Bakery', 'Frozen', 'Disposables & Packaging', 'Other',
+] as const;
+
+/**
+ * A purchasable ingredient, priced by the pack you actually buy.
+ * e.g. purchaseSize 1, purchaseUnit 'l', purchasePrice 70 → ₹0.07 per ml.
+ */
+export interface RecipeIngredient {
+  id?: string;
+  name: string;
+  category: string;
+  /** Size of one purchased pack, in `purchaseUnit`. */
+  purchaseSize: number;
+  purchaseUnit: MeasureUnit;
+  /** What one pack costs, inclusive of whatever tax you actually pay. */
+  purchasePrice: number;
+  /**
+   * Trim / peel / cook loss as a percentage, 0–99. Raising this raises the
+   * effective cost of the usable portion: 1kg of chicken at 10% loss yields
+   * 900g, so the usable gram costs price/900, not price/1000.
+   */
+  wastagePct?: number;
+  notes?: string;
+  ownerId: string;
+  userId: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type RecipeKind = 'menu' | 'prep';
+
+/** One line inside a recipe: either a raw ingredient or another recipe. */
+export interface RecipeComponent {
+  refType: 'ingredient' | 'recipe';
+  refId: string;
+  /** Denormalized for display only; the cost always resolves from refId. */
+  refName: string;
+  quantity: number;
+  unit: MeasureUnit;
+}
+
+/**
+ * `menu` — something you sell. Costed per serving, carries a sell price.
+ * `prep`  — a batch you make and then use inside other recipes (a sauce, a
+ *           gyoza mix, a cookie dough). Costed per batch, then divided by
+ *           yieldSize to give a per-unit cost when consumed elsewhere.
+ */
+export interface Recipe {
+  id?: string;
+  name: string;
+  category: string;
+  kind: RecipeKind;
+  components: RecipeComponent[];
+  /** Menu only. Zero/absent means margin is not computed. */
+  sellPrice?: number;
+  /** Prep only. How much one batch produces, e.g. 1 l of sauce or 20 pc. */
+  yieldSize?: number;
+  yieldUnit?: MeasureUnit;
+  notes?: string;
+  ownerId: string;
+  userId: string;
+  createdAt: number;
+  updatedAt: number;
+}

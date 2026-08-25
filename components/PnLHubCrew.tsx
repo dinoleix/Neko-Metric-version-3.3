@@ -4,6 +4,7 @@ import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, doc, getDoc, setDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import { getCachedCollection } from '../referenceCache';
+import { rebuildCrewSnapshot } from '../crewSnapshotService';
 import { computeConsumption, closingStockTotal, openingStockTotal, openingByBucket, closingByBucket, hasImpossibleStock } from '../pnlService';
 import { 
   SalesMonthlySnapshot, 
@@ -73,7 +74,8 @@ import {
   Box,
   Grape,
   Eye,
-  LineChart as LineChartIcon
+  LineChart as LineChartIcon,
+  Clock3
 } from 'lucide-react';
 import PnLPerformanceTrends from './PnLPerformanceTrends';
 
@@ -99,6 +101,13 @@ const PnLHubCrew: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean
   const [selectedMonth, setSelectedMonth] = useState(MONTH_NAMES[new Date().getMonth()]);
   const [selectedOutlets, setSelectedOutlets] = useState<string[]>(['all']);
   const [isOutletDropdownOpen, setIsOutletDropdownOpen] = useState(false);
+  /**
+   * Accrual view. Off = cash basis (settled spend only), which is what every
+   * other screen shows and what this one has always shown. On = adds crew
+   * entries still marked 'pending'. 'cancelled' is never included either way.
+   */
+  const [includePending, setIncludePending] = useState(false);
+  const [isRecounting, setIsRecounting] = useState(false);
   
   // Stock Adjustment States (Split into buckets)
   const [isStockModalOpen, setIsStockModalOpen] = useState(false);
@@ -337,6 +346,57 @@ const PnLHubCrew: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean
     }
   };
 
+  /**
+   * On-demand recount of the crew half of this period's snapshots.
+   *
+   * Crew Terminal only rebuilds a snapshot when an entry is saved as 'paid'
+   * (see the `status === 'paid'` gates in its submit path), so a month whose
+   * unpaid bills were never followed by a paid one has no pending figure to
+   * read. Rather than change that write path, this recounts on request — which
+   * is also the only time anyone is looking at an accrual P&L.
+   *
+   * Reads are bounded: one outlet-month query per outlet in scope.
+   */
+  const handleRecount = async () => {
+    const outletsInScope = selectedOutlets.includes('all')
+      ? availableOutlets.map(o => o.id)
+      : selectedOutlets;
+    if (!outletsInScope.length) return;
+
+    setIsRecounting(true);
+    try {
+      const monthNum = String(MONTH_NAMES.indexOf(selectedMonth) + 1).padStart(2, '0');
+      const date = `${selectedYear}-${monthNum}-01`;
+      const failures: string[] = [];
+
+      for (const outletId of outletsInScope) {
+        try {
+          await rebuildCrewSnapshot({
+            ownerId: dataOwnerId,
+            outletId,
+            date,
+            legacyUserId: user.uid,
+            // Deliberately not passing cogsKeywords: rebuildCrewSnapshot loads
+            // them from category_settings itself, which is the same source
+            // Crew Terminal uses. Passing this screen's copy could bucket the
+            // recount differently from every other writer.
+          });
+        } catch (err) {
+          console.error(`[Recount] ${outletId} failed:`, err);
+          failures.push(getOutletName(outletId));
+        }
+      }
+
+      await fetchData();
+
+      if (failures.length) {
+        alert(`Recount finished, but these outlets failed and still show stale figures:\n\n${failures.map(f => `• ${f}`).join('\n')}\n\nCheck the console for details.`);
+      }
+    } finally {
+      setIsRecounting(false);
+    }
+  };
+
   const pnlData = useMemo(() => {
     const monthIdx = MONTH_NAMES.indexOf(selectedMonth);
     const selectedYearNum = parseInt(selectedYear);
@@ -393,7 +453,22 @@ const PnLHubCrew: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean
       processMap(snap.purchaseByCategory);
       processMap(snap.crewExpenseByCategory || {});
       processMap(snap.crewPurchaseByCategory || {});
+      if (includePending) {
+        processMap(snap.crewPendingExpenseByCategory || {});
+        processMap(snap.crewPendingPurchaseByCategory || {});
+      }
     });
+
+    // How much unsettled spend the accrual view is adding, and whether every
+    // snapshot in scope actually knows its pending figures. Snapshots written
+    // before the crewPending* fields existed carry `undefined`, not 0 — showing
+    // those as "no pending spend" would be a silent understatement, so they are
+    // counted as stale and surfaced instead.
+    const pendingTotal = filteredExpenseSnaps.reduce(
+      (acc, s2) => acc + (s2.crewPendingTotalExpense || 0) + (s2.crewPendingTotalPurchase || 0), 0);
+    const staleSnapshotOutlets = filteredExpenseSnaps
+      .filter(s2 => s2.crewPendingTotalExpense === undefined && s2.crewPendingTotalPurchase === undefined)
+      .map(s2 => s2.outletId);
 
     const scopedAdjustments = adjustments.filter(a => currentFilterOutlets.includes(a.outletId));
     const cogsAdj = closingStockTotal(scopedAdjustments);
@@ -468,6 +543,7 @@ const PnLHubCrew: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean
       openingServings, foodServingsOpening, drinkServingsOpening, openingStock,
       mappedOps, csvVariableLabour, fixedPayroll, totalPayroll, totalRent, unmappedExp, operatingBurn,
       netProfit, payrollValidated, stockDataSuspect,
+      pendingTotal, staleSnapshotOutlets,
       margins: {
         contributionPercent: (contributionMargin / denominator) * 100,
         netProfitMargin: (netProfit / denominator) * 100,
@@ -477,7 +553,7 @@ const PnLHubCrew: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean
         opsPercent: (mappedOps / denominator) * 100
       }
     };
-  }, [salesSnaps, expenseSnaps, dailySalesLogs, monthlyPayrolls, rentals, adjustments, selectedYear, selectedMonth, selectedOutlets, employees, cogsKeywords, labourKeywords, opsKeywords, availableOutlets]);
+  }, [salesSnaps, expenseSnaps, dailySalesLogs, monthlyPayrolls, rentals, adjustments, selectedYear, selectedMonth, selectedOutlets, employees, cogsKeywords, labourKeywords, opsKeywords, availableOutlets, includePending]);
 
   const waterfallSteps = useMemo(() => {
     return [
@@ -550,13 +626,60 @@ const PnLHubCrew: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean
                  <Eye size={16} /> Read Only
                </div>
              )}
+             <button
+               onClick={() => setIncludePending(v => !v)}
+               title={includePending
+                 ? 'Showing settled + unpaid spend (accrual basis)'
+                 : 'Showing settled spend only (cash basis)'}
+               className={`px-5 py-2.5 rounded-xl border font-black uppercase text-[10px] tracking-widest flex items-center gap-3 shadow-sm transition-all ${
+                 includePending
+                   ? 'bg-amber-500 border-amber-500 text-white hover:bg-amber-600'
+                   : 'bg-white border-slate-100 text-slate-500 hover:border-amber-200 hover:text-amber-600'
+               }`}
+             >
+                <Clock3 size={16} />
+                {includePending ? 'Incl. Pending' : 'Paid Only'}
+             </button>
              <button onClick={fetchData} className="p-3 bg-white rounded-xl border border-slate-100 text-slate-400 hover:text-indigo-600 shadow-sm transition-colors">
               <RefreshCw size={16} className={loading ? 'animate-spin' : ''}/>
             </button>
            </div>
         </div>
       </header>
-      
+
+      {includePending && (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center gap-4">
+          <div className="p-2.5 bg-amber-500/15 rounded-xl shrink-0">
+            <Clock3 className="text-amber-600" size={20} />
+          </div>
+          <div className="flex-1">
+            <p className="text-[10px] font-black uppercase tracking-widest text-amber-700">Accrual basis &mdash; unpaid spend included</p>
+            <p className="text-sm font-bold text-amber-900 mt-1">
+              Adding <span className="tabular-nums">&#8377;{Math.round(pnlData.pendingTotal).toLocaleString('en-IN')}</span> of
+              committed-but-unsettled crew spend. Cancelled entries stay excluded.
+              These figures will not match Cash Reality, which is cash basis by design.
+            </p>
+            {pnlData.staleSnapshotOutlets.length > 0 && (
+              <p className="text-xs font-bold text-rose-700 mt-2">
+                {pnlData.staleSnapshotOutlets.length} outlet(s) in scope have never been recounted, so their unpaid
+                spend is missing from the figure above. Recount to pull it in.
+              </p>
+            )}
+          </div>
+          {!readOnly && (
+            <button
+              onClick={handleRecount}
+              disabled={isRecounting}
+              title="Re-reads this month's crew entries and refreshes the pending totals"
+              className="shrink-0 px-5 py-3 bg-amber-600 text-white rounded-xl font-black uppercase text-[10px] tracking-widest flex items-center gap-2.5 hover:bg-amber-700 disabled:opacity-50 transition-all"
+            >
+              <RefreshCw size={15} className={isRecounting ? 'animate-spin' : ''} />
+              {isRecounting ? 'Recounting' : 'Recount Now'}
+            </button>
+          )}
+        </div>
+      )}
+
       {/* REST OF THE COMPONENT REMAINS THE SAME */}
       {loading ? (
         <div className="py-48 text-center"><Loader2 className="w-12 h-12 text-indigo-600 animate-spin mx-auto mb-6" /><p className="text-slate-400 font-black uppercase tracking-widest text-[10px]">Assembling Multi-Dimensional Audit...</p></div>
