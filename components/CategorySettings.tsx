@@ -4,6 +4,7 @@ import type { User } from 'firebase/auth';
 import { doc, getDoc, setDoc, collection, query, where, getDocs, writeBatch, deleteDoc, addDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { invalidateCached } from '../referenceCache';
+import { itemCostDocId, unlinkRecipeCost } from '../recipeCostPublish';
 import { ai } from '../geminiService';
 import { 
   DEFAULT_COGS, 
@@ -71,7 +72,8 @@ import {
   Edit3,
   LayoutGrid,
   Table2,
-  FileSpreadsheet
+  FileSpreadsheet,
+  ChefHat
 } from 'lucide-react';
 
 const COGS_BUCKETS: {id: CogsBucket, label: string, color: string, icon: any}[] = [
@@ -143,7 +145,7 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
   // Surfaces SKUs with missing costing. An item with no ingredient cost silently
   // contributes zero to theoretical spend in Waste Radar and Margin Intelligence,
   // which reads as efficiency rather than as a gap.
-  const [costsGapFilter, setCostsGapFilter] = useState<'all' | 'no-ingredient' | 'no-tier1' | 'no-tier2' | 'no-any-tier' | 'incomplete'>('all');
+  const [costsGapFilter, setCostsGapFilter] = useState<'all' | 'no-ingredient' | 'no-tier1' | 'no-tier2' | 'no-any-tier' | 'incomplete' | 'recipe-backed'>('all');
   /** Master SKU → year*12 + monthIdx of its last sale. Derived; see fetchData. */
   const [lastSoldStamp, setLastSoldStamp] = useState<Record<string, number>>({});
   /** Raw source string → last-sold stamp, for the Master Menu (which works in sources). */
@@ -160,6 +162,9 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
   const [isNormalizingAI, setIsNormalizingAI] = useState(false);
   const [aiSuggestions, setAiSuggestions] = useState<Record<string, string>>({});
   const [editingCosts, setEditingCosts] = useState<Record<string, { ingredient: string, tier1: string, tier2: string }>>({});
+  /** Master SKUs whose ingredient cost is published from Recipe Costing. */
+  const [recipeBacked, setRecipeBacked] = useState<Record<string, { recipeName: string; publishedAt: number }>>({});
+  const isRecipeBacked = (name: string) => !!recipeBacked[name];
 
   const fetchData = async () => {
     setLoading(true);
@@ -290,6 +295,7 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
 
       const finalMappings: Record<string, { category: SkuCategory, segment?: string, isInherited?: boolean }> = {};
       const initialCosts: Record<string, { ingredient: string, tier1: string, tier2: string }> = {};
+      const recipeBackedMap: Record<string, { recipeName: string; publishedAt: number }> = {};
 
       masterList.forEach(masterName => {
         const upperMaster = masterName.trim().toUpperCase();
@@ -309,16 +315,23 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
 
         // FIND COST RECORD (Using newest-first array and strict uppercase trimmed comparison)
         const existingCost = costsArr.find(c => (c.itemName || '').trim().toUpperCase() === upperMaster);
-        
+
         initialCosts[masterName] = {
           ingredient: existingCost ? existingCost.costPerUnit.toString() : '0',
           tier1: existingCost ? (existingCost.tier1ServingsCost ?? existingCost.servingsCostPerUnit ?? 0).toString() : '0',
           tier2: existingCost ? (existingCost.tier2ServingsCost ?? existingCost.servingsCostPerUnit ?? 0).toString() : '0'
         };
+
+        // Ingredient cost published from Recipe Costing. Read off the cost doc
+        // itself rather than querying fc_recipes, so the lock costs no reads.
+        if (existingCost?.costSource === 'recipe') {
+          recipeBackedMap[masterName] = { recipeName: existingCost.recipeName || '', publishedAt: existingCost.recipePublishedAt || 0 };
+        }
       });
-      
+
       setSkuMappings(finalMappings);
       setEditingCosts(initialCosts);
+      setRecipeBacked(recipeBackedMap);
 
     } catch (err) {
       console.error(err);
@@ -444,6 +457,22 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
     } catch (err) { setError("Product mapping failed."); } finally { setSaving(false); }
   };
 
+  /** Hand an item back to manual editing. The cost value stays; only the lock goes. */
+  const handleUnlinkCost = async (itemName: string) => {
+    if (!confirm(`Unlink "${itemName}" from its recipe?\n\nThe current cost stays, but it will no longer update when the recipe changes, and you can edit it here.`)) return;
+    try {
+      await unlinkRecipeCost(dataOwnerId, itemName);
+      setRecipeBacked(prev => {
+        const next = { ...prev };
+        delete next[itemName];
+        return next;
+      });
+    } catch (err) {
+      console.error('Unlink failed', err);
+      setError('Could not unlink that item.');
+    }
+  };
+
   const handleSaveCosts = async () => {
     setSaving(true); setSuccess(false);
     try {
@@ -457,18 +486,24 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
           const ingVal = parseFloat(costData.ingredient) || 0;
           const t1Val = parseFloat(costData.tier1) || 0;
           const t2Val = parseFloat(costData.tier2) || 0;
-          
+
           if (!itemName.trim()) return;
-          
+
           const masterNameUpper = itemName.trim().toUpperCase();
-          const safeId = masterNameUpper.replace(/[^a-zA-Z0-9]/g, '_');
+
+          // This writes EVERY row in the buffer, not just edited ones, so a tab
+          // opened before a publish would otherwise write its stale ingredient
+          // cost back over the published value. Omitting the key entirely (not
+          // writing the loaded value) makes that impossible under merge:true,
+          // whatever the buffer happens to hold. Tier costs still save normally.
+          const costPerUnitPatch = isRecipeBacked(itemName) ? {} : { costPerUnit: ingVal };
 
           // dataOwnerId, not user.uid — fetchData reads from dataOwnerId, so writing
           // to user.uid means a delegated admin's edits land on a doc nobody reads.
-          batch.set(doc(db, 'item_costs', `${dataOwnerId}_cost_${safeId}`), {
+          batch.set(doc(db, 'item_costs', itemCostDocId(dataOwnerId, masterNameUpper)), {
             userId: dataOwnerId,
             itemName: masterNameUpper,
-            costPerUnit: ingVal,
+            ...costPerUnitPatch,
             tier1ServingsCost: t1Val,
             tier2ServingsCost: t2Val,
             updatedAt: Date.now()
@@ -753,14 +788,15 @@ ${allSourceStrings.join('\n')}`;
         case 'no-tier2': return !t2;
         case 'no-any-tier': return !t1 && !t2;
         case 'incomplete': return !ing || !t1 || !t2;
+        case 'recipe-backed': return isRecipeBacked(s);
         default: return true;
       }
     });
-  }, [skuList, costsSearchTerm, costsSegmentFilter, skuMappings, costsGapFilter, editingCosts, activityFilter, lastSoldStamp, nowStamp]);
+  }, [skuList, costsSearchTerm, costsSegmentFilter, skuMappings, costsGapFilter, editingCosts, recipeBacked, activityFilter, lastSoldStamp, nowStamp]);
 
   /** Counts for the filter labels, so the size of each gap is visible before selecting it. */
   const costGapCounts = useMemo(() => {
-    let noIng = 0, noT1 = 0, noT2 = 0, noAnyTier = 0, incomplete = 0;
+    let noIng = 0, noT1 = 0, noT2 = 0, noAnyTier = 0, incomplete = 0, recipeLinked = 0;
     skuList.filter(isActive).forEach(s => {
       const c = editingCosts[s] || { ingredient: '', tier1: '', tier2: '' };
       const ing = hasCost(c.ingredient), t1 = hasCost(c.tier1), t2 = hasCost(c.tier2);
@@ -769,9 +805,10 @@ ${allSourceStrings.join('\n')}`;
       if (!t2) noT2++;
       if (!t1 && !t2) noAnyTier++;
       if (!ing || !t1 || !t2) incomplete++;
+      if (isRecipeBacked(s)) recipeLinked++;
     });
-    return { noIng, noT1, noT2, noAnyTier, incomplete, total: skuList.filter(isActive).length };
-  }, [skuList, editingCosts, activityFilter, lastSoldStamp, nowStamp]);
+    return { noIng, noT1, noT2, noAnyTier, incomplete, recipeLinked, total: skuList.filter(isActive).length };
+  }, [skuList, editingCosts, recipeBacked, activityFilter, lastSoldStamp, nowStamp]);
 
   const toggleSkuSelection = (sku: string) => {
     const next = new Set(selectedSkus);
@@ -787,11 +824,12 @@ ${allSourceStrings.join('\n')}`;
   // Export the currently filtered tiered costs to a real .xlsx (SheetJS, lazy-loaded)
   const exportCostsExcel = async () => {
     const XLSX = await import('xlsx');
-    const headers = ['Master SKU', 'Segment', 'Category', 'Ingredient Cost', 'Tier 1 Cost', 'Tier 2 Cost', 'T1 Total (Ingr+T1)', 'T2 Total (Ingr+T2)'];
+    const headers = ['Master SKU', 'Segment', 'Category', 'Cost Source', 'Ingredient Cost', 'Tier 1 Cost', 'Tier 2 Cost', 'T1 Total (Ingr+T1)', 'T2 Total (Ingr+T2)'];
     const rows = filteredCostsList.map(name => {
       const c = editingCosts[name] || { ingredient: '0', tier1: '0', tier2: '0' };
       const ingr = costNum(c.ingredient), t1 = costNum(c.tier1), t2 = costNum(c.tier2);
-      return [name, skuMappings[name]?.segment || 'UNSEGMENTED', skuMappings[name]?.category || 'UNMAPPED', ingr, t1, t2, ingr + t1, ingr + t2];
+      const source = isRecipeBacked(name) ? `RECIPE (${recipeBacked[name].recipeName})` : 'MANUAL';
+      return [name, skuMappings[name]?.segment || 'UNSEGMENTED', skuMappings[name]?.category || 'UNMAPPED', source, ingr, t1, t2, ingr + t1, ingr + t2];
     });
     const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
     ws['!cols'] = headers.map((h, i) => ({ wch: Math.min(40, Math.max(h.length, ...rows.slice(0, 80).map(r => String(r[i] ?? '').length), 8) + 2) }));
@@ -810,11 +848,19 @@ ${allSourceStrings.join('\n')}`;
 
   const applyBatchIngredient = (val: string) => {
     const next = { ...editingCosts };
+    let skipped = 0;
     selectedSkus.forEach(sku => {
+      // Recipe-backed costs are owned by Recipe Costing; a bulk apply must not
+      // quietly stage a value the save will then refuse to write anyway.
+      if (isRecipeBacked(sku)) { skipped++; return; }
       if (!next[sku]) next[sku] = { ingredient: '0', tier1: '0', tier2: '0' };
       next[sku].ingredient = val;
     });
     setEditingCosts(next);
+    if (skipped) {
+      setError(`${skipped} recipe-backed item${skipped === 1 ? '' : 's'} skipped — their ingredient cost comes from Recipe Costing.`);
+      setTimeout(() => setError(''), 5000);
+    }
   };
 
   const applyBatchTier1 = (templateId: string) => {
@@ -1280,6 +1326,7 @@ ${allSourceStrings.join('\n')}`;
                                <option value="no-tier2">No Tier 2 price ({costGapCounts.noT2})</option>
                                <option value="no-any-tier">No tier price at all ({costGapCounts.noAnyTier})</option>
                                <option value="incomplete">Anything incomplete ({costGapCounts.incomplete})</option>
+                               <option value="recipe-backed">From a recipe ({costGapCounts.recipeLinked})</option>
                             </select>
                          </div>
                          <div className="relative">
@@ -1339,13 +1386,29 @@ ${allSourceStrings.join('\n')}`;
                                              <span className="text-[9px] font-bold text-slate-400 uppercase">
                                                {lastSoldLabel(itemName) ? `last sold ${lastSoldLabel(itemName)}` : 'never sold'}
                                              </span>
+                                             {isRecipeBacked(itemName) && (
+                                               <span className="inline-flex items-center gap-1 px-2 py-0.5 mt-1 bg-emerald-50 text-emerald-600 rounded-full text-[8px] font-black uppercase border border-emerald-100" title={`Ingredient cost published from recipe "${recipeBacked[itemName].recipeName}"`}>
+                                                 <ChefHat size={9} /> Recipe
+                                               </span>
+                                             )}
                                            </div>
                                         </div>
                                      </td>
                                      <td className="px-3 py-2 text-[10px] font-bold text-slate-500 uppercase">{skuMappings[itemName]?.segment || 'UNSEGMENTED'}</td>
                                      <td className="px-3 py-2 text-[10px] font-bold text-indigo-500 uppercase">{skuMappings[itemName]?.category || 'UNMAPPED'}</td>
                                      <td className="px-2 py-2">
-                                        <input type="number" value={c.ingredient || ''} onChange={e => setEditingCosts({ ...editingCosts, [itemName]: { ...editingCosts[itemName], ingredient: e.target.value } })} className="w-24 px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg font-black text-slate-700 outline-none text-xs text-center focus:border-slate-400 focus:bg-white" placeholder="0" />
+                                        {isRecipeBacked(itemName) ? (
+                                          <div className="flex items-center justify-center gap-1.5">
+                                            <span className="w-24 px-3 py-2 bg-emerald-50 border border-emerald-100 rounded-lg font-black text-emerald-700 text-xs text-center" title="Published from Recipe Costing — edit the recipe, or unlink to type a value here">
+                                              {ingr.toFixed(2)}
+                                            </span>
+                                            <button onClick={() => handleUnlinkCost(itemName)} title="Unlink from recipe and edit by hand" className="p-1 text-slate-300 hover:text-rose-600 transition-colors">
+                                              <Link2 size={12} />
+                                            </button>
+                                          </div>
+                                        ) : (
+                                          <input type="number" value={c.ingredient || ''} onChange={e => setEditingCosts({ ...editingCosts, [itemName]: { ...editingCosts[itemName], ingredient: e.target.value } })} className="w-24 px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg font-black text-slate-700 outline-none text-xs text-center focus:border-slate-400 focus:bg-white" placeholder="0" />
+                                        )}
                                      </td>
                                      <td className="px-2 py-2">
                                         <div className="flex items-center gap-1.5">
@@ -1409,8 +1472,22 @@ ${allSourceStrings.join('\n')}`;
                                    <div className="text-right"><p className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Base Category</p><p className="text-[10px] font-black text-indigo-300 uppercase">{skuMappings[itemName]?.category || 'UNMAPPED'}</p></div>
                                    <div className="h-10 w-px bg-white/10" />
                                    <div className="flex flex-col">
-                                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Ingredient Cost (₹)</label>
-                                      <input type="number" value={editingCosts[itemName]?.ingredient || ''} onChange={e => setEditingCosts({...editingCosts, [itemName]: { ...editingCosts[itemName], ingredient: e.target.value }})} className="w-28 px-4 py-2 bg-white/10 border border-white/10 rounded-xl font-black text-emerald-400 outline-none text-sm transition-all focus:bg-white/20" placeholder="0.00" />
+                                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 flex items-center gap-1.5">
+                                        Ingredient Cost (₹)
+                                        {isRecipeBacked(itemName) && <span className="inline-flex items-center gap-1 text-emerald-400"><ChefHat size={9} /> Recipe</span>}
+                                      </label>
+                                      {isRecipeBacked(itemName) ? (
+                                        <div className="flex items-center gap-1.5">
+                                          <span className="w-28 px-4 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-xl font-black text-emerald-400 text-sm" title={`Published from recipe "${recipeBacked[itemName].recipeName}"`}>
+                                            {costNum(editingCosts[itemName]?.ingredient).toFixed(2)}
+                                          </span>
+                                          <button onClick={() => handleUnlinkCost(itemName)} title="Unlink from recipe and edit by hand" className="p-1 text-slate-500 hover:text-rose-400 transition-colors">
+                                            <Link2 size={13} />
+                                          </button>
+                                        </div>
+                                      ) : (
+                                        <input type="number" value={editingCosts[itemName]?.ingredient || ''} onChange={e => setEditingCosts({...editingCosts, [itemName]: { ...editingCosts[itemName], ingredient: e.target.value }})} className="w-28 px-4 py-2 bg-white/10 border border-white/10 rounded-xl font-black text-emerald-400 outline-none text-sm transition-all focus:bg-white/20" placeholder="0.00" />
+                                      )}
                                    </div>
                                 </div>
                              </div>

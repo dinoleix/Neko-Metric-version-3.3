@@ -19,3 +19,23 @@ body {
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
   background: #cbd5e1;
 }
+
+/* Recipe print card.
+   Printing a modal means hiding the app around it. `visibility` rather than
+   `display` so the print target keeps its layout box while every ancestor
+   collapses out of view. */
+@media print {
+  body * { visibility: hidden; }
+  #recipe-print, #recipe-print * { visibility: visible; }
+  #recipe-print {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    padding: 0;
+    margin: 0;
+    background: #fff;
+    color: #000;
+  }
+  .print-hide { display: none !important; }
+}

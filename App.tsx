@@ -37,6 +37,7 @@ const HolidayRegistry = lazy(() => import('./components/HolidayRegistry'));
 const OnlineProfitCenter = lazy(() => import('./components/OnlineProfitCenter'));
 const ConsumablesEfficiency = lazy(() => import('./components/ConsumablesEfficiency'));
 const RecipeCostLab = lazy(() => import('./components/RecipeCostLab'));
+const MenuPriceBoard = lazy(() => import('./components/MenuPriceBoard'));
 
 const TabLoader: React.FC = () => (
   <div className="flex items-center justify-center py-24">
@@ -77,10 +78,11 @@ import {
   Banknote,
   Store,
   Flame,
-  ChefHat
+  ChefHat,
+  IndianRupee
 } from 'lucide-react';
 
-type AppTab = 'exec-dashboard' | 'dashboard' | 'sales' | 'raw-verify' | 'items' | 'pnl' | 'pnl-crew' | 'cash-flow' | 'pnl-insights' | 'waste-v2' | 'integrity' | 'team' | 'rentals' | 'catalog' | 'upload' | 'category-settings' | 'expenses' | 'partnership' | 'crew-terminal' | 'crew-reports' | 'users' | 'bank-management' | 'bank-audit' | 'holidays' | 'online-profit' | 'vendor-management' | 'consumables' | 'recipe-costing';
+type AppTab = 'exec-dashboard' | 'dashboard' | 'sales' | 'raw-verify' | 'items' | 'pnl' | 'pnl-crew' | 'cash-flow' | 'pnl-insights' | 'waste-v2' | 'integrity' | 'team' | 'rentals' | 'catalog' | 'upload' | 'category-settings' | 'expenses' | 'partnership' | 'crew-terminal' | 'crew-reports' | 'users' | 'bank-management' | 'bank-audit' | 'holidays' | 'online-profit' | 'vendor-management' | 'consumables' | 'recipe-costing' | 'menu-prices';
 
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
@@ -384,6 +386,7 @@ const App: React.FC = () => {
               <NavItem tab="bank-audit" icon={<ShieldCheck size={18} />} label="Bank Reconcile" />
               <NavItem tab="vendor-management" icon={<Store size={18} />} label="Vendors" />
               <NavItem tab="recipe-costing" icon={<ChefHat size={18} />} label="Recipe Costing" />
+              <NavItem tab="menu-prices" icon={<IndianRupee size={18} />} label="Menu Prices" />
 
               <div className="pt-4 pb-2 px-4">
                 <p className="text-[10px] font-black uppercase tracking-widest text-slate-600">Inputs</p>
@@ -451,6 +454,7 @@ const App: React.FC = () => {
           {activeTab === 'bank-audit' && !isReadOnly && <BankReconciliation user={user} dataOwnerId={dataOwnerId} />}
           {activeTab === 'vendor-management' && !isReadOnly && <VendorManagement user={user} dataOwnerId={dataOwnerId} />}
           {activeTab === 'recipe-costing' && !isReadOnly && <RecipeCostLab user={user} dataOwnerId={dataOwnerId} />}
+          {activeTab === 'menu-prices' && !isReadOnly && <MenuPriceBoard user={user} dataOwnerId={dataOwnerId} />}
           {activeTab === 'upload' && !isReadOnly && <Uploader user={user} dataOwnerId={dataOwnerId} onSuccess={() => setActiveTab('exec-dashboard')} />}
           {activeTab === 'crew-terminal' && <CrewTerminal user={user} profile={userProfile} />}
           {activeTab === 'crew-reports' && isAdmin && <CrewReports user={user} profile={userProfile} />}

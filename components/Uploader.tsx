@@ -5,6 +5,7 @@ import { collection, addDoc, writeBatch, doc, setDoc, getDoc, increment, getDocs
 import { ref, uploadBytes } from 'firebase/storage';
 import { db, storage } from '../firebase';
 import { getCachedCollection } from '../referenceCache';
+import { parseCsvRecords } from '../csvParse';
 import { ai } from '../geminiService';
 import { 
   FileType, 
@@ -424,34 +425,7 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
   const parseCSV = (text: string) => {
     try {
       setError('');
-      // Single-pass RFC-4180 parse: treats commas and newlines as separators only
-      // outside quotes, so quoted fields containing commas or line breaks
-      // (e.g. order instructions like "no boba\n") keep their row intact.
-      const records: string[][] = [];
-      let field = '', record: string[] = [], inQuotes = false;
-      const pushRecord = () => {
-        record.push(field.trim());
-        field = '';
-        if (record.length > 1 || record[0] !== '') records.push(record);
-        record = [];
-      };
-      for (let i = 0; i < text.length; i++) {
-        const char = text[i];
-        if (inQuotes) {
-          if (char === '"') {
-            if (text[i + 1] === '"') { field += '"'; i++; } // escaped ""
-            else inQuotes = false;
-          } else field += char;
-        } else if (char === '"') {
-          inQuotes = true;
-        } else if (char === ',') {
-          record.push(field.trim()); field = '';
-        } else if (char === '\n' || char === '\r') {
-          if (char === '\r' && text[i + 1] === '\n') i++; // CRLF
-          pushRecord();
-        } else field += char;
-      }
-      if (field !== '' || record.length) pushRecord();
+      const records = parseCsvRecords(text);
 
       if (records.length < 2) throw new Error("File must have at least a header and one row of data");
       const headerRow = records[0];

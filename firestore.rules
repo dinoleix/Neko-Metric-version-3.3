@@ -158,6 +158,22 @@ service cloud.firestore {
       allow delete: if isDocOwner() || isFieldOwner();
     }
 
+    // menu_prices — the stated menu list price, one doc per master item name.
+    // These docs carry userId = the BUSINESS OWNER's uid, not the editor's, so a
+    // delegated admin's edit lands on the same doc the page reads back. The
+    // catch-all rule below would reject exactly that (it requires the incoming
+    // userId to equal the caller's uid), hence the explicit block: an admin may
+    // write on behalf of the owner they are linked to, and nobody else may.
+    match /menu_prices/{docId} {
+      allow read: if canRead();
+      allow create, update: if isAuthenticated() && (
+        request.resource.data.userId == request.auth.uid ||
+        (isAdmin() &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.ownerId == request.resource.data.userId)
+      );
+      allow delete: if isDocOwner();
+    }
+
     // crew_categories — custom terminal categories; admin-only writes, crew read-only
     match /crew_categories/{docId} {
       allow read: if canRead() || isFieldOwner() || isLinkedViaOwnerField();

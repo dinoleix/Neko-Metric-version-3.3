@@ -191,6 +191,13 @@ export const costRecipe = (
   recipe: Recipe,
   ingredients: RecipeIngredient[],
   recipes: Recipe[],
+  /**
+   * Menu prices, keyed by uppercased item name. Authoritative when it has an
+   * entry: a price raised on the Menu Prices page must move every food cost %
+   * immediately, which a copy stored on the recipe could never do.
+   * `recipe.sellPrice` is the fallback for recipes saved before that page.
+   */
+  priceByName?: Record<string, number>,
 ): CostedRecipe => {
   const ctx: ResolveContext = {
     ingredients: new Map(ingredients.filter(i => i.id).map(i => [i.id!, i])),
@@ -214,11 +221,12 @@ export const costRecipe = (
     errors,
   };
 
-  if (recipe.kind === 'menu' && recipe.sellPrice && recipe.sellPrice > 0) {
-    result.sellPrice = recipe.sellPrice;
-    result.profit = recipe.sellPrice - total;
-    result.marginPct = (result.profit / recipe.sellPrice) * 100;
-    result.foodCostPct = (total / recipe.sellPrice) * 100;
+  const sellPrice = priceByName?.[recipe.name.trim().toUpperCase()] ?? recipe.sellPrice;
+  if (recipe.kind === 'menu' && sellPrice && sellPrice > 0) {
+    result.sellPrice = sellPrice;
+    result.profit = sellPrice - total;
+    result.marginPct = (result.profit / sellPrice) * 100;
+    result.foodCostPct = (total / sellPrice) * 100;
   }
 
   if (recipe.kind === 'prep') {
@@ -233,11 +241,12 @@ export const costRecipe = (
 export const costAll = (
   recipes: Recipe[],
   ingredients: RecipeIngredient[],
+  priceByName?: Record<string, number>,
 ): Map<string, CostedRecipe> => {
   const out = new Map<string, CostedRecipe>();
   for (const r of recipes) {
     if (!r.id) continue;
-    out.set(r.id, costRecipe(r, ingredients, recipes));
+    out.set(r.id, costRecipe(r, ingredients, recipes, priceByName));
   }
   return out;
 };

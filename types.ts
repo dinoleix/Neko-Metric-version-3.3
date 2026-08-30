@@ -261,10 +261,23 @@ export interface ItemCost {
   itemName: string;
   costPerUnit: number; // Ingredient Cost
   servingsCostPerUnit?: number;
-  tier1ServingsCost?: number;   
-  tier2ServingsCost?: number;   
+  tier1ServingsCost?: number;
+  tier2ServingsCost?: number;
   userId: string;
   updatedAt: number;
+
+  /**
+   * Where costPerUnit came from. 'recipe' means it was published from Recipe
+   * Costing and the Tiered SKU Costs grid must not overwrite it — the grid
+   * reads this rather than querying fc_recipes, so provenance costs no reads
+   * and the recipe module stays isolated in the read direction.
+   * Absent on every document written before that feature existed; treat
+   * undefined as 'manual'.
+   */
+  costSource?: 'manual' | 'recipe';
+  recipeId?: string;
+  recipeName?: string;
+  recipePublishedAt?: number;
 }
 
 export interface MenuNormalization {
@@ -321,6 +334,25 @@ export interface SkuMapping {
   itemName: string;
   category: SkuCategory;
   segment?: string; 
+  userId: string;
+  updatedAt: number;
+}
+
+/** How a menu price got into the system, so a hand-corrected number is
+ *  visibly distinct from one a scan or an import guessed at. */
+export type MenuPriceSource = 'manual' | 'csv' | 'scan';
+
+/**
+ * The dine-in / POS list price of a sold item — what the menu says, not what
+ * any given order realized after discounts. Recipe Costing divides by this to
+ * get food cost %, so it is deliberately a stated price, never a derived one.
+ */
+export interface MenuPrice {
+  id?: string;
+  /** Canonical master item name, trimmed and uppercased (as skuList builds it). */
+  itemName: string;
+  price: number;
+  source: MenuPriceSource;
   userId: string;
   updatedAt: number;
 }
@@ -905,11 +937,17 @@ export const istDateString = (offsetDays = 0): string => {
 };
 
 // ---------------------------------------------------------------------------
-// RECIPE COSTING — self-contained module.
+// RECIPE COSTING — near-self-contained module.
 //
-// Deliberately isolated from item_costs / products / purchases: nothing here is
-// read by the P&L screens and nothing here reads them. Wiring the computed cost
-// into `item_costs` is a later, separate decision.
+// Nothing here is read by the P&L screens. The one link out is deliberate and
+// one-way: a menu recipe's computed cost can be PUBLISHED into
+// `item_costs.costPerUnit` (see recipeCostPublish.ts), by an explicit user
+// action with a preview — never automatically.
+//
+// That publish writes costPerUnit only. `tier1ServingsCost` / `tier2ServingsCost`
+// stay the sole home of packaging cost, because packaging varies by store tier
+// and a recipe has no tier concept. By the same token packaging must never be a
+// recipe component: it would double-count against those fields.
 // ---------------------------------------------------------------------------
 
 /** Measurement family. Quantities only convert within the same family. */
@@ -995,7 +1033,12 @@ export interface Recipe {
   category: string;
   kind: RecipeKind;
   components: RecipeComponent[];
-  /** Menu only. Zero/absent means margin is not computed. */
+  /**
+   * Menu only. LEGACY — the selling price now lives in `menu_prices` and is
+   * resolved at cost time, so a price change there moves every food cost %
+   * at once. Kept as the fallback for recipes saved before that page existed,
+   * and refreshed on save; menu_prices wins wherever it has an entry.
+   */
   sellPrice?: number;
   /** Prep only. How much one batch produces, e.g. 1 l of sauce or 20 pc. */
   yieldSize?: number;

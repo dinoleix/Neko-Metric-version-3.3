@@ -13,10 +13,17 @@ import {
   recipesUsingIngredient, dimensionOf, parseRecipePaste, nameKey,
   CostedRecipe, ParseResult,
 } from '../foodCostService';
+import { getMenuDirectory, EMPTY_MENU_DIRECTORY, MenuDirectory } from '../menuDirectory';
 import {
   ChefHat, Plus, Search, Edit2, Trash2, X, Loader2, Package, ClipboardPaste,
-  AlertTriangle, Check, Beaker, Utensils, TrendingUp, Info,
+  AlertTriangle, Check, Beaker, Utensils, TrendingUp, Info, Upload, Eye, Printer,
 } from 'lucide-react';
+import { getCachedCollection } from '../referenceCache';
+import { ItemCost } from '../types';
+import {
+  buildPublishPlan, publishRecipeCosts, looksLikePackaging,
+  PublishPlan, PublishRow,
+} from '../recipeCostPublish';
 
 interface Props {
   user: User;
@@ -48,6 +55,7 @@ const RecipeCostLab: React.FC<Props> = ({ user, dataOwnerId }) => {
   const [view, setView] = useState<'recipes' | 'ingredients'>('recipes');
   const [ingredients, setIngredients] = useState<RecipeIngredient[]>([]);
   const [recipes, setRecipes] = useState<Recipe[]>([]);
+  const [menuDirectory, setMenuDirectory] = useState<MenuDirectory>(EMPTY_MENU_DIRECTORY);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
 
@@ -56,13 +64,20 @@ const RecipeCostLab: React.FC<Props> = ({ user, dataOwnerId }) => {
   const [editingIngredient, setEditingIngredient] = useState<RecipeIngredient | null>(null);
   const [showIngredientForm, setShowIngredientForm] = useState(false);
   const [showPaste, setShowPaste] = useState(false);
+  const [showPublish, setShowPublish] = useState(false);
+  const [viewingRecipe, setViewingRecipe] = useState<Recipe | null>(null);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
     try {
-      const [ingSnap, recSnap] = await Promise.all([
+      const [ingSnap, recSnap, directory] = await Promise.all([
         getDocs(query(collection(db, 'fc_ingredients'), where('ownerId', '==', dataOwnerId))),
         getDocs(query(collection(db, 'fc_recipes'), where('ownerId', '==', dataOwnerId))),
+        getMenuDirectory(dataOwnerId).catch(err => {
+          // Recipe Costing works fine without this — it just falls back to free text.
+          console.error('Menu directory load failed', err);
+          return EMPTY_MENU_DIRECTORY;
+        }),
       ]);
       setIngredients(
         ingSnap.docs.map(d => ({ id: d.id, ...d.data() } as RecipeIngredient))
@@ -72,6 +87,7 @@ const RecipeCostLab: React.FC<Props> = ({ user, dataOwnerId }) => {
         recSnap.docs.map(d => ({ id: d.id, ...d.data() } as Recipe))
           .sort((a, b) => a.name.localeCompare(b.name))
       );
+      setMenuDirectory(directory);
     } catch (err) {
       console.error('Recipe costing: load failed', err);
     } finally {
@@ -81,7 +97,10 @@ const RecipeCostLab: React.FC<Props> = ({ user, dataOwnerId }) => {
 
   useEffect(() => { loadAll(); }, [loadAll]);
 
-  const costs = useMemo(() => costAll(recipes, ingredients), [recipes, ingredients]);
+  const costs = useMemo(
+    () => costAll(recipes, ingredients, menuDirectory.priceByName),
+    [recipes, ingredients, menuDirectory.priceByName],
+  );
 
   const filteredRecipes = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -172,6 +191,12 @@ const RecipeCostLab: React.FC<Props> = ({ user, dataOwnerId }) => {
           >
             <Plus size={15} /> New Recipe
           </button>
+          <button
+            onClick={() => setShowPublish(true)}
+            className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 text-white rounded-xl font-black text-[11px] uppercase tracking-widest hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-500/25"
+          >
+            <Upload size={15} /> Publish Costs
+          </button>
         </div>
       </div>
 
@@ -223,6 +248,7 @@ const RecipeCostLab: React.FC<Props> = ({ user, dataOwnerId }) => {
         <RecipeList
           recipes={filteredRecipes}
           costs={costs}
+          onView={setViewingRecipe}
           onEdit={r => { setEditingRecipe(r); setShowRecipeForm(true); }}
           onDelete={handleDeleteRecipe}
         />
@@ -242,6 +268,7 @@ const RecipeCostLab: React.FC<Props> = ({ user, dataOwnerId }) => {
           existing={editingRecipe}
           ingredients={ingredients}
           recipes={recipes}
+          menuDirectory={menuDirectory}
           onClose={() => setShowRecipeForm(false)}
           onSaved={saved => {
             setRecipes(prev => {
@@ -279,8 +306,29 @@ const RecipeCostLab: React.FC<Props> = ({ user, dataOwnerId }) => {
           user={user}
           dataOwnerId={dataOwnerId}
           ingredients={ingredients}
+          recipes={recipes}
+          menuDirectory={menuDirectory}
           onClose={() => setShowPaste(false)}
           onImported={() => { setShowPaste(false); loadAll(); }}
+        />
+      )}
+
+      {viewingRecipe && (
+        <RecipeViewModal
+          recipe={viewingRecipe}
+          costed={costs.get(viewingRecipe.id!)}
+          onClose={() => setViewingRecipe(null)}
+          onEdit={() => { setEditingRecipe(viewingRecipe); setViewingRecipe(null); setShowRecipeForm(true); }}
+        />
+      )}
+
+      {showPublish && (
+        <PublishModal
+          dataOwnerId={dataOwnerId}
+          recipes={recipes}
+          ingredients={ingredients}
+          menuDirectory={menuDirectory}
+          onClose={() => setShowPublish(false)}
         />
       )}
     </div>
@@ -294,9 +342,10 @@ const RecipeCostLab: React.FC<Props> = ({ user, dataOwnerId }) => {
 const RecipeList: React.FC<{
   recipes: Recipe[];
   costs: Map<string, CostedRecipe>;
+  onView: (r: Recipe) => void;
   onEdit: (r: Recipe) => void;
   onDelete: (r: Recipe) => void;
-}> = ({ recipes, costs, onEdit, onDelete }) => {
+}> = ({ recipes, costs, onView, onEdit, onDelete }) => {
   if (!recipes.length) {
     return (
       <div className="bg-white border border-dashed border-slate-200 rounded-2xl py-20 text-center">
@@ -352,6 +401,16 @@ const RecipeList: React.FC<{
                       <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Sells</p>
                       <p className="text-lg font-black text-slate-700">{money(c.sellPrice)}</p>
                     </div>
+                    {/* Cash, not another percentage — margin % is just
+                        100 − food cost %, so it would restate the column beside
+                        it. What that percentage hides is scale: a 75% margin on
+                        a ₹80 drink earns less than 62% on a ₹600 bowl. */}
+                    <div className="text-right">
+                      <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Profit</p>
+                      <p className={`text-lg font-black ${c.profit! < 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
+                        {money(c.profit!)}
+                      </p>
+                    </div>
                     <div className="text-right">
                       <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Food Cost</p>
                       <p className="text-lg font-black text-indigo-600">{c.foodCostPct!.toFixed(1)}%</p>
@@ -360,7 +419,10 @@ const RecipeList: React.FC<{
                   </>
                 )}
                 <div className="flex gap-1.5">
-                  <button onClick={() => onEdit(r)} className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all">
+                  <button onClick={() => onView(r)} title="View recipe" className="p-2 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all">
+                    <Eye size={15} />
+                  </button>
+                  <button onClick={() => onEdit(r)} title="Edit recipe" className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all">
                     <Edit2 size={15} />
                   </button>
                   <button onClick={() => onDelete(r)} className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all">
@@ -451,8 +513,11 @@ const IngredientList: React.FC<{
 
 const Modal: React.FC<{ title: string; subtitle?: string; onClose: () => void; wide?: boolean; children: React.ReactNode }> =
 ({ title, subtitle, onClose, wide, children }) => (
-  <div className="fixed inset-0 z-[100] bg-slate-900/50 backdrop-blur-sm flex items-start justify-center p-4 overflow-y-auto">
-    <div className={`bg-slate-50 rounded-2xl shadow-2xl w-full my-8 ${wide ? 'max-w-5xl' : 'max-w-xl'}`}>
+  // The print: variants let a modal be printed on its own — a fixed, scrolling,
+  // blurred overlay otherwise clips whatever sits inside it. Only the recipe
+  // card is ever printed; the rest is inert.
+  <div className="fixed inset-0 z-[100] bg-slate-900/50 backdrop-blur-sm flex items-start justify-center p-4 overflow-y-auto print:static print:block print:overflow-visible print:bg-transparent print:backdrop-blur-none print:p-0">
+    <div className={`bg-slate-50 rounded-2xl shadow-2xl w-full my-8 ${wide ? 'max-w-5xl' : 'max-w-xl'} print:my-0 print:max-w-none print:shadow-none print:rounded-none`}>
       <div className="flex items-start justify-between p-6 border-b border-slate-200 bg-white rounded-t-2xl sticky top-0 z-10">
         <div>
           <h2 className="text-lg font-black tracking-tight text-slate-900">{title}</h2>
@@ -589,6 +654,88 @@ const IngredientForm: React.FC<{
 };
 
 // ---------------------------------------------------------------------------
+// Menu name + category pickers
+// ---------------------------------------------------------------------------
+
+/**
+ * State for the "which menu item is this?" pair of dropdowns.
+ *
+ * Both directions are wired: choosing a category narrows the name list to that
+ * segment, and choosing a name backfills the category while it's still blank.
+ * Kept in one hook because the New Recipe form and the Paste importer ask the
+ * same question — two copies of this logic would drift.
+ */
+const useMenuPickers = (
+  menuDirectory: MenuDirectory,
+  recipes: Recipe[],
+  existing?: Recipe | null,
+) => {
+  const [name, setName] = useState(existing?.name || '');
+  const [category, setCategory] = useState(existing?.category || '');
+
+  const segmentOf = useCallback(
+    (item: string) => menuDirectory.segmentByName[item.trim().toUpperCase()],
+    [menuDirectory],
+  );
+
+  /** Names in scope: every sold item, or just the chosen category's. The
+   * recipe's own saved name stays selectable so editing never strands it. */
+  const nameOptions = useMemo(() => {
+    const scoped = category
+      ? menuDirectory.names.filter(n => segmentOf(n) === category)
+      : menuDirectory.names;
+    const opts = new Set(scoped);
+    if (existing?.name) opts.add(existing.name);
+    return Array.from(opts).sort();
+  }, [menuDirectory, category, segmentOf, existing]);
+
+  /** Category choices: the app-wide menu segments, plus any category already
+   * used on a saved recipe (covers prep-only labels like "Sauces"). */
+  const categoryOptions = useMemo(() => {
+    const opts = new Set(menuDirectory.segments);
+    recipes.forEach(r => { if (r.category) opts.add(r.category); });
+    if (existing?.category) opts.add(existing.category);
+    opts.add('Uncategorized');
+    return Array.from(opts).sort();
+  }, [menuDirectory.segments, recipes, existing]);
+
+  /** A category with nothing sold under it — worth saying so, rather than
+   * rendering a dropdown with nothing in it and no reason why. */
+  const emptyCategory = !!category && !!menuDirectory.names.length && !nameOptions.length;
+
+  const pickName = (value: string) => {
+    setName(value);
+    if (!value) return;
+    if (!category) {
+      const segment = segmentOf(value);
+      if (segment) setCategory(segment);
+    }
+  };
+
+  /** Re-scoping the list can orphan the current name; drop it rather than leave
+   * the select displaying a value it no longer offers. */
+  const pickCategory = (value: string) => {
+    setCategory(value);
+    if (value && name && name !== existing?.name && segmentOf(name) !== value) setName('');
+  };
+
+  /** For the paste importer's guessed title — taken only if it names a real
+   * menu item that the current category scope still allows. */
+  const trySelectName = (guess: string) => {
+    const match = menuDirectory.names.find(n => n.toUpperCase() === guess.toUpperCase());
+    if (!match) return;
+    if (category && segmentOf(match) !== category) return;
+    pickName(match);
+  };
+
+  return {
+    name, setName, category,
+    nameOptions, categoryOptions, emptyCategory,
+    pickName, pickCategory, trySelectName,
+  };
+};
+
+// ---------------------------------------------------------------------------
 // Recipe form
 // ---------------------------------------------------------------------------
 
@@ -598,13 +745,32 @@ const RecipeForm: React.FC<{
   existing: Recipe | null;
   ingredients: RecipeIngredient[];
   recipes: Recipe[];
+  menuDirectory: MenuDirectory;
   onClose: () => void;
   onSaved: (r: Recipe) => void;
-}> = ({ user, dataOwnerId, existing, ingredients, recipes, onClose, onSaved }) => {
-  const [name, setName] = useState(existing?.name || '');
-  const [category, setCategory] = useState(existing?.category || '');
+}> = ({ user, dataOwnerId, existing, ingredients, recipes, menuDirectory, onClose, onSaved }) => {
+  const {
+    name, setName, category,
+    nameOptions, categoryOptions, emptyCategory,
+    pickName, pickCategory,
+  } = useMenuPickers(menuDirectory, recipes, existing);
+
+  /**
+   * Read from Menu Prices, never typed here — one price per item, in one place.
+   * Falls back to whatever this recipe stored before that page existed.
+   */
+  const sellPrice = menuDirectory.priceByName[name.trim().toUpperCase()] ?? existing?.sellPrice;
+  const priceFromMenu = menuDirectory.priceByName[name.trim().toUpperCase()] !== undefined;
   const [kind, setKind] = useState<RecipeKind>(existing?.kind || 'menu');
-  const [sellPrice, setSellPrice] = useState(existing?.sellPrice ? String(existing.sellPrice) : '');
+
+  /** Switching back to a menu item re-imposes the master-list constraint — a
+   * name free-typed while this was a prep batch would otherwise survive into
+   * the select as a value it never offered. */
+  const pickKind = (next: RecipeKind) => {
+    setKind(next);
+    if (next === 'menu' && name && !nameOptions.includes(name)) setName('');
+  };
+
   const [yieldSize, setYieldSize] = useState(existing?.yieldSize ? String(existing.yieldSize) : '');
   const [yieldUnit, setYieldUnit] = useState<MeasureUnit>(existing?.yieldUnit || 'ml');
   const [components, setComponents] = useState<RecipeComponent[]>(existing?.components || []);
@@ -619,14 +785,17 @@ const RecipeForm: React.FC<{
   const draft: Recipe = useMemo(() => ({
     id: existing?.id,
     name, category, kind, components,
-    sellPrice: parseFloat(sellPrice) || undefined,
+    sellPrice,
     yieldSize: parseFloat(yieldSize) || undefined,
     yieldUnit,
     ownerId: dataOwnerId, userId: user.uid,
     createdAt: existing?.createdAt || Date.now(), updatedAt: Date.now(),
   }), [existing, name, category, kind, components, sellPrice, yieldSize, yieldUnit, dataOwnerId, user.uid]);
 
-  const costed = useMemo(() => costRecipe(draft, ingredients, recipes), [draft, ingredients, recipes]);
+  const costed = useMemo(
+    () => costRecipe(draft, ingredients, recipes, menuDirectory.priceByName),
+    [draft, ingredients, recipes, menuDirectory.priceByName],
+  );
 
   const addComponent = () => setComponents(prev => [...prev, { refType: 'ingredient', refId: '', refName: '', quantity: 0, unit: 'g' }]);
 
@@ -652,7 +821,7 @@ const RecipeForm: React.FC<{
   };
 
   const save = async () => {
-    if (!name.trim()) return alert('Give the recipe a name.');
+    if (!name.trim()) return alert(kind === 'menu' ? 'Select which menu item this recipe is for.' : 'Give the recipe a name.');
     if (!components.length) return alert('A recipe needs at least one component.');
     if (components.some(c => !c.refId)) return alert('Every line needs an ingredient or prep recipe selected.');
     if (components.some(c => !c.quantity || c.quantity <= 0)) return alert('Every line needs a quantity greater than zero.');
@@ -671,8 +840,10 @@ const RecipeForm: React.FC<{
         userId: user.uid,
         createdAt: existing?.createdAt || Date.now(),
         updatedAt: Date.now(),
+        // Menu Prices is authoritative; this is only refreshed so a recipe keeps
+        // a usable fallback if its item is ever missing from that page.
         ...(kind === 'menu'
-          ? { sellPrice: parseFloat(sellPrice) || 0 }
+          ? { sellPrice: sellPrice ?? 0 }
           : { yieldSize: parseFloat(yieldSize), yieldUnit }),
       };
       if (existing?.id) {
@@ -700,10 +871,28 @@ const RecipeForm: React.FC<{
       <div className="space-y-5">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <Field label="Recipe Name">
-            <input value={name} onChange={e => setName(e.target.value)} className={inputCls} placeholder="Chicken Poke Bowl" autoFocus />
+            {kind !== 'menu' ? (
+              <input value={name} onChange={e => setName(e.target.value)} className={inputCls} placeholder="Chili Oil Batch" autoFocus />
+            ) : !menuDirectory.names.length ? (
+              <p className="text-[11px] font-semibold text-amber-600 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
+                No sold items found yet — upload some sales data first, or switch this to a Prep Batch.
+              </p>
+            ) : emptyCategory ? (
+              <p className="text-[11px] font-semibold text-amber-600 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
+                No sold items are in “{category}” yet. Assign items to it in Category Settings, or clear the category to see every item.
+              </p>
+            ) : (
+              <select value={name} onChange={e => pickName(e.target.value)} className={inputCls} autoFocus>
+                <option value="">— select a menu item —</option>
+                {nameOptions.map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+            )}
           </Field>
           <Field label="Category">
-            <input value={category} onChange={e => setCategory(e.target.value)} className={inputCls} placeholder="Poke Bowls" />
+            <select value={category} onChange={e => pickCategory(e.target.value)} className={inputCls}>
+              <option value="">— all categories —</option>
+              {categoryOptions.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
           </Field>
         </div>
 
@@ -715,7 +904,7 @@ const RecipeForm: React.FC<{
             ]).map(o => (
               <button
                 key={o.k}
-                onClick={() => setKind(o.k)}
+                onClick={() => pickKind(o.k)}
                 className={`flex items-center gap-3 p-3.5 rounded-xl border-2 text-left transition-all ${
                   kind === o.k ? 'border-indigo-500 bg-indigo-50' : 'border-slate-200 bg-white hover:border-slate-300'
                 }`}
@@ -732,7 +921,17 @@ const RecipeForm: React.FC<{
 
         {kind === 'menu' ? (
           <Field label="Selling Price ₹">
-            <input type="number" step="any" value={sellPrice} onChange={e => setSellPrice(e.target.value)} className={inputCls} placeholder="644" />
+            <div className="flex items-center gap-3 px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl">
+              <span className={`text-sm font-black ${sellPrice ? 'text-slate-800' : 'text-slate-300'}`}>
+                {sellPrice ? money(sellPrice) : '— not set —'}
+              </span>
+              <span className="text-[10px] font-bold text-slate-400 ml-auto">
+                {!name ? 'Pick an item first'
+                  : priceFromMenu ? 'From Menu Prices'
+                  : sellPrice ? 'Saved on this recipe — add it to Menu Prices'
+                  : 'Set it on the Menu Prices page'}
+              </span>
+            </div>
           </Field>
         ) : (
           <div className="grid grid-cols-2 gap-3">
@@ -775,8 +974,13 @@ const RecipeForm: React.FC<{
                 <tbody className="divide-y divide-slate-50">
                   {components.map((c, idx) => {
                     const line = costed.lines[idx];
+                    // Packaging belongs in the Tier 1 / Tier 2 columns of Tiered
+                    // SKU Costs, which vary by store tier. Left in a recipe it is
+                    // counted twice once the cost is published.
+                    const packaging = c.refType === 'ingredient'
+                      && (() => { const i = ingredients.find(x => x.id === c.refId); return !!i && looksLikePackaging(i); })();
                     return (
-                      <tr key={idx} className={line?.error ? 'bg-rose-50/50' : ''}>
+                      <tr key={idx} className={line?.error ? 'bg-rose-50/50' : packaging ? 'bg-amber-50/50' : ''}>
                         <td className="px-4 py-2">
                           <select
                             value={c.refId ? `${c.refType}:${c.refId}` : ''}
@@ -796,6 +1000,11 @@ const RecipeForm: React.FC<{
                             )}
                           </select>
                           {line?.error && <p className="text-[10px] font-bold text-rose-600 mt-1">{line.error}</p>}
+                          {!line?.error && packaging && (
+                            <p className="text-[10px] font-bold text-amber-600 mt-1">
+                              Looks like packaging — keep it in Tiered SKU Costs, or it gets counted twice.
+                            </p>
+                          )}
                         </td>
                         <td className="px-3 py-2">
                           <input
@@ -829,7 +1038,7 @@ const RecipeForm: React.FC<{
         </div>
 
         {/* Live totals */}
-        <div className="bg-slate-900 rounded-2xl p-5 grid grid-cols-2 md:grid-cols-4 gap-5">
+        <div className="bg-slate-900 rounded-2xl p-5 grid grid-cols-2 md:grid-cols-3 gap-5">
           <div>
             <p className="text-[9px] font-black uppercase tracking-widest text-slate-500 mb-1">{kind === 'prep' ? 'Batch Cost' : 'Total Cost'}</p>
             <p className="text-2xl font-black text-white">{money(costed.totalCost)}</p>
@@ -849,13 +1058,11 @@ const RecipeForm: React.FC<{
                 <p className="text-[9px] font-black uppercase tracking-widest text-slate-500 mb-1">Profit</p>
                 <p className="text-2xl font-black text-emerald-400">{costed.profit !== undefined ? money(costed.profit) : '—'}</p>
               </div>
+              {/* Margin % is deliberately absent: it is exactly 100 − food
+                  cost %, so it restated the tile beside it. */}
               <div>
                 <p className="text-[9px] font-black uppercase tracking-widest text-slate-500 mb-1">Food Cost</p>
                 <p className="text-2xl font-black text-indigo-400">{costed.foodCostPct !== undefined ? `${costed.foodCostPct.toFixed(1)}%` : '—'}</p>
-              </div>
-              <div>
-                <p className="text-[9px] font-black uppercase tracking-widest text-slate-500 mb-1">Margin</p>
-                <p className="text-2xl font-black text-white">{costed.marginPct !== undefined ? `${costed.marginPct.toFixed(1)}%` : '—'}</p>
               </div>
             </>
           )}
@@ -880,13 +1087,21 @@ const PasteImport: React.FC<{
   user: User;
   dataOwnerId: string;
   ingredients: RecipeIngredient[];
+  recipes: Recipe[];
+  menuDirectory: MenuDirectory;
   onClose: () => void;
   onImported: () => void;
-}> = ({ user, dataOwnerId, ingredients, onClose, onImported }) => {
+}> = ({ user, dataOwnerId, ingredients, recipes, menuDirectory, onClose, onImported }) => {
   const [text, setText] = useState('');
-  const [name, setName] = useState('');
-  const [category, setCategory] = useState('');
-  const [sellPrice, setSellPrice] = useState('');
+
+  const {
+    name, setName, category,
+    nameOptions, categoryOptions, emptyCategory,
+    pickName, pickCategory, trySelectName,
+  } = useMenuPickers(menuDirectory, recipes);
+
+  /** From Menu Prices, never typed here — see RecipeForm. */
+  const sellPrice = menuDirectory.priceByName[name.trim().toUpperCase()];
   const [parsed, setParsed] = useState<ParseResult | null>(null);
   const [importing, setImporting] = useState(false);
 
@@ -913,9 +1128,11 @@ const PasteImport: React.FC<{
     const result = parseRecipePaste(text);
     setParsed(result);
     if (!name.trim()) {
-      // The title usually sits on the first non-tabular line of the paste.
+      // The title usually sits on the first non-tabular line of the paste —
+      // used only to guess which menu item this is, not as the stored name.
       const first = text.split(/\r?\n/).map(l => l.trim()).find(l => l && !/\t/.test(l) && !/^ingredient/i.test(l));
-      if (first) setName(first.replace(/\s+/g, ' ').trim());
+      const guess = first?.replace(/\s+/g, ' ').trim();
+      if (guess) trySelectName(guess);
     }
   };
 
@@ -958,10 +1175,10 @@ const PasteImport: React.FC<{
 
       await addDoc(collection(db, 'fc_recipes'), {
         name: name.trim(),
-        category: category.trim() || 'Uncategorized',
+        category: category || 'Uncategorized',
         kind: 'menu' as RecipeKind,
         components,
-        sellPrice: parseFloat(sellPrice) || 0,
+        sellPrice: sellPrice ?? 0,
         ownerId: dataOwnerId,
         userId: user.uid,
         createdAt: Date.now(),
@@ -987,13 +1204,34 @@ const PasteImport: React.FC<{
       <div className="space-y-5">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <Field label="Recipe Name">
-            <input value={name} onChange={e => setName(e.target.value)} className={inputCls} placeholder="Chicken Poke Bowl" />
+            {!menuDirectory.names.length ? (
+              <input value={name} onChange={e => setName(e.target.value)} className={inputCls} placeholder="Chicken Poke Bowl" />
+            ) : emptyCategory ? (
+              <p className="text-[11px] font-semibold text-amber-600 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
+                No sold items are in “{category}” yet. Assign items to it in Category Settings, or clear the category to see every item.
+              </p>
+            ) : (
+              <select value={name} onChange={e => pickName(e.target.value)} className={inputCls}>
+                <option value="">— select a menu item —</option>
+                {nameOptions.map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+            )}
           </Field>
           <Field label="Category">
-            <input value={category} onChange={e => setCategory(e.target.value)} className={inputCls} placeholder="Poke Bowls" />
+            <select value={category} onChange={e => pickCategory(e.target.value)} className={inputCls}>
+              <option value="">— all categories —</option>
+              {categoryOptions.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
           </Field>
           <Field label="Selling Price ₹">
-            <input type="number" step="any" value={sellPrice} onChange={e => setSellPrice(e.target.value)} className={inputCls} placeholder="644" />
+            <div className="flex items-center gap-3 px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl">
+              <span className={`text-sm font-black ${sellPrice ? 'text-slate-800' : 'text-slate-300'}`}>
+                {sellPrice ? money(sellPrice) : '— not set —'}
+              </span>
+              <span className="text-[10px] font-bold text-slate-400 ml-auto">
+                {sellPrice ? 'From Menu Prices' : 'Set it on Menu Prices'}
+              </span>
+            </div>
           </Field>
         </div>
 
@@ -1131,6 +1369,390 @@ const PasteImport: React.FC<{
           </div>
         )}
       </div>
+    </Modal>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// Recipe view / print card
+// ---------------------------------------------------------------------------
+
+/**
+ * Read-only view of a recipe, and the thing you print for the kitchen.
+ *
+ * Separate from the editor because reading a recipe should not put you one
+ * stray keystroke away from changing it. Costs are hidden from the print by
+ * default: a line cook needs quantities, and a sheet on a pass is not where
+ * margins belong.
+ */
+const RecipeViewModal: React.FC<{
+  recipe: Recipe;
+  costed?: CostedRecipe;
+  onClose: () => void;
+  onEdit: () => void;
+}> = ({ recipe, costed, onClose, onEdit }) => {
+  const [printCosts, setPrintCosts] = useState(false);
+  const isPrep = recipe.kind === 'prep';
+  const baseUnit = dimensionOf(recipe.yieldUnit || 'g') === 'weight' ? 'g'
+    : dimensionOf(recipe.yieldUnit || 'g') === 'volume' ? 'ml' : 'pc';
+
+  /** Costs are hidden on paper unless asked for, always shown on screen. */
+  const costCls = printCosts ? '' : 'print:hidden';
+
+  return (
+    <Modal title="Recipe" subtitle={recipe.name} onClose={onClose} wide>
+      <div className="space-y-5">
+        <div id="recipe-print" className="bg-white border border-slate-200 rounded-2xl p-6 space-y-5">
+          {/* Header — doubles as the printed title block */}
+          <div className="flex items-start justify-between gap-4 border-b border-slate-200 pb-4">
+            <div>
+              <h2 className="text-2xl font-black text-slate-900">{recipe.name}</h2>
+              <p className="text-xs font-bold text-slate-500 mt-1 uppercase tracking-widest">
+                {recipe.category}
+                {isPrep
+                  ? ` · Prep batch → ${recipe.yieldSize} ${recipe.yieldUnit}`
+                  : ' · Menu item · one serving'}
+              </p>
+            </div>
+            <span className={`p-2.5 rounded-xl ${isPrep ? 'bg-amber-100 text-amber-600' : 'bg-indigo-100 text-indigo-600'}`}>
+              {isPrep ? <Beaker size={18} /> : <Utensils size={18} />}
+            </span>
+          </div>
+
+          {/* Money. Screen always; paper only on request. */}
+          {costed && (
+            <div className={`grid grid-cols-2 md:grid-cols-4 gap-4 ${costCls}`}>
+              <div>
+                <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-1">{isPrep ? 'Batch Cost' : 'Cost'}</p>
+                <p className="text-xl font-black text-slate-900">{money(costed.totalCost)}</p>
+              </div>
+              {isPrep ? (
+                <div>
+                  <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-1">Per {baseUnit}</p>
+                  <p className="text-xl font-black text-amber-600">
+                    {costed.costPerYieldBaseUnit !== undefined ? `₹${costed.costPerYieldBaseUnit.toFixed(3)}` : '—'}
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <div>
+                    <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-1">Sells</p>
+                    <p className="text-xl font-black text-slate-700">{costed.sellPrice !== undefined ? money(costed.sellPrice) : '—'}</p>
+                  </div>
+                  <div>
+                    <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-1">Profit</p>
+                    <p className={`text-xl font-black ${(costed.profit ?? 0) < 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
+                      {costed.profit !== undefined ? money(costed.profit) : '—'}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-1">Food Cost</p>
+                    <p className="text-xl font-black text-indigo-600">
+                      {costed.foodCostPct !== undefined ? `${costed.foodCostPct.toFixed(1)}%` : '—'}
+                    </p>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Components — the part the kitchen actually reads */}
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-2">
+              {recipe.components.length} Component{recipe.components.length === 1 ? '' : 's'}
+            </p>
+            <table className="w-full text-sm border-t border-slate-200">
+              <thead>
+                <tr className="text-[9px] font-black uppercase tracking-widest text-slate-400">
+                  <th className="text-left py-2">Ingredient</th>
+                  <th className="text-right py-2 w-32">Quantity</th>
+                  <th className={`text-right py-2 w-28 ${costCls}`}>Cost</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {recipe.components.map((c, i) => {
+                  const line = costed?.lines[i];
+                  return (
+                    <tr key={i}>
+                      <td className="py-2.5 font-bold text-slate-800">
+                        {line?.name || c.refName}
+                        {c.refType === 'recipe' && (
+                          <span className="ml-2 text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded">Prep</span>
+                        )}
+                        {line?.error && <p className="text-[10px] font-bold text-rose-600 mt-0.5">{line.error}</p>}
+                      </td>
+                      <td className="py-2.5 text-right font-black text-slate-900 tabular-nums">{c.quantity} {c.unit}</td>
+                      <td className={`py-2.5 text-right font-bold text-slate-600 ${costCls}`}>{money(line?.lineCost ?? 0)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              {!!costed && (
+                <tfoot className={costCls}>
+                  <tr className="border-t-2 border-slate-200">
+                    <td className="py-2.5 text-[10px] font-black uppercase tracking-widest text-slate-500">Total</td>
+                    <td />
+                    <td className="py-2.5 text-right font-black text-slate-900">{money(costed.totalCost)}</td>
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+          </div>
+
+          {!!costed?.errors.length && (
+            <div className="flex items-start gap-2 text-[11px] font-bold text-rose-600 bg-rose-50 border border-rose-200 rounded-xl px-3 py-2.5">
+              <AlertTriangle size={13} className="mt-0.5 flex-shrink-0" />
+              <span>{costed.errors.join(' · ')}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Controls — never printed */}
+        <div className="flex flex-col sm:flex-row gap-3 sm:items-center print-hide">
+          <label className="flex items-center gap-2 text-[11px] font-bold text-slate-500 cursor-pointer flex-1">
+            <input type="checkbox" checked={printCosts} onChange={e => setPrintCosts(e.target.checked)}
+              className="w-4 h-4 rounded accent-indigo-600" />
+            Include costs when printing
+          </label>
+          <div className="flex gap-3">
+            <button onClick={onEdit} className="px-5 py-3 bg-white border border-slate-200 text-slate-600 rounded-xl font-black text-[11px] uppercase tracking-widest hover:border-indigo-300 hover:text-indigo-600 transition-all flex items-center gap-2">
+              <Edit2 size={14} /> Edit
+            </button>
+            <button onClick={() => window.print()} className="px-5 py-3 bg-slate-900 text-white rounded-xl font-black text-[11px] uppercase tracking-widest hover:bg-slate-800 transition-all flex items-center gap-2">
+              <Printer size={14} /> Print
+            </button>
+            <button onClick={onClose} className="px-5 py-3 bg-indigo-600 text-white rounded-xl font-black text-[11px] uppercase tracking-widest hover:bg-indigo-700 transition-all">
+              Close
+            </button>
+          </div>
+        </div>
+      </div>
+    </Modal>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// Publish to Item Costs
+// ---------------------------------------------------------------------------
+
+/**
+ * The one action that leaves this module. Shows exactly what would change in
+ * `item_costs` and writes nothing until the user confirms — these numbers drive
+ * the P&L, so a silent write is not acceptable.
+ */
+const PublishModal: React.FC<{
+  dataOwnerId: string;
+  recipes: Recipe[];
+  ingredients: RecipeIngredient[];
+  menuDirectory: MenuDirectory;
+  onClose: () => void;
+}> = ({ dataOwnerId, recipes, ingredients, menuDirectory, onClose }) => {
+  const [plan, setPlan] = useState<PublishPlan | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [loading, setLoading] = useState(true);
+  const [publishing, setPublishing] = useState(false);
+  const [done, setDone] = useState<number | null>(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const existing = await getCachedCollection<ItemCost>('item_costs', dataOwnerId);
+        if (cancelled) return;
+        const built = buildPublishPlan(recipes, ingredients, existing, menuDirectory.names, dataOwnerId);
+        setPlan(built);
+        // Everything publishable starts selected — including rows flagged for
+        // suspected packaging. The flag is there to be noticed, not to veto.
+        setSelected(new Set(built.publishable.map(r => r.recipeId)));
+      } catch (err) {
+        console.error('Publish preview failed', err);
+        if (!cancelled) setError('Could not read current item costs.');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [dataOwnerId, recipes, ingredients, menuDirectory.names]);
+
+  const chosen = useMemo(
+    () => plan?.publishable.filter(r => selected.has(r.recipeId)) ?? [],
+    [plan, selected],
+  );
+  const netChange = chosen.reduce((s, r) => s + r.delta, 0);
+
+  const toggle = (id: string) =>
+    setSelected(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+
+  const run = async () => {
+    if (!chosen.length) return;
+    setPublishing(true);
+    setError('');
+    try {
+      const n = await publishRecipeCosts(dataOwnerId, chosen);
+      setDone(n);
+    } catch (err) {
+      console.error('Publish failed', err);
+      setError('Publish failed. Check the console for details.');
+    } finally {
+      setPublishing(false);
+    }
+  };
+
+  const statusBadge = (r: PublishRow) => {
+    if (r.status === 'blocked') return <span className="px-2 py-0.5 rounded-full text-[8px] font-black uppercase bg-rose-100 text-rose-700">Blocked</span>;
+    if (r.status === 'unchanged') return <span className="px-2 py-0.5 rounded-full text-[8px] font-black uppercase bg-slate-100 text-slate-500">Unchanged</span>;
+    if (r.status === 'new') return <span className="px-2 py-0.5 rounded-full text-[8px] font-black uppercase bg-emerald-100 text-emerald-700">New</span>;
+    return <span className="px-2 py-0.5 rounded-full text-[8px] font-black uppercase bg-indigo-100 text-indigo-700">Changed</span>;
+  };
+
+  return (
+    <Modal
+      title="Publish Costs to Item Costs"
+      subtitle="Sends each menu recipe's cost to the Tiered SKU Costs ingredient column. Packaging is not touched."
+      onClose={onClose}
+      wide
+    >
+      {loading ? (
+        <div className="flex items-center justify-center py-20">
+          <Loader2 className="animate-spin text-emerald-600" size={28} />
+        </div>
+      ) : done !== null ? (
+        <div className="py-12 text-center space-y-4">
+          <div className="inline-flex p-4 bg-emerald-100 rounded-2xl"><Check className="text-emerald-600" size={28} /></div>
+          <p className="text-lg font-black text-slate-900">{done} item{done === 1 ? '' : 's'} published</p>
+          <p className="text-xs font-semibold text-slate-500 max-w-md mx-auto">
+            Tiered SKU Costs now shows these as recipe-driven. Reopen that tab to see them — a tab
+            left open from before still holds the old numbers.
+          </p>
+          <button onClick={onClose} className="px-6 py-3 bg-slate-900 text-white rounded-xl font-black text-[11px] uppercase tracking-widest hover:bg-slate-800 transition-all">Done</button>
+        </div>
+      ) : (
+        <div className="space-y-5">
+          <p className="flex items-start gap-2 text-[11px] font-semibold text-slate-500 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5">
+            <Info size={13} className="mt-0.5 flex-shrink-0" />
+            This writes the ingredient cost read by P&amp;L Command, Item Insights, Online Profit Center,
+            Waste Radar and the Data Catalog. Tier 1 and Tier 2 packaging costs are left exactly as they are.
+          </p>
+
+          {error && (
+            <p className="flex items-start gap-2 text-xs font-bold text-rose-700 bg-rose-50 border border-rose-200 rounded-xl px-3 py-2.5">
+              <AlertTriangle size={13} className="mt-0.5 flex-shrink-0" /> {error}
+            </p>
+          )}
+
+          {plan?.masterListMissing && (
+            <p className="flex items-start gap-2 text-[11px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
+              <AlertTriangle size={13} className="mt-0.5 flex-shrink-0" />
+              Could not load the list of sold items, so recipe names were not checked against it.
+              Publishing still works, but a name that matches no sold item creates a cost record nothing reads.
+            </p>
+          )}
+
+          {!!plan?.rows.length && !plan.publishable.length && (
+            <p className="flex items-start gap-2 text-[11px] font-semibold text-slate-600 bg-slate-100 border border-slate-200 rounded-xl px-3 py-2.5">
+              <Info size={13} className="mt-0.5 flex-shrink-0" />
+              <span>
+                Nothing to publish, so no rows are selectable.
+                {plan.unchanged.length > 0 && ` ${plan.unchanged.length} already match the saved cost.`}
+                {plan.blocked.length > 0 && ` ${plan.blocked.length} cannot be published — the reason is under each name.`}
+              </span>
+            </p>
+          )}
+
+          {!!plan?.flagged.length && (
+            <p className="flex items-start gap-2 text-[11px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
+              <AlertTriangle size={13} className="mt-0.5 flex-shrink-0" />
+              <span>
+                {plan.flagged.length} recipe{plan.flagged.length === 1 ? '' : 's'} contain{plan.flagged.length === 1 ? 's' : ''} something
+                that looks like packaging. Packaging belongs in the Tier columns — leaving it in a recipe
+                counts it twice. Check these before publishing.
+              </span>
+            </p>
+          )}
+
+          {!plan?.rows.length ? (
+            <div className="bg-white border border-dashed border-slate-200 rounded-xl py-12 text-center">
+              <p className="text-xs font-bold text-slate-400">No menu recipes to publish yet.</p>
+            </div>
+          ) : (
+            <div className="bg-white border border-slate-200 rounded-xl overflow-hidden max-h-[46vh] overflow-y-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 border-b border-slate-100 sticky top-0">
+                  <tr className="text-[9px] font-black uppercase tracking-widest text-slate-400">
+                    <th className="w-10 px-3 py-2.5" />
+                    <th className="text-left px-3 py-2.5">Item</th>
+                    <th className="text-right px-3 py-2.5 w-24">Current</th>
+                    <th className="text-right px-3 py-2.5 w-24">New</th>
+                    <th className="text-right px-3 py-2.5 w-24">Change</th>
+                    <th className="text-left px-3 py-2.5 w-28">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                  {plan.rows.map(r => {
+                    const selectable = r.status === 'new' || r.status === 'changed';
+                    const isOn = selected.has(r.recipeId);
+                    return (
+                      <tr key={r.recipeId} className={r.status === 'blocked' ? 'bg-rose-50/40' : !selectable ? 'opacity-50' : ''}>
+                        <td className="px-3 py-2.5">
+                          {selectable && (
+                            <input type="checkbox" checked={isOn} onChange={() => toggle(r.recipeId)}
+                              className="w-4 h-4 rounded accent-emerald-600 cursor-pointer" />
+                          )}
+                        </td>
+                        <td className="px-3 py-2.5">
+                          <p className="text-xs font-black text-slate-800 uppercase">{r.itemName}</p>
+                          {r.blockReason && <p className="text-[10px] font-bold text-rose-600 mt-0.5">{r.blockReason}</p>}
+                          {!!r.suspectedPackaging.length && (
+                            <p className="text-[10px] font-bold text-amber-600 mt-0.5">
+                              Looks like packaging: {r.suspectedPackaging.join(', ')}
+                            </p>
+                          )}
+                        </td>
+                        <td className="px-3 py-2.5 text-right text-xs font-bold text-slate-400">
+                          {r.oldCost === null ? '—' : money(r.oldCost)}
+                        </td>
+                        <td className="px-3 py-2.5 text-right text-xs font-black text-slate-800">{money(r.newCost)}</td>
+                        <td className={`px-3 py-2.5 text-right text-xs font-black ${
+                          r.status === 'blocked' || r.status === 'unchanged' ? 'text-slate-300'
+                            : r.delta > 0 ? 'text-rose-600' : 'text-emerald-600'
+                        }`}>
+                          {r.status === 'blocked' || r.oldCost === null ? '—' : `${r.delta > 0 ? '+' : ''}${money(r.delta)}`}
+                        </td>
+                        <td className="px-3 py-2.5">{statusBadge(r)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <div className="flex flex-col sm:flex-row gap-3 sm:items-center">
+            <p className="flex-1 text-[11px] font-bold text-slate-500">
+              {chosen.length} item{chosen.length === 1 ? '' : 's'} selected
+              {chosen.length > 0 && (
+                <> · net cost change {netChange >= 0 ? '+' : ''}{money(netChange)} per unit</>
+              )}
+              {!!plan?.blocked.length && <> · {plan.blocked.length} blocked</>}
+            </p>
+            <div className="flex gap-3">
+              <button onClick={onClose} className="px-5 py-3 bg-white border border-slate-200 text-slate-600 rounded-xl font-black text-[11px] uppercase tracking-widest hover:bg-slate-100 transition-all">
+                Cancel
+              </button>
+              <button onClick={run} disabled={publishing || !chosen.length}
+                className="px-5 py-3 bg-emerald-600 text-white rounded-xl font-black text-[11px] uppercase tracking-widest hover:bg-emerald-700 transition-all disabled:opacity-40 flex items-center justify-center gap-2">
+                {publishing ? <Loader2 className="animate-spin" size={15} /> : <Upload size={15} />}
+                Publish {chosen.length || ''}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </Modal>
   );
 };
