@@ -132,6 +132,7 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
   const [analyticsView, setAnalyticsView] = useState<'list' | 'hbar' | 'vbar' | 'donut'>('hbar');
   const [deltaOutletFilter, setDeltaOutletFilter] = useState<string>('all');
   const [channelOutletFilter, setChannelOutletFilter] = useState<string>('all');
+  const [isRepairing, setIsRepairing] = useState(false);
   const [commentingId, setCommentingId] = useState<string | null>(null);
   const [commentDraft, setCommentDraft] = useState<string>('');
 
@@ -387,6 +388,61 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
       ids.forEach(id => allMarked ? next.delete(id) : next.add(id));
       return next;
     });
+  };
+
+  // One-off repair for statements imported while the Uploader wrote `type` inverted
+  // (a withdrawal was tagged 'credit'). Recomputes direction from the stored
+  // debit_amount/credit_amount rather than blindly swapping, so it is idempotent —
+  // rows imported after the fix are recomputed to the value they already hold.
+  // Rows predating those two fields carry no source of truth and are left alone.
+  const handleRepairDirections = async () => {
+    if (!confirm("Recheck every imported bank row and correct any whose debit/credit direction is inverted?")) return;
+    setIsRepairing(true);
+    try {
+      const snap = await getDocs(query(
+        collection(db, 'bank_statement_imports'),
+        where('userId', '==', dataOwnerId)
+      ));
+
+      const fixes: { id: string; type: 'debit' | 'credit'; amount: number }[] = [];
+      let unrepairable = 0;
+
+      snap.docs.forEach(d => {
+        const data = d.data();
+        if (data.debit_amount === undefined && data.credit_amount === undefined) {
+          unrepairable++;
+          return;
+        }
+        const debit = Number(data.debit_amount || 0);
+        const credit = Number(data.credit_amount || 0);
+        if (debit === 0 && credit === 0) return;
+
+        const expectedType: 'debit' | 'credit' = debit > 0 ? 'debit' : 'credit';
+        const expectedAmount = debit > 0 ? debit : credit;
+        if (data.type !== expectedType || Number(data.amount || 0) !== expectedAmount) {
+          fixes.push({ id: d.id, type: expectedType, amount: expectedAmount });
+        }
+      });
+
+      for (let i = 0; i < fixes.length; i += 450) {
+        const batch = writeBatch(db);
+        fixes.slice(i, i + 450).forEach(f => {
+          batch.update(doc(db, 'bank_statement_imports', f.id), { type: f.type, amount: f.amount });
+        });
+        await batch.commit();
+      }
+
+      await fetchReconciliationData();
+      alert(
+        `Checked ${snap.size} rows. Corrected ${fixes.length}.` +
+        (unrepairable > 0 ? `\n${unrepairable} row(s) predate the debit/credit columns and were skipped — re-import those statements to fix them.` : '')
+      );
+    } catch (err) {
+      console.error(err);
+      alert("Repair failed. See console.");
+    } finally {
+      setIsRepairing(false);
+    }
   };
 
   const handleDeleteTransaction = async (id: string) => {
@@ -823,6 +879,14 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
               </select>
               <ChevronDown size={12} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
             </div>
+            <button
+              onClick={handleRepairDirections}
+              disabled={isRepairing}
+              title="Recheck imported rows and correct any whose withdrawal/deposit direction is inverted. Safe to run more than once."
+              className="ml-2 px-4 py-2.5 bg-white rounded-xl text-[10px] font-black uppercase border border-slate-200 shadow-sm text-slate-500 hover:text-indigo-600 hover:border-indigo-200 transition-colors disabled:opacity-50 flex items-center gap-2"
+            >
+              <ArrowRightLeft size={12} /> {isRepairing ? 'Repairing…' : 'Repair Directions'}
+            </button>
           </div>
 
           <div className="flex p-1 bg-slate-100 rounded-2xl border border-slate-200">

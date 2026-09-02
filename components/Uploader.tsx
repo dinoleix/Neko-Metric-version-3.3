@@ -646,14 +646,21 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
         }
 
         if (fileType === 'bank_statement') {
+          // Direction is the account holder's cash view, not the bank's ledger view:
+          // a withdrawal is 'debit' (outflow), a deposit is 'credit' (inflow). Every
+          // reader assumes that — BankReconciliation totals Outflow from 'debit' and
+          // only categorises 'debit' rows as spend, BankManagement renders 'credit'
+          // green with a +, and the hand-written rows in BankManagement/CashFlowTracker
+          // follow the same rule. These two were swapped, which flipped Inflow/Outflow
+          // and had the categoriser bucketing deposits instead of withdrawals.
           const debit = recordData.debit_amount || 0;
           const credit = recordData.credit_amount || 0;
           if (debit > 0) {
             recordData.amount = debit;
-            recordData.type = 'credit';
+            recordData.type = 'debit';
           } else {
             recordData.amount = credit;
-            recordData.type = 'debit';
+            recordData.type = 'credit';
           }
           recordData.isReconciled = false;
           
