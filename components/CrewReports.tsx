@@ -31,6 +31,8 @@ import {
   FileDown,
   ChevronDown,
   MapPin,
+  ArrowRightLeft,
+  Tag,
   IndianRupee,
   ShoppingBag,
   Vault,
@@ -303,6 +305,11 @@ const CrewReports: React.FC<{ user: User; profile: UserProfile; onBack?: () => v
   const [customStartDate, setCustomStartDate] = useState(istToday());
   const [customEndDate, setCustomEndDate] = useState(istToday());
   const [filterOutlet, setFilterOutlet] = useState('all');
+  // Entries-tab filters. They narrow fEntries itself, so the Paid/Pending/Total
+  // tiles, the charts, the table and the exports all describe the same slice —
+  // a total that disagreed with the rows under it would be worse than no filter.
+  const [filterType, setFilterType] = useState<'all' | 'purchase' | 'expense'>('all');
+  const [filterCategory, setFilterCategory] = useState('all');
   const [loading, setLoading] = useState(false);
   const [salesView, setSalesView] = useState<'charts' | 'table'>('charts');
   const [entriesView, setEntriesView] = useState<'charts' | 'table'>('charts');
@@ -358,9 +365,33 @@ const CrewReports: React.FC<{ user: User; profile: UserProfile; onBack?: () => v
             where('ownerId', '==', ownerId), where('date', '>=', start), where('date', '<=', end)));
           if (!cancelled) setSalesLogs(snap.docs.map(d => ({ id: d.id, ...d.data() } as DailySalesLog)));
         } else if (activeTab === 'entries') {
-          const snap = await getDocs(query(collection(db, 'crew_entries'),
-            where('ownerId', '==', ownerId), where('date', '>=', start), where('date', '<=', end)));
-          if (!cancelled) setEntries(snap.docs.map(d => ({ id: d.id, ...d.data() } as DailyCounterEntry)));
+          // Two legs, de-duplicated by document id — the same shape Crew Terminal
+          // and crewSnapshotService.fetchCrewEntries already use. Entries written
+          // before the `ownerId` field existed carry only `userId`, and a Firestore
+          // equality filter skips documents missing the field entirely, so the
+          // single ownerId query silently omitted them. That put this report below
+          // Expense Radar, which reads snapshots built from BOTH legs.
+          // Each leg is isolated so one failing (e.g. a missing index) still lets
+          // the other return.
+          const runEntries = async (field: 'ownerId' | 'userId', value: string) => {
+            try {
+              const snap = await getDocs(query(collection(db, 'crew_entries'),
+                where(field, '==', value), where('date', '>=', start), where('date', '<=', end)));
+              return snap.docs;
+            } catch (err) {
+              console.warn(`[Reports] crew_entries ${field} query failed:`, err);
+              return [];
+            }
+          };
+          const [byOwner, byUser] = await Promise.all([
+            runEntries('ownerId', ownerId),
+            runEntries('userId', user.uid),
+          ]);
+          const seen = new Set<string>();
+          const merged = [...byOwner, ...byUser]
+            .filter(d => (seen.has(d.id) ? false : (seen.add(d.id), true)))
+            .map(d => ({ id: d.id, ...d.data() } as DailyCounterEntry));
+          if (!cancelled) setEntries(merged);
         } else if (activeTab === 'transfers') {
           const snap = await getDocs(query(collection(db, 'bank_transactions'),
             where('ownerId', '==', ownerId), where('category', '==', 'TRANSFER'),
@@ -401,10 +432,29 @@ const CrewReports: React.FC<{ user: User; profile: UserProfile; onBack?: () => v
     () => salesLogs.filter(l => filterOutlet === 'all' || l.outletId === filterOutlet)
       .sort((a, b) => b.date.localeCompare(a.date) || a.outletId.localeCompare(b.outletId)),
     [salesLogs, filterOutlet]);
+  // Store + type only. The category dropdown is built from this, not from
+  // fEntries — sourcing it from the filtered list would leave the selected
+  // category as the only option once chosen.
+  const entriesByStoreAndType = useMemo(
+    () => entries.filter(e =>
+      (filterOutlet === 'all' || e.outletId === filterOutlet) &&
+      (filterType === 'all' || e.type === filterType)),
+    [entries, filterOutlet, filterType]);
   const fEntries = useMemo(
-    () => entries.filter(e => filterOutlet === 'all' || e.outletId === filterOutlet)
+    () => entriesByStoreAndType
+      .filter(e => filterCategory === 'all' || (e.category || 'UNCATEGORIZED') === filterCategory)
       .sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt),
-    [entries, filterOutlet]);
+    [entriesByStoreAndType, filterCategory]);
+
+  // Cancelled entries are excluded from the options for the same reason the
+  // totals exclude them — a cancelled bill is not spend.
+  const entryCategoryOptions = useMemo(() => {
+    const set = new Set<string>();
+    entriesByStoreAndType.forEach(e => {
+      if (e.status !== 'cancelled') set.add(e.category || 'UNCATEGORIZED');
+    });
+    return Array.from(set).sort();
+  }, [entriesByStoreAndType]);
   const fTransfers = useMemo(
     () => transfers.filter(t => filterOutlet === 'all' || accountOutlet(t.bankAccountId) === filterOutlet)
       .sort((a, b) => b.date.localeCompare(a.date)),
@@ -511,6 +561,10 @@ const CrewReports: React.FC<{ user: User; profile: UserProfile; onBack?: () => v
   useEffect(() => {
     if (trendCategory !== 'all' && !categoryOptions.includes(trendCategory)) setTrendCategory('all');
   }, [categoryOptions, trendCategory]);
+
+  useEffect(() => {
+    if (filterCategory !== 'all' && !entryCategoryOptions.includes(filterCategory)) setFilterCategory('all');
+  }, [entryCategoryOptions, filterCategory]);
 
   const transferTotal = useMemo(() => fTransfers.reduce((s, t) => s + t.amount, 0), [fTransfers]);
 
@@ -726,6 +780,35 @@ const CrewReports: React.FC<{ user: User; profile: UserProfile; onBack?: () => v
             </select>
             <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={15} />
           </div>
+          {activeTab === 'entries' && (
+            <>
+              <div className="relative">
+                <ArrowRightLeft className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={16} />
+                <select
+                  value={filterType}
+                  onChange={e => setFilterType(e.target.value as 'all' | 'purchase' | 'expense')}
+                  className="w-full h-11 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white focus:ring-4 focus:ring-indigo-500/10 outline-none pl-10 pr-8 rounded-xl text-sm font-medium text-slate-700 appearance-none transition-all"
+                >
+                  <option value="all">All types</option>
+                  <option value="purchase">Purchase (Online)</option>
+                  <option value="expense">Expense (Cash)</option>
+                </select>
+                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={15} />
+              </div>
+              <div className="relative">
+                <Tag className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={16} />
+                <select
+                  value={filterCategory}
+                  onChange={e => setFilterCategory(e.target.value)}
+                  className="w-full h-11 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white focus:ring-4 focus:ring-indigo-500/10 outline-none pl-10 pr-8 rounded-xl text-sm font-medium text-slate-700 appearance-none transition-all"
+                >
+                  <option value="all">All categories</option>
+                  {entryCategoryOptions.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={15} />
+              </div>
+            </>
+          )}
         </div>
       )}
 

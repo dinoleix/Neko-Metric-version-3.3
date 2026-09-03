@@ -4,6 +4,7 @@ import { collection, query, getDocs, where, doc, getDoc } from 'firebase/firesto
 import { db } from '../firebase';
 import { computeConsumption, closingStockTotal, openingStockTotal, openingByBucket, closingByBucket, BUCKETS, expenseMapsOf, purchaseMapsOf, forEachCostRow } from '../pnlService';
 import { getCachedCollection } from '../referenceCache';
+import { rebuildCrewSnapshot } from '../crewSnapshotService';
 import { 
   ExpenseMonthlySnapshot, 
   StoreRental, 
@@ -49,6 +50,7 @@ import {
   LineChart,
   Calendar,
   Clock,
+  Clock3,
   Layers,
   Loader2,
   PackageCheck,
@@ -142,6 +144,12 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
 
   useEffect(() => { fetchData(); }, [user, selectedYear]);
 
+  // Cash basis by default: the crew* maps hold settled spend only, matching
+  // P&L Command. Turning this on folds in the crewPending* maps (committed but
+  // unsettled), which is the same accrual view P&L Command (Crew) offers.
+  const [includePending, setIncludePending] = useState(false);
+  const [isRecounting, setIsRecounting] = useState(false);
+
   const activeOutletOptions = useMemo(() => {
     const yearNum = parseInt(selectedYear);
     const monthIdx = selectedMonth === 'All Months' ? 0 : MONTH_NAMES.indexOf(selectedMonth);
@@ -163,8 +171,20 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
     const opsCatMap: Record<string, { amount: number, source: 'Cash' | 'Online' | 'Bank' | 'Mixed' }> = {};
     const uncatCatMap: Record<string, { amount: number, source: 'Cash' | 'Online' | 'Bank' | 'Mixed' }> = {};
     const cogsBucketAgg: Record<string, number> = { 'FOOD': 0, 'DRINKS': 0, 'FOOD SERVINGS': 0, 'DRINKS SERVINGS': 0, 'UNCATEGORIZED': 0 };
-    const cogsItemBreakdown: Record<string, Record<string, { amount: number, source: 'Cash' | 'Online' | 'Mixed' }>> = { 
+    // `source` is the payment channel (purchase vs expense). `csv`/`crewPaid`/
+    // `crewPending` are the ORIGIN of the money — a different axis, and the one
+    // needed to reconcile this screen against the Crew Report, which can only
+    // ever see the crew figures.
+    const cogsItemBreakdown: Record<string, Record<string, {
+      amount: number, source: 'Cash' | 'Online' | 'Mixed',
+      csv: number, crewPaid: number, crewPending: number
+    }>> = { 
       'FOOD': {}, 'DRINKS': {}, 'FOOD SERVINGS': {}, 'DRINKS SERVINGS': {}, 'UNCATEGORIZED': {} 
+    };
+    const bucketOrigin: Record<string, { csv: number; crewPaid: number; crewPending: number }> = {
+      'FOOD': { csv: 0, crewPaid: 0, crewPending: 0 }, 'DRINKS': { csv: 0, crewPaid: 0, crewPending: 0 },
+      'FOOD SERVINGS': { csv: 0, crewPaid: 0, crewPending: 0 }, 'DRINKS SERVINGS': { csv: 0, crewPaid: 0, crewPending: 0 },
+      'UNCATEGORIZED': { csv: 0, crewPaid: 0, crewPending: 0 },
     };
     
     let csvCogs = 0;
@@ -172,7 +192,7 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
     let csvOps = 0;
     let csvUncat = 0;
 
-    const classifyRow = (cat: string, amt: number, source: 'Cash' | 'Online') => {
+    const classifyRow = (cat: string, amt: number, source: 'Cash' | 'Online', origin: 'csv' | 'crewPaid' | 'crewPending' = 'csv') => {
         const val = Number(amt || 0);
         if (val === 0) return;
         const upper = cat.trim().toUpperCase();
@@ -181,10 +201,13 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
           csvCogs += val;
           const bucket = cogsBucketMapping[upper] || 'FOOD';
           cogsBucketAgg[bucket] = (cogsBucketAgg[bucket] || 0) + val;
+          bucketOrigin[bucket][origin] += val;
           if (!cogsItemBreakdown[bucket][cat]) {
-            cogsItemBreakdown[bucket][cat] = { amount: val, source };
+            cogsItemBreakdown[bucket][cat] = { amount: val, source, csv: 0, crewPaid: 0, crewPending: 0 };
+            cogsItemBreakdown[bucket][cat][origin] = val;
           } else {
             cogsItemBreakdown[bucket][cat].amount += val;
+            cogsItemBreakdown[bucket][cat][origin] += val;
             if (cogsItemBreakdown[bucket][cat].source !== source) {
               cogsItemBreakdown[bucket][cat].source = 'Mixed';
             }
@@ -212,14 +235,33 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
 
     filteredSnaps.forEach(snap => {
       if (viewMode === 'combined' || viewMode === 'purchase') {
-        Object.entries(snap.purchaseByCategory || {}).forEach(([cat, amt]) => classifyRow(cat, amt as number, 'Online'));
-        Object.entries(snap.crewPurchaseByCategory || {}).forEach(([cat, amt]) => classifyRow(cat, amt as number, 'Online'));
+        Object.entries(snap.purchaseByCategory || {}).forEach(([cat, amt]) => classifyRow(cat, amt as number, 'Online', 'csv'));
+        Object.entries(snap.crewPurchaseByCategory || {}).forEach(([cat, amt]) => classifyRow(cat, amt as number, 'Online', 'crewPaid'));
+        if (includePending) {
+          Object.entries(snap.crewPendingPurchaseByCategory || {}).forEach(([cat, amt]) => classifyRow(cat, amt as number, 'Online', 'crewPending'));
+        }
       }
       if (viewMode === 'combined' || viewMode === 'expense') {
-        Object.entries(snap.expenseByCategory || {}).forEach(([cat, amt]) => classifyRow(cat, amt as number, 'Cash'));
-        Object.entries(snap.crewExpenseByCategory || {}).forEach(([cat, amt]) => classifyRow(cat, amt as number, 'Cash'));
+        Object.entries(snap.expenseByCategory || {}).forEach(([cat, amt]) => classifyRow(cat, amt as number, 'Cash', 'csv'));
+        Object.entries(snap.crewExpenseByCategory || {}).forEach(([cat, amt]) => classifyRow(cat, amt as number, 'Cash', 'crewPaid'));
+        if (includePending) {
+          Object.entries(snap.crewPendingExpenseByCategory || {}).forEach(([cat, amt]) => classifyRow(cat, amt as number, 'Cash', 'crewPending'));
+        }
       }
     });
+
+    // What the accrual view is adding, on the same viewMode basis as the rows
+    // above so the banner can never quote a figure the table does not contain.
+    const pendingTotal = filteredSnaps.reduce((acc, s2) => acc
+      + ((viewMode === 'combined' || viewMode === 'purchase') ? (s2.crewPendingTotalPurchase || 0) : 0)
+      + ((viewMode === 'combined' || viewMode === 'expense') ? (s2.crewPendingTotalExpense || 0) : 0), 0);
+
+    // Snapshots written before the crewPending* fields existed carry `undefined`,
+    // not 0. Reporting those as "no unpaid spend" would understate silently, so
+    // they are surfaced as needing a recount instead.
+    const staleSnapshots = filteredSnaps
+      .filter(s2 => s2.crewPendingTotalExpense === undefined && s2.crewPendingTotalPurchase === undefined)
+      .map(s2 => ({ outletId: s2.outletId, month: s2.month }));
 
     let fixedBaseSalary = 0;
     let fixedRent = 0;
@@ -331,9 +373,12 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
       labourTotal: totalLabour, 
       rentTotal: fixedRent,
       uncatTotal: csvUncat,
-      isPayrollFiscal
+      isPayrollFiscal,
+      pendingTotal,
+      staleSnapshots,
+      bucketOrigin
     };
-  }, [snapshots, employees, monthlyPayrolls, rentals, adjustments, viewMode, storeFilter, selectedYear, selectedMonth, activeOutletOptions, cogsKeywords, labourKeywords, opsKeywords, cogsBucketMapping]);
+  }, [snapshots, employees, monthlyPayrolls, rentals, adjustments, viewMode, storeFilter, selectedYear, selectedMonth, activeOutletOptions, cogsKeywords, labourKeywords, opsKeywords, cogsBucketMapping, includePending]);
 
   const trajectoryData = useMemo(() => {
     const endM = selectedMonth === 'All Months' ? 11 : MONTH_NAMES.indexOf(selectedMonth);
@@ -480,6 +525,68 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
     );
   };
 
+  /**
+   * Recounts the crew half of the snapshots currently in scope.
+   *
+   * Crew Terminal only rebuilds a snapshot when an entry is saved as 'paid', so
+   * a month whose unpaid bills were never followed by a paid one has no pending
+   * figure stored at all. Same on-demand recount P&L Command (Crew) uses.
+   *
+   * Reads stay bounded: one outlet-month query per pair actually on screen —
+   * for "All Months" that is the months with snapshots, never the whole
+   * collection.
+   */
+  const handleRecount = async () => {
+    const outletsInScope = storeFilter === 'all' ? activeOutletOptions.map(o => o.id) : [storeFilter];
+    if (!outletsInScope.length) return;
+
+    const pairs: { outletId: string; month: string }[] = [];
+    if (selectedMonth === 'All Months') {
+      const seen = new Set<string>();
+      snapshots
+        .filter(sn => outletsInScope.includes(sn.outletId) && sn.year === selectedYear)
+        .forEach(sn => {
+          const key = `${sn.outletId}_${sn.month}`;
+          if (!seen.has(key)) { seen.add(key); pairs.push({ outletId: sn.outletId, month: sn.month }); }
+        });
+    } else {
+      outletsInScope.forEach(outletId => pairs.push({ outletId, month: selectedMonth }));
+    }
+
+    if (!pairs.length) return;
+
+    setIsRecounting(true);
+    try {
+      const failures: string[] = [];
+      for (const { outletId, month } of pairs) {
+        const monthNum = String(MONTH_NAMES.indexOf(month) + 1).padStart(2, '0');
+        try {
+          await rebuildCrewSnapshot({
+            ownerId: dataOwnerId,
+            outletId,
+            date: `${selectedYear}-${monthNum}-01`,
+            legacyUserId: user.uid,
+            // Deliberately not passing cogsKeywords: rebuildCrewSnapshot loads them
+            // from category_settings itself, the same source Crew Terminal uses.
+            // Passing this screen's copy could bucket the recount differently from
+            // every other writer.
+          });
+        } catch (err) {
+          console.error(`[Recount] ${outletId} ${month} failed:`, err);
+          failures.push(`${getOutletName(outletId)} — ${month}`);
+        }
+      }
+
+      await fetchData();
+
+      if (failures.length) {
+        alert(`Recount finished, but these still show stale figures:\n\n${failures.map(f => `\u2022 ${f}`).join('\n')}\n\nCheck the console for details.`);
+      }
+    } finally {
+      setIsRecounting(false);
+    }
+  };
+
   return (
     <div className="space-y-12 animate-in fade-in duration-500 pb-20">
       <header className="flex flex-col xl:flex-row xl:items-center justify-between gap-8">
@@ -511,9 +618,54 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
               {YEAR_OPTIONS.map(y => <option key={y} value={y}>{y}</option>)}
             </select>
           </div>
+          <button
+            onClick={() => setIncludePending(v => !v)}
+            title={includePending
+              ? 'Showing settled + unpaid spend (accrual basis)'
+              : 'Showing settled spend only (cash basis)'}
+            className={`px-4 py-2 rounded-2xl border font-black uppercase text-[10px] tracking-tight flex items-center gap-2 transition-all ${
+              includePending
+                ? 'bg-amber-500 border-amber-500 text-white hover:bg-amber-600'
+                : 'bg-slate-50 border-slate-100 text-slate-500 hover:border-amber-200 hover:text-amber-600'
+            }`}
+          >
+            <Clock3 size={14} />
+            {includePending ? 'Incl. Pending' : 'Paid Only'}
+          </button>
           <button onClick={fetchData} className="p-3 bg-rose-50 rounded-2xl text-rose-500 hover:bg-rose-500 hover:text-white transition-all"><RefreshCw size={16} className={loading ? 'animate-spin' : ''}/></button>
         </div>
       </header>
+
+      {includePending && (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center gap-4">
+          <div className="p-2.5 bg-amber-500/15 rounded-xl shrink-0">
+            <Clock3 className="text-amber-600" size={20} />
+          </div>
+          <div className="flex-1">
+            <p className="text-[10px] font-black uppercase tracking-widest text-amber-700">Accrual basis &mdash; unpaid spend included</p>
+            <p className="text-sm font-bold text-amber-900 mt-1">
+              Adding <span className="tabular-nums">&#8377;{Math.round(analytics.pendingTotal).toLocaleString('en-IN')}</span> of
+              committed-but-unsettled crew spend. Cancelled entries stay excluded.
+              These figures will not match P&amp;L Command, which is cash basis by design.
+            </p>
+            {analytics.staleSnapshots.length > 0 && (
+              <p className="text-xs font-bold text-rose-700 mt-2">
+                {analytics.staleSnapshots.length} outlet-month(s) in scope have never been recounted, so their unpaid
+                spend is missing from the figure above. Recount to pull it in.
+              </p>
+            )}
+          </div>
+          <button
+            onClick={handleRecount}
+            disabled={isRecounting}
+            title="Re-reads this period's crew entries and refreshes the pending totals"
+            className="shrink-0 px-5 py-3 bg-amber-600 text-white rounded-xl font-black uppercase text-[10px] tracking-widest flex items-center gap-2.5 hover:bg-amber-700 disabled:opacity-50 transition-all"
+          >
+            <RefreshCw size={15} className={isRecounting ? 'animate-spin' : ''} />
+            {isRecounting ? 'Recounting' : 'Recount Now'}
+          </button>
+        </div>
+      )}
 
       <div className="flex items-center bg-slate-200/50 p-1.5 rounded-[1.5rem] w-fit border border-slate-100 shadow-inner">
         <button 
@@ -730,7 +882,37 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
                                                </div>
                                             </div>
                                           )}
-                                          {(Object.entries(analytics.cogsItemBreakdown[bucket]) as [string, { amount: number; source: string }][]).sort((a, b) => b[1].amount - a[1].amount).map(([itemName, itemData]) => {
+                                          {/* Where this bucket's money came from. The Crew Report can only
+                                              ever see the two CREW figures, so any gap against it is the CSV
+                                              column — or, with the pending toggle off, the PENDING column. */}
+                                          {(() => {
+                                             const o = analytics.bucketOrigin?.[bucket];
+                                             if (!o) return null;
+                                             const cells = [
+                                               { label: 'CSV upload', val: o.csv, cls: 'text-sky-600' },
+                                               { label: 'Crew paid', val: o.crewPaid, cls: 'text-emerald-600' },
+                                               { label: 'Crew pending', val: o.crewPending, cls: 'text-amber-600' },
+                                             ].filter(c => c.val !== 0);
+                                             if (cells.length === 0) return null;
+                                             return (
+                                               <div className="mb-4 p-3 bg-white border border-slate-200 rounded-xl">
+                                                  <p className="text-[8px] font-black uppercase tracking-widest text-slate-400 mb-2">Bought this month — by origin</p>
+                                                  <div className="flex flex-wrap gap-4">
+                                                    {cells.map(c => (
+                                                      <div key={c.label}>
+                                                        <p className="text-[8px] font-black uppercase tracking-widest text-slate-400">{c.label}</p>
+                                                        <p className={`text-[11px] font-black tabular-nums ${c.cls}`}>₹{c.val.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                                                      </div>
+                                                    ))}
+                                                    <div className="border-l border-slate-200 pl-4">
+                                                      <p className="text-[8px] font-black uppercase tracking-widest text-slate-400">Total bought</p>
+                                                      <p className="text-[11px] font-black tabular-nums text-slate-900">₹{(o.csv + o.crewPaid + o.crewPending).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                                                    </div>
+                                                  </div>
+                                               </div>
+                                             );
+                                          })()}
+                                          {(Object.entries(analytics.cogsItemBreakdown[bucket]) as [string, { amount: number; source: string; csv: number; crewPaid: number; crewPending: number }][]).sort((a, b) => b[1].amount - a[1].amount).map(([itemName, itemData]) => {
                                              return (
                                                 <div key={itemName} className="flex justify-between items-center group">
                                                    <div className="flex items-center gap-3">
@@ -740,7 +922,16 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
                                                          {itemData.source}
                                                       </span>
                                                    </div>
-                                                   <span className="text-[10px] font-black text-slate-600">₹{itemData.amount.toLocaleString()}</span>
+                                                   <div className="text-right">
+                                                      <span className="text-[10px] font-black text-slate-600">₹{itemData.amount.toLocaleString()}</span>
+                                                      <p className="text-[8px] font-bold text-slate-400 tabular-nums">
+                                                        {[
+                                                          itemData.csv ? `CSV ₹${itemData.csv.toLocaleString('en-IN')}` : null,
+                                                          itemData.crewPaid ? `crew ₹${itemData.crewPaid.toLocaleString('en-IN')}` : null,
+                                                          itemData.crewPending ? `pending ₹${itemData.crewPending.toLocaleString('en-IN')}` : null,
+                                                        ].filter(Boolean).join(' · ')}
+                                                      </p>
+                                                   </div>
                                                 </div>
                                              );
                                           })}
