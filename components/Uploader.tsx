@@ -441,17 +441,100 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
     } catch (err: any) { setError(err.message); }
   };
 
+  /**
+   * Normalise whatever the model returned into { targetFieldId: exactCsvHeader }.
+   * Guards the two ways a plausible-looking response still produces an empty
+   * mapping UI: the model inverting the direction (header -> field), and casing
+   * or whitespace that does not match a real header, which a <select> renders
+   * as blank because no <option> carries that value.
+   */
+  const normaliseAiMapping = (raw: any): Record<string, string> => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+
+    const headerByKey = new Map<string, string>(headers.map(h => [h.toLowerCase().trim(), h] as [string, string]));
+    const fieldByKey = new Map<string, string>();
+    targetFields.forEach(f => {
+      fieldByKey.set(f.id.toLowerCase(), f.id);
+      fieldByKey.set(f.label.toLowerCase(), f.id);
+    });
+
+    const result: Record<string, string> = {};
+    Object.entries(raw).forEach(([k, v]) => {
+      if (typeof v !== 'string' || !v.trim()) return;
+      const key = k.toLowerCase().trim();
+      const val = v.toLowerCase().trim();
+
+      // Expected direction: field -> header
+      const field = fieldByKey.get(key);
+      const header = headerByKey.get(val);
+      if (field && header) { result[field] = header; return; }
+
+      // Inverted direction: header -> field
+      const flippedField = fieldByKey.get(val);
+      const flippedHeader = headerByKey.get(key);
+      if (flippedField && flippedHeader) result[flippedField] = flippedHeader;
+    });
+    return result;
+  };
+
   const autoMapWithAI = async () => {
+    if (headers.length === 0) { setError("Load a CSV first."); return; }
     setIsMappingAI(true);
+    setError('');
     try {
-      const prompt = `Map CSV headers: [${headers.join(', ')}] to standard fields: [${targetFields.map(f => f.id).join(', ')}]. Return ONLY JSON. Context: ${fileType}.`;
+      const sampleRows = csvData.slice(0, 3).map(r => headers.map(h => r[h] ?? '').join(' | '));
+      const prompt = [
+        `You are mapping the columns of a ${fileType.replace(/_/g, ' ')} CSV onto a fixed schema.`,
+        ``,
+        `CSV headers (use these strings EXACTLY as written):`,
+        headers.map(h => `- ${h}`).join('\n'),
+        ``,
+        `Sample rows (same column order as the headers above):`,
+        sampleRows.join('\n') || '(no sample rows)',
+        ``,
+        `Target fields:`,
+        targetFields.map(f => `- ${f.id}${f.required ? ' (required)' : ''}: ${f.label}`).join('\n'),
+        ``,
+        `Return ONLY a flat JSON object whose KEYS are target field ids from the`,
+        `list above and whose VALUES are the matching CSV header, copied verbatim.`,
+        `Omit a field entirely when no column matches it — never guess, never`,
+        `invent a header, and never map two fields to the same column.`,
+        `Example shape: {"${targetFields[0]?.id ?? 'fieldId'}": "${headers[0] ?? 'Some Column'}"}`,
+      ].join('\n');
+
       const response: GenerateContentResponse = await ai.models.generateContent({
-        model: 'gemini-1.5-flash',
+        model: 'gemini-3-flash-preview',
         contents: prompt,
         config: { responseMimeType: 'application/json' }
       });
-      setMapping(JSON.parse(response.text ?? '{}'));
-    } catch (err) { setError("AI Mapping failed."); } finally { setIsMappingAI(false); }
+
+      const raw = (response.text ?? '').trim();
+      // Models still fence JSON even when asked not to.
+      const unfenced = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+      let parsed: any;
+      try {
+        parsed = JSON.parse(unfenced);
+      } catch {
+        console.error('[AI Auto-Suggest] unparseable response:', raw.slice(0, 2000));
+        setError("AI returned an unreadable response. Try again, or map the columns manually.");
+        return;
+      }
+
+      const suggested = normaliseAiMapping(parsed);
+      if (Object.keys(suggested).length === 0) {
+        console.error('[AI Auto-Suggest] no usable pairs in response:', raw.slice(0, 2000));
+        setError("AI could not match any column to this schema. Map the columns manually.");
+        return;
+      }
+
+      // Layer over what is already mapped so a partial answer never wipes
+      // correct saved/smart mappings.
+      setMapping(prev => ({ ...prev, ...suggested }));
+      setMappingsLoaded(true);
+    } catch (err: any) {
+      console.error('[AI Auto-Suggest] failed', err);
+      setError(err?.message ? `AI mapping failed: ${err.message}` : "AI Mapping failed.");
+    } finally { setIsMappingAI(false); }
   };
 
   const handlePostOnlineManual = async () => {
@@ -1202,6 +1285,13 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
               <div key={s} className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm transition-all duration-500 border-4 ${step >= s ? 'bg-indigo-600 text-white border-indigo-100' : 'bg-white text-slate-400 border-slate-50'}`}>{step > s ? <CheckCircle2 size={18} /> : s}</div>
             ))}
           </div>
+          {error && (
+            <div className="mb-8 flex items-start gap-3 px-6 py-5 rounded-2xl bg-rose-50 border border-rose-100 animate-in fade-in slide-in-from-top-2">
+              <Info size={16} className="text-rose-500 mt-0.5 shrink-0" />
+              <p className="text-xs font-bold text-rose-600 flex-1">{error}</p>
+              <button onClick={() => setError('')} className="text-rose-400 hover:text-rose-600 shrink-0"><X size={16} /></button>
+            </div>
+          )}
           {step === 1 && (
             <div className="bg-white rounded-[3rem] p-12 shadow-2xl border border-slate-100 animate-in zoom-in duration-300">
               <div className="flex items-center gap-4 mb-10">

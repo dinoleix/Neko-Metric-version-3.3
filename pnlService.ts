@@ -162,3 +162,119 @@ export const cogsBucketsOf = (snap: ExpenseMonthlySnapshot): Record<CogsBucket, 
   });
   return out;
 };
+
+/* ------------------------------------------------------------------ */
+/* Break-even                                                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The same costs the P&L already totals, re-split by BEHAVIOUR instead of by
+ * category. Callers pass the locals they have computed for the bottom line, so
+ * break-even can never disagree with the Net Profit shown beside it.
+ */
+export interface BreakEvenInput {
+  /** POS + online + events, before tax and commission. The answer is in these units. */
+  grossGoodRevenue: number;
+  /** What actually lands: posGoodNet + onlineGoodNet + eventRevenue. */
+  netCashInflow: number;
+  adjustedCOGS: number;
+  /** Daily wages & incentives — scales with volume, so treated as variable. */
+  csvVariableLabour: number;
+  fixedPayroll: number;
+  totalRent: number;
+  mappedOps: number;
+  unmappedExp: number;
+  /** Calendar days in the period, for the daily target. */
+  daysInPeriod: number;
+}
+
+export interface BreakEvenResult {
+  fixedCosts: number;
+  variableCosts: number;
+  /** Revenue less variable costs — the pool that has to cover fixed costs. */
+  beContribution: number;
+  /** beContribution as a fraction (0..1) of GROSS revenue. */
+  contributionRatio: number;
+  /** Gross revenue at which net profit would be exactly zero. */
+  breakEvenRevenue: number;
+  /** Actual gross revenue less break-even. Negative means a loss-making month. */
+  marginOfSafety: number;
+  marginOfSafetyPercent: number;
+  dailyTarget: number;
+  daysInPeriod: number;
+  /** false when no volume breaks even — read `reason` before showing a figure. */
+  reachable: boolean;
+  reason: 'ok' | 'no_revenue' | 'negative_contribution';
+}
+
+const UNREACHABLE = (
+  reason: BreakEvenResult['reason'],
+  fixedCosts: number,
+  variableCosts: number,
+  beContribution: number,
+  daysInPeriod: number,
+): BreakEvenResult => ({
+  fixedCosts,
+  variableCosts,
+  beContribution,
+  contributionRatio: 0,
+  breakEvenRevenue: 0,
+  marginOfSafety: 0,
+  marginOfSafetyPercent: 0,
+  dailyTarget: 0,
+  daysInPeriod,
+  reachable: false,
+  reason,
+});
+
+/**
+ * Gross revenue needed to reach zero net profit.
+ *
+ *     variable  = COGS + daily wages
+ *     fixed     = base payroll + rent + mapped ops + unmapped
+ *     BE gross  = fixed / ((netCashInflow - variable) / grossGoodRevenue)
+ *
+ * Expressed in GROSS revenue to match the denominator the existing margins use.
+ * That is consistent because tax and commission are percentage-based, so
+ * netCashInflow scales linearly with gross: multiplying gross revenue by
+ * `fixed / beContribution` drives net profit to exactly zero.
+ *
+ * Note `mappedOps` is held entirely fixed even though it mixes genuinely fixed
+ * items (internet, software) with variable ones (marketing, utilities). That is
+ * the conservative direction — it raises the target rather than lowering it.
+ */
+export const computeBreakEven = (i: BreakEvenInput): BreakEvenResult => {
+  const grossRevenue = Number(i.grossGoodRevenue) || 0;
+  const variableCosts = (Number(i.adjustedCOGS) || 0) + (Number(i.csvVariableLabour) || 0);
+  const fixedCosts = (Number(i.fixedPayroll) || 0) + (Number(i.totalRent) || 0)
+    + (Number(i.mappedOps) || 0) + (Number(i.unmappedExp) || 0);
+  const beContribution = (Number(i.netCashInflow) || 0) - variableCosts;
+  const days = Math.max(0, Number(i.daysInPeriod) || 0);
+
+  // No sales loaded for the period: there is no ratio to project from.
+  if (grossRevenue <= 0) return UNREACHABLE('no_revenue', fixedCosts, variableCosts, beContribution, days);
+
+  // Variable costs meet or exceed revenue, so every extra rupee of sales loses
+  // money and no volume breaks even. A real signal, not an error.
+  if (beContribution <= 0) {
+    return UNREACHABLE('negative_contribution', fixedCosts, variableCosts, beContribution, days);
+  }
+
+  const contributionRatio = beContribution / grossRevenue;
+  const breakEvenRevenue = fixedCosts / contributionRatio;
+  const marginOfSafety = grossRevenue - breakEvenRevenue;
+
+  return {
+    fixedCosts,
+    variableCosts,
+    beContribution,
+    contributionRatio,
+    breakEvenRevenue,
+    marginOfSafety,
+    marginOfSafetyPercent: (marginOfSafety / grossRevenue) * 100,
+    dailyTarget: days > 0 ? breakEvenRevenue / days : 0,
+    daysInPeriod: days,
+    reachable: true,
+    reason: 'ok',
+  };
+};

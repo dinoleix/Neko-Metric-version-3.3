@@ -5,7 +5,7 @@ import { collection, query, getDocs, where, doc, getDoc, setDoc, writeBatch } fr
 import { db } from '../firebase';
 import { getCachedCollection } from '../referenceCache';
 import { rebuildCrewSnapshot } from '../crewSnapshotService';
-import { computeConsumption, closingStockTotal, openingStockTotal, openingByBucket, closingByBucket, hasImpossibleStock } from '../pnlService';
+import { computeConsumption, closingStockTotal, openingStockTotal, openingByBucket, closingByBucket, hasImpossibleStock, computeBreakEven } from '../pnlService';
 import { 
   SalesMonthlySnapshot, 
   ExpenseMonthlySnapshot, 
@@ -533,6 +533,12 @@ const PnLHubCrew: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean
     const operatingBurn = totalPayroll + totalRent + mappedOps + unmappedExp;
     const netProfit = contributionMargin - totalPayroll - totalRent - mappedOps - unmappedExp;
 
+    const breakEven = computeBreakEven({
+      grossGoodRevenue, netCashInflow, adjustedCOGS, csvVariableLabour,
+      fixedPayroll, totalRent, mappedOps, unmappedExp,
+      daysInPeriod: periodEnd.getDate(),
+    });
+
     const denominator = grossGoodRevenue || 1;
 
     return {
@@ -542,7 +548,7 @@ const PnLHubCrew: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean
       openingIngredients, foodIngredientsOpening, drinkIngredientsOpening,
       openingServings, foodServingsOpening, drinkServingsOpening, openingStock,
       mappedOps, csvVariableLabour, fixedPayroll, totalPayroll, totalRent, unmappedExp, operatingBurn,
-      netProfit, payrollValidated, stockDataSuspect,
+      netProfit, payrollValidated, stockDataSuspect, breakEven,
       pendingTotal, staleSnapshotOutlets,
       margins: {
         contributionPercent: (contributionMargin / denominator) * 100,
@@ -884,6 +890,80 @@ const PnLHubCrew: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean
                               </div>
                             ))}
                          </div>
+                      </div>
+
+
+                      <div className="bg-white p-10 rounded-[3rem] border border-slate-100 shadow-sm relative overflow-hidden">
+                         <div className="flex items-center gap-4 mb-8">
+                            <div className="p-4 bg-slate-900 text-white rounded-2xl shadow-inner shrink-0"><Scale size={28}/></div>
+                            <div>
+                               <h4 className="text-lg font-black text-slate-900 uppercase tracking-tight">Break-Even Revenue</h4>
+                               <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Gross sales needed for zero profit</p>
+                            </div>
+                         </div>
+
+                         {!pnlData.breakEven.reachable ? (
+                            <div className="p-6 bg-slate-50 rounded-2xl border border-slate-100 flex items-start gap-3">
+                               <Info size={16} className="text-slate-400 mt-0.5 shrink-0" />
+                               <p className="text-[11px] font-black text-slate-500 uppercase leading-relaxed">
+                                  {pnlData.breakEven.reason === 'no_revenue'
+                                     ? 'No sales loaded for this period — nothing to project from.'
+                                     : 'Variable costs meet or exceed revenue. No sales volume breaks even this month.'}
+                               </p>
+                            </div>
+                         ) : (
+                            <>
+                               <div className="flex items-end justify-between mb-6">
+                                  <div>
+                                     <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Required Gross</p>
+                                     <h3 className="text-4xl font-black text-slate-900 tracking-tighter">₹{Math.round(pnlData.breakEven.breakEvenRevenue).toLocaleString()}</h3>
+                                  </div>
+                                  <div className="text-right">
+                                     <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Actual Gross</p>
+                                     <h3 className="text-2xl font-black text-slate-400 tracking-tighter">₹{Math.round(pnlData.grossGoodRevenue).toLocaleString()}</h3>
+                                  </div>
+                               </div>
+
+                               <div className="h-2 bg-slate-100 rounded-full overflow-hidden shadow-inner mb-8">
+                                  <div
+                                     className={`h-full transition-all duration-1000 ease-out ${pnlData.breakEven.marginOfSafety >= 0 ? 'bg-emerald-500' : 'bg-rose-500'}`}
+                                     style={{ width: `${Math.min(100, (pnlData.grossGoodRevenue / (pnlData.breakEven.breakEvenRevenue || 1)) * 100)}%` }}
+                                  />
+                               </div>
+
+                               <div className={`p-6 rounded-2xl flex justify-between items-center mb-6 ${pnlData.breakEven.marginOfSafety >= 0 ? 'bg-emerald-50 border border-emerald-100 text-emerald-700' : 'bg-rose-50 border border-rose-100 text-rose-700'}`}>
+                                  <div className="flex items-center gap-2">
+                                     {pnlData.breakEven.marginOfSafety >= 0 ? <ArrowUpRight size={16}/> : <ArrowDownRight size={16}/>}
+                                     <span className="text-[10px] font-black uppercase tracking-widest">{pnlData.breakEven.marginOfSafety >= 0 ? 'Margin of Safety' : 'Shortfall'}</span>
+                                  </div>
+                                  <div className="text-right">
+                                     <span className="text-xl font-black tracking-tight">₹{Math.round(Math.abs(pnlData.breakEven.marginOfSafety)).toLocaleString()}</span>
+                                     <span className="text-[10px] font-black uppercase ml-2 opacity-70">{Math.abs(pnlData.breakEven.marginOfSafetyPercent).toFixed(1)}%</span>
+                                  </div>
+                               </div>
+
+                               <div className="space-y-3 px-1">
+                                  <div className="flex justify-between text-[11px] font-bold text-slate-600 uppercase">
+                                     <span>Daily Target ({pnlData.breakEven.daysInPeriod} Days)</span>
+                                     <span className="font-black text-slate-900">₹{Math.round(pnlData.breakEven.dailyTarget).toLocaleString()}</span>
+                                  </div>
+                                  <div className="flex justify-between text-[11px] font-bold text-slate-600 uppercase">
+                                     <span>Contribution Ratio</span>
+                                     <span className="font-black text-slate-900">{(pnlData.breakEven.contributionRatio * 100).toFixed(1)}%</span>
+                                  </div>
+                                  <div className="pt-3 mt-1 border-t border-slate-100 space-y-3">
+                                     <div className="flex justify-between text-[11px] font-bold text-slate-500 uppercase">
+                                        <span>Fixed Costs <span className="text-slate-300 normal-case font-medium">(payroll, rent, ops)</span></span>
+                                        <span className="font-black text-slate-700">₹{Math.round(pnlData.breakEven.fixedCosts).toLocaleString()}</span>
+                                     </div>
+                                     <div className="flex justify-between text-[11px] font-bold text-slate-500 uppercase">
+                                        <span>Variable Costs <span className="text-slate-300 normal-case font-medium">(COGS, daily wages)</span></span>
+                                        <span className="font-black text-slate-700">₹{Math.round(pnlData.breakEven.variableCosts).toLocaleString()}</span>
+                                     </div>
+                                  </div>
+                               </div>
+                            </>
+                         )}
                       </div>
 
                       <div className="bg-white p-10 rounded-[3rem] border border-slate-100 shadow-sm flex items-center gap-8 relative overflow-hidden">

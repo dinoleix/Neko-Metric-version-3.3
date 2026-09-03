@@ -27,7 +27,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const result = await client.models.generateContent({
       model: model || 'gemini-1.5-flash',
       contents: Array.isArray(contents) ? contents : [{ role: 'user', parts: [{ text: contents }] }],
-      generationConfig: config,
+      // @google/genai v1 names this `config`. It was previously sent as
+      // `generationConfig` (the old SDK's name), which the client silently
+      // ignored — so responseMimeType: 'application/json' never took effect
+      // and every caller got markdown-fenced JSON back.
+      config,
     } as any);
 
     res.status(200).json({
