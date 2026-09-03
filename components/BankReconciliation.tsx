@@ -100,6 +100,22 @@ const parseTender = (paymentMode: string, fallbackAmount: number): Record<Channe
   return out;
 };
 
+// A bill the matcher can offer, from either collection. Crew Terminal spend
+// lives in crew_entries and never becomes a `purchases` document, so a search
+// that read only `purchases` could never surface it — which is why crew
+// purchases and expenses looked invisible to the categoriser.
+type MatchCandidate = {
+  id: string;
+  source: 'purchases' | 'crew_entries';
+  amount: number;
+  date: string;
+  category: string;
+  outletId: string;
+  billNo: string;
+  label: string;
+  note?: string;
+};
+
 const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
   const [selectedMonth, setSelectedMonth] = useState(MONTH_NAMES[new Date().getMonth()]);
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear().toString());
@@ -116,9 +132,9 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
   
   // Match Discovery Modal
   const [discoveryTxn, setDiscoveryTxn] = useState<BankTransaction | null>(null);
-  const [discoveryResults, setDiscoveryResults] = useState<PurchaseRecord[]>([]);
+  const [discoveryResults, setDiscoveryResults] = useState<MatchCandidate[]>([]);
   const [isSearchingDiscovery, setIsSearchingDiscovery] = useState(false);
-  const [discoveryDateRange, setDiscoveryDateRange] = useState<number>(0); // 0, 1, or 2 days offset
+  const [discoveryDateRange, setDiscoveryDateRange] = useState<number>(0); // 0, 1 or 2 days either side
   const [categories, setCategories] = useState<string[]>(RECONCILIATION_CATEGORIES);
   const [newCategoryName, setNewCategoryName] = useState('');
   const [isAddingCategory, setIsAddingCategory] = useState(false);
@@ -526,7 +542,13 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
     else next.add(id);
     setSelectedBatchIds(next);
   };
-  const handleManualMap = async (btId: string, category: string, isVerified = false, purchaseId?: string) => {
+  const handleManualMap = async (
+    btId: string,
+    category: string,
+    isVerified = false,
+    purchaseId?: string,
+    matchSource: 'purchases' | 'crew_entries' = 'purchases',
+  ) => {
     setUpdatingId(btId);
     const normalizedCategory = category.toUpperCase();
     try {
@@ -544,13 +566,20 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
         matchedPurchaseId: purchaseId || bt.matchedPurchaseId || null
       });
 
-      // 2. If a purchase is linked, update it too
+      // 2. If a bill is linked, mark it verified in whichever collection it lives in.
       if (purchaseId) {
-        const pRef = doc(db, 'purchases', purchaseId);
-        batch.update(pRef, {
-          category: normalizedCategory, // Sync the category
-          isBankVerified: true
-        });
+        if (matchSource === 'crew_entries') {
+          // Only the verification flag. Writing `category` back here would rewrite
+          // a crew entry's category from the bank screen without the expense
+          // snapshot following, which is precisely how a stale category key gets
+          // left behind in crewPurchaseByCategory.
+          batch.update(doc(db, 'crew_entries', purchaseId), { isBankVerified: true });
+        } else {
+          batch.update(doc(db, 'purchases', purchaseId), {
+            category: normalizedCategory, // Sync the category
+            isBankVerified: true
+          });
+        }
       }
 
       await batch.commit();
@@ -714,33 +743,81 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
     setIsSearchingDiscovery(true);
     setDiscoveryDateRange(daysOffset);
     try {
+      // Symmetric window. A bill is commonly entered on receipt and paid a day
+      // or two later, but it can equally be paid first and entered after — a
+      // forward-only window silently missed the whole first case.
+      //
+      // All UTC arithmetic: `new Date('YYYY-MM-DD')` is UTC midnight, so mixing
+      // in local getDate/setDate would shift the window by a day at negative
+      // offsets. Widest span is 5 dates, well inside the 30-value `in` limit.
       const txnDate = new Date(txn.date);
       const searchDates: string[] = [];
-      
-      for (let i = 0; i <= daysOffset; i++) {
+
+      for (let i = -daysOffset; i <= daysOffset; i++) {
         const d = new Date(txnDate);
-        d.setDate(d.getDate() + i);
+        d.setUTCDate(d.getUTCDate() + i);
         searchDates.push(d.toISOString().split('T')[0]);
       }
 
-      // Query purchases for these dates
-      // Due to Firebase limitation of 'in' queries being limited and wanting to be efficient:
-      // We look for all user purchases in those dates.
-      const q = query(
-        collection(db, 'purchases'),
-        where('userId', '==', dataOwnerId),
-        where('date', 'in', searchDates)
-      );
+      // Both spend sources, not just CSV-imported purchases. Each leg is isolated
+      // so one failing (e.g. a missing index) still lets the others return.
+      const runQuery = async (
+        coll: string, field: string, value: string
+      ): Promise<any[]> => {
+        try {
+          const snap = await getDocs(query(
+            collection(db, coll),
+            where(field, '==', value),
+            where('date', 'in', searchDates)
+          ));
+          return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        } catch (err) {
+          console.warn(`[Reconcile] ${coll}.${field} match query failed:`, err);
+          return [];
+        }
+      };
 
-      const snap = await getDocs(q);
-      const records = snap.docs.map(d => ({ id: d.id, ...d.data() } as PurchaseRecord));
-      
-      // Sort by closeness to amount first
-      setDiscoveryResults(records.sort((a, b) => {
-        const diffA = Math.abs(a.amount - txn.amount);
-        const diffB = Math.abs(b.amount - txn.amount);
-        return diffA - diffB;
+      const [purchaseDocs, crewByOwner, crewByUser] = await Promise.all([
+        runQuery('purchases', 'userId', dataOwnerId),
+        runQuery('crew_entries', 'ownerId', dataOwnerId),
+        // Entries written before the ownerId field existed carry only userId.
+        runQuery('crew_entries', 'userId', user.uid),
+      ]);
+
+      const candidates: MatchCandidate[] = purchaseDocs.map(d => ({
+        id: d.id,
+        source: 'purchases' as const,
+        amount: Number(d.amount || 0),
+        date: d.date,
+        category: d.category || 'COGS',
+        outletId: d.outletId || 'GLOBAL',
+        billNo: d.billNo || '',
+        label: d.productName || 'Purchase',
+        note: d.vendor,
       }));
+
+      const seenCrew = new Set<string>();
+      [...crewByOwner, ...crewByUser].forEach(d => {
+        if (seenCrew.has(d.id)) return;
+        seenCrew.add(d.id);
+        // A cancelled bill was never paid, so it can never be a bank line.
+        if (d.status === 'cancelled') return;
+        candidates.push({
+          id: d.id,
+          source: 'crew_entries',
+          amount: Number(d.amount || 0),
+          date: d.date,
+          category: d.category || 'UNCATEGORIZED',
+          outletId: d.outletId || 'GLOBAL',
+          billNo: d.billNumber || '',
+          label: d.description || d.vendorName || 'Crew entry',
+          note: [d.vendorName, d.status === 'pending' ? 'UNPAID' : null].filter(Boolean).join(' · '),
+        });
+      });
+
+      // Closest amount first, regardless of which collection it came from
+      setDiscoveryResults(candidates.sort((a, b) =>
+        Math.abs(a.amount - txn.amount) - Math.abs(b.amount - txn.amount)));
       setDiscoveryTxn(txn);
     } catch (err) {
       console.error(err);
@@ -1974,7 +2051,7 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
                         onClick={() => findMatchingPurchases(discoveryTxn, days)}
                         className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${discoveryDateRange === days ? 'bg-indigo-600 text-white' : 'bg-white text-slate-400 border border-slate-200'}`}
                       >
-                        +{days} Day{days !== 1 ? 's' : ''}
+                        {days === 0 ? 'Same day' : `±${days} Day${days !== 1 ? 's' : ''}`}
                       </button>
                     ))}
                   </div>
@@ -2007,17 +2084,21 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
                                  {getOutletName(p.outletId || 'GLOBAL')}
                                </span>
                                <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">{p.billNo || 'No Bill #'}</span>
+                               <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full ${p.source === 'crew_entries' ? 'bg-amber-100 text-amber-700' : 'bg-sky-100 text-sky-700'}`}>
+                                 {p.source === 'crew_entries' ? 'Crew' : 'CSV'}
+                               </span>
                              </div>
-                             <h5 className="text-sm font-black text-slate-900 line-clamp-1 mb-2">{p.productName}</h5>
+                             <h5 className="text-sm font-black text-slate-900 line-clamp-1 mb-2">{p.label}</h5>
                              <div className="flex items-center gap-4">
                                 <span className={`text-lg font-black tracking-tighter ${isExact ? 'text-emerald-600' : 'text-slate-900'}`}>₹{p.amount.toLocaleString()}</span>
                                 <span className="text-[10px] font-bold text-slate-400 uppercase">{new Date(p.date).toLocaleDateString()}</span>
+                                {p.note && <span className="text-[10px] font-bold text-slate-400 uppercase truncate max-w-[160px]">{p.note}</span>}
                              </div>
                           </div>
 
                           <button 
                             onClick={async () => {
-                              await handleManualMap(discoveryTxn.id!, (p.category || 'COGS').toUpperCase(), true, p.id);
+                              await handleManualMap(discoveryTxn.id!, (p.category || 'COGS').toUpperCase(), true, p.id, p.source);
                               setDiscoveryTxn(null);
                             }}
                             className={`p-3 rounded-2xl transition-all ${isExact ? 'bg-emerald-600 text-white shadow-emerald-200' : 'bg-slate-900 text-white shadow-slate-200'} shadow-xl`}
