@@ -1,5 +1,5 @@
 
-import { collection, query, where, getDocs, getDoc, setDoc, doc } from 'firebase/firestore';
+import { collection, query, where, getDocs, getDoc, setDoc, updateDoc, doc } from 'firebase/firestore';
 import { db } from './firebase';
 import { CrewQtyMeta, DailyCounterEntry, MONTH_NAMES } from './types';
 
@@ -219,8 +219,15 @@ export const fetchCrewEntries = async (
  * Recounts one outlet + month from crew_entries and writes the crew_* fields.
  *
  * Always a clean recount from zero, never an increment, so it is idempotent and
- * safe to re-run. Writes with { merge: true } and touches only crew_* keys, so
- * CSV-uploaded fields in the same document are left intact.
+ * safe to re-run. Touches only crew_* keys, so CSV-uploaded fields in the same
+ * document are left intact.
+ *
+ * Uses updateDoc on an existing document rather than setDoc({ merge: true }).
+ * That distinction matters: merge deep-merges map fields key by key, so a
+ * category that no longer appears in any entry — renamed, recategorised, or its
+ * last entry cancelled — kept its old amount in crewPurchaseByCategory forever,
+ * and the recount that was supposed to clear it instead left it standing beside
+ * the new one. updateDoc replaces a map field wholesale, so removed keys go.
  */
 export const rebuildCrewSnapshot = async (opts: {
   ownerId: string;
@@ -242,14 +249,24 @@ export const rebuildCrewSnapshot = async (opts: {
   const [year, month] = date.split('-');
   const snapId = crewSnapshotId(ownerId, outletId, date);
 
-  await setDoc(doc(db, 'expense_snapshots', snapId), {
+  const snapRef = doc(db, 'expense_snapshots', snapId);
+  const existing = await getDoc(snapRef);
+  const payload = {
     userId: ownerId,
     outletId,
     month: MONTH_NAMES[parseInt(month) - 1],
     year,
     ...aggregate,
     crewLastUpdated: Date.now(),
-  }, { merge: true });
+  };
+
+  if (existing.exists()) {
+    // Replaces each crew_* map outright; CSV keys live in different fields and
+    // are not named here, so they are untouched.
+    await updateDoc(snapRef, payload);
+  } else {
+    await setDoc(snapRef, payload);
+  }
 
   return { snapId, aggregate, entryCount: entries.filter(isReportable).length };
 };
