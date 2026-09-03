@@ -406,12 +406,10 @@ export const DEFAULT_OPS = [
 
 // --- CREW TERMINAL CATEGORIES (separate, curated list) ---
 export const CREW_PURCHASE_CATEGORIES = [
-  'BAKERY',
   'INGREDIENTS FOR DRINKS',
   'INGREDIENTS FOR FOOD',
   'SERVING FOR DRINKS',
   'SERVING FOR FOOD',
-  'IROHA',
 ].sort();
 
 export const CREW_EXPENSE_CATEGORIES = [
