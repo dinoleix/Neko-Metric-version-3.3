@@ -1309,7 +1309,14 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
       }
       invalidateCached('vendors', ownerId);
       resetVendorForm();
-    } catch (err) { console.error(err); } finally { setVSaving(false); }
+    } catch (err: any) {
+      // Was a bare console.error, so a rejected write looked like nothing
+      // happening at all — the form just sat there. Say what went wrong.
+      console.error('[vendor] save failed:', err);
+      alert(err?.code === 'permission-denied'
+        ? 'You do not have permission to change this vendor.'
+        : `Could not save the vendor: ${err?.message || err}`);
+    } finally { setVSaving(false); }
   };
 
   const handleVendorEdit = (v: Vendor) => {
