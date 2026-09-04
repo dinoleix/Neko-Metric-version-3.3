@@ -94,6 +94,9 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
   const [cogsKeywords, setCogsKeywords] = useState<string[]>(DEFAULT_COGS);
   const [labourKeywords, setLabourKeywords] = useState<string[]>(DEFAULT_LABOUR);
   const [opsKeywords, setOpsKeywords] = useState<string[]>(DEFAULT_OPS);
+  // Asset purchases (bulk buys into storage). Empty by default, so the guard
+  // below never fires until an owner configures one.
+  const [stockPurchaseCategories, setStockPurchaseCategories] = useState<string[]>([]);
 
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear().toString());
   const [selectedMonth, setSelectedMonth] = useState(MONTH_NAMES[new Date().getMonth()]);
@@ -151,6 +154,7 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
         if (data.cogsKeywords) setCogsKeywords(norm(data.cogsKeywords));
         if (data.labourKeywords) setLabourKeywords(norm(data.labourKeywords));
         if (data.opsKeywords) setOpsKeywords(norm(data.opsKeywords));
+        if (data.stockPurchaseCategories) setStockPurchaseCategories(norm(data.stockPurchaseCategories));
       }
       
       setSalesSnaps(sSnaps.docs.map(d => d.data() as SalesMonthlySnapshot));
@@ -350,6 +354,10 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
         Object.entries(map || {}).forEach(([cat, amount]) => {
           const magnitude = Math.abs(amount || 0);
           const upper = cat.trim().toUpperCase();
+          // Asset purchase, not an expense — belongs to no P&L bucket. Must come
+          // before the cascade: the final `else` would otherwise sweep it into
+          // unmappedExp and reduce net profit.
+          if (stockPurchaseCategories.includes(upper)) return;
           if (cogsKeywords.includes(upper)) rawCogs += magnitude;
           else if (labourKeywords.includes(upper)) csvVariableLabour += magnitude;
           else if (opsKeywords.includes(upper)) mappedOps += magnitude;
@@ -452,7 +460,7 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
         opsPercent: (mappedOps / denominator) * 100
       }
     };
-  }, [salesSnaps, expenseSnaps, monthlyPayrolls, rentals, adjustments, selectedYear, selectedMonth, selectedOutlets, employees, cogsKeywords, labourKeywords, opsKeywords, availableOutlets, existingPnLSnaps]);
+  }, [salesSnaps, expenseSnaps, monthlyPayrolls, rentals, adjustments, selectedYear, selectedMonth, selectedOutlets, employees, cogsKeywords, labourKeywords, opsKeywords, stockPurchaseCategories, availableOutlets, existingPnLSnaps]);
 
   const handleFreezeMonth = async () => {
     if (readOnly) return;
@@ -481,6 +489,7 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
           eSnaps.forEach(snap => {
             const process = (map: any) => Object.entries(map || {}).forEach(([cat, amt]) => {
               const upper = cat.trim().toUpperCase();
+              if (stockPurchaseCategories.includes(upper)) return; // asset, not expense
               if (cogsKeywords.includes(upper)) rawC += Number(amt);
               else if (labourKeywords.includes(upper)) rawL += Number(amt);
               else if (opsKeywords.includes(upper)) rawO += Number(amt);

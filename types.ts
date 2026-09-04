@@ -432,6 +432,23 @@ export interface CategorySettings {
   cogsKeywords: string[];
   labourKeywords: string[];
   opsKeywords: string[];
+  /**
+   * Asset purchases, not expenses: bulk buys into central storage that will
+   * become COGS later, when the carry-out to a store is recorded under a normal
+   * COGS category.
+   *
+   * Every cost classifier skips these BEFORE the cogs/labour/ops cascade, so they
+   * reach neither COGS nor opex nor uncategorised spend. The skip has to come
+   * first: each cascade ends in an `else` that would otherwise sweep the category
+   * into unmappedExp, which reduces net profit.
+   *
+   * Defaults to [] — an owner who never configures it sees today's behaviour
+   * exactly, because [].includes(x) is always false.
+   *
+   * A category listed here AND in cogsKeywords silently drops out of COGS, since
+   * this check wins. CategorySettings warns about that overlap.
+   */
+  stockPurchaseCategories?: string[];
   menuSegments?: string[];
   cogsBucketMapping?: Record<string, CogsBucket>;
   productCatalogEnabled?: boolean;

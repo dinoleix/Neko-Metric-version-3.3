@@ -138,6 +138,10 @@ const RawSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, data
   const isUncategorized = (category: string) => {
     const upper = (category || '').trim().toUpperCase();
     if (!upper) return true;
+    // A stock purchase category is deliberately outside all three P&L lists — it
+    // is an asset, not an expense — so it is mapped, not uncategorised. Without
+    // this it would be flagged as needing attention forever.
+    if ((settings.stockPurchaseCategories || []).includes(upper)) return false;
     return !settings.cogsKeywords.includes(upper) && !settings.labourKeywords.includes(upper) && !settings.opsKeywords.includes(upper);
   };
 

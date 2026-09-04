@@ -104,6 +104,9 @@ const PnLAnalytics: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
   const [cogsKeywords, setCogsKeywords] = useState<string[]>(DEFAULT_COGS);
   const [labourKeywords, setLabourKeywords] = useState<string[]>(DEFAULT_LABOUR);
   const [opsKeywords, setOpsKeywords] = useState<string[]>(DEFAULT_OPS);
+  // Asset purchases (bulk buys into storage). Empty by default, so the guard
+  // below never fires until an owner configures one.
+  const [stockPurchaseCategories, setStockPurchaseCategories] = useState<string[]>([]);
 
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear().toString());
   const [selectedMonth, setSelectedMonth] = useState(MONTH_NAMES[new Date().getMonth()]);
@@ -139,6 +142,7 @@ const PnLAnalytics: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
         if (data.cogsKeywords) setCogsKeywords(data.cogsKeywords.map(k => k.trim().toUpperCase()));
         if (data.labourKeywords) setLabourKeywords(data.labourKeywords.map(k => k.trim().toUpperCase()));
         if (data.opsKeywords) setOpsKeywords(data.opsKeywords.map(k => k.trim().toUpperCase()));
+        if (data.stockPurchaseCategories) setStockPurchaseCategories(data.stockPurchaseCategories.map(k => k.trim().toUpperCase()));
       }
 
       setRentals(rent);
@@ -275,6 +279,9 @@ const PnLAnalytics: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
     // maps here previously hid all crew-entered costs from this report
     filteredExpenseSnaps.forEach(snap => {
       forEachCostRow(costMapsOf(snap), (upper, amt) => {
+        // Asset purchase, not an expense — belongs to no P&L bucket. Before the
+        // cascade, or the final `else` sweeps it into rawOther.
+        if (stockPurchaseCategories.includes(upper)) return;
         if (cogsKeywords.includes(upper)) rawCogs += amt;
         else if (labourKeywords.includes(upper)) rawLabour += amt;
         else if (opsKeywords.includes(upper)) rawOps += amt;
@@ -413,7 +420,7 @@ const PnLAnalytics: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
       aggregatorTakePercent, onlineComm, onlineGstOnComm, onlineNetSales,
       segmentAnalysis, categorySummary, topSegment, worstSegment, uniqueSegments
     };
-  }, [salesSnaps, expenseSnaps, itemSnaps, itemCosts, skuMappings, normalizationMap, selectedYear, selectedMonth, selectedOutlets, channelMode, cogsKeywords, labourKeywords, opsKeywords, hasSearched, rentals, adjustments, availableOutlets]);
+  }, [salesSnaps, expenseSnaps, itemSnaps, itemCosts, skuMappings, normalizationMap, selectedYear, selectedMonth, selectedOutlets, channelMode, cogsKeywords, labourKeywords, opsKeywords, stockPurchaseCategories, hasSearched, rentals, adjustments, availableOutlets]);
 
   const filteredItemsForLedger = useMemo(() => {
     if (!intelligence) return [];

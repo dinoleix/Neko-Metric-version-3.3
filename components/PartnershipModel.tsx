@@ -69,6 +69,9 @@ const PartnershipModel: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
   // Settings for Keyword mapping
   const [cogsKeywords, setCogsKeywords] = useState<string[]>(DEFAULT_COGS);
   const [labourKeywords, setLabourKeywords] = useState<string[]>(DEFAULT_LABOUR);
+  // Asset purchases (bulk buys into storage). Empty by default, so the guard
+  // below never fires until an owner configures one.
+  const [stockPurchaseCategories, setStockPurchaseCategories] = useState<string[]>([]);
 
   // Simulation Parameters
   const [modelType, setModelType] = useState<ModelType>('ROYALTY');
@@ -106,6 +109,7 @@ const PartnershipModel: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
         const d = setSnap.data() as CategorySettings;
         if (d.cogsKeywords) setCogsKeywords(d.cogsKeywords.map(k => k.trim().toUpperCase()));
         if (d.labourKeywords) setLabourKeywords(d.labourKeywords.map(k => k.trim().toUpperCase()));
+        if (d.stockPurchaseCategories) setStockPurchaseCategories(d.stockPurchaseCategories.map(k => k.trim().toUpperCase()));
       }
 
       setSalesSnaps(sSnap.docs.map(d => d.data() as SalesMonthlySnapshot));
@@ -171,6 +175,9 @@ const PartnershipModel: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
     // maps here previously understated every cost ratio in the model
     storeExpenses.forEach((e: ExpenseMonthlySnapshot) => {
       forEachCostRow(costMapsOf(e), (upper, val) => {
+        // Asset purchase, not an expense — belongs to no cost line here either.
+        // Before the cascade, or the final `else` sweeps it into totalOps.
+        if (stockPurchaseCategories.includes(upper)) return;
         if (cogsKeywords.includes(upper)) totalCogs += val;
         else if (labourKeywords.includes(upper)) mappedLabourCost += val;
         else totalOps += val;
@@ -190,7 +197,7 @@ const PartnershipModel: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
       sampleCount: storeSales.length,
       isVerified: false
     };
-  }, [salesSnaps, expenseSnaps, payrolls, pnlSnaps, benchmarkStore, lookback, benchmarkMonth, benchmarkYear, cogsKeywords, labourKeywords]);
+  }, [salesSnaps, expenseSnaps, payrolls, pnlSnaps, benchmarkStore, lookback, benchmarkMonth, benchmarkYear, cogsKeywords, labourKeywords, stockPurchaseCategories]);
 
   const simulation = useMemo(() => {
     const calcPnL = (sales: number, rent: number) => {

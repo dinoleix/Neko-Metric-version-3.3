@@ -113,6 +113,9 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
   const [cogsBucketMapping, setCogsBucketMapping] = useState<Record<string, CogsBucket>>({});
   const [labourKeywords, setLabourKeywords] = useState<string[]>(DEFAULT_LABOUR);
   const [opsKeywords, setOpsKeywords] = useState<string[]>(DEFAULT_OPS);
+  // Asset purchases — bulk buys into storage. Skipped by every cost classifier,
+  // so they land in no P&L bucket at all. Empty by default.
+  const [stockPurchaseCategories, setStockPurchaseCategories] = useState<string[]>([]);
   const [menuSegments, setMenuSegments] = useState<string[]>([]);
   const [servingOptions, setServingOptions] = useState<ServingOption[]>([]);
   const [itemCosts, setItemCosts] = useState<ItemCost[]>([]);
@@ -125,6 +128,7 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
   const [newCogs, setNewCogs] = useState('');
   const [newLabour, setNewLabour] = useState('');
   const [newOps, setNewOps] = useState('');
+  const [newStock, setNewStock] = useState('');
   const [newSegment, setNewSegment] = useState('');
   const [isAddingServing, setIsAddingServing] = useState(false);
   const [editingServingId, setEditingServingId] = useState<string | null>(null);
@@ -187,6 +191,7 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
         if (data.cogsKeywords) setCKeywords(data.cogsKeywords);
         if (data.labourKeywords) setLabourKeywords(data.labourKeywords);
         if (data.opsKeywords) setOpsKeywords(data.opsKeywords);
+        if (data.stockPurchaseCategories) setStockPurchaseCategories(data.stockPurchaseCategories);
         if (data.cogsBucketMapping) setCogsBucketMapping(data.cogsBucketMapping);
         if (data.menuSegments) setMenuSegments(data.menuSegments);
         if (data.trackedConsumables) setTrackedConsumables(data.trackedConsumables);
@@ -362,6 +367,7 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
         cogsKeywords: canon(cogsKeywords),
         labourKeywords: canon(labourKeywords),
         opsKeywords: canon(opsKeywords),
+        stockPurchaseCategories: canon(stockPurchaseCategories),
         cogsBucketMapping, menuSegments,
         trackedConsumables, updatedAt: Date.now()
       }, { merge: true });
@@ -964,17 +970,43 @@ ${allSourceStrings.join('\n')}`;
         <div className="animate-in slide-in-from-bottom-4 duration-500 relative">
            {activeTab === 'purchase' && (
              <div className="space-y-10">
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                {/* A stock category that is ALSO a COGS/Labour/Ops keyword silently
+                    disappears from that figure, because the classifiers check the
+                    stock list first. Surface it rather than let the money vanish. */}
+                {(() => {
+                  const clash = stockPurchaseCategories.filter(s =>
+                    cogsKeywords.includes(s) || labourKeywords.includes(s) || opsKeywords.includes(s));
+                  if (clash.length === 0) return null;
+                  return (
+                    <div className="bg-rose-50 border border-rose-200 rounded-2xl p-5 flex items-start gap-4">
+                      <div className="p-2.5 bg-rose-500/15 rounded-xl shrink-0"><AlertTriangle className="text-rose-600" size={20} /></div>
+                      <div>
+                        <p className="text-[10px] font-black uppercase tracking-widest text-rose-700">Category in two lists</p>
+                        <p className="text-sm font-bold text-rose-900 mt-1">
+                          {clash.join(', ')} {clash.length === 1 ? 'is' : 'are'} listed under Stock Purchases as well as
+                          COGS, Labour or Operations. Stock Purchases wins, so this spend will drop out of that figure
+                          entirely. Remove it from one of the two lists.
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })()}
+                <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-4 gap-8">
                    {[
-                     { label: 'COGS Keywords', icon: Package, color: 'text-amber-500', list: cogsKeywords, setFn: setCKeywords, input: newCogs, setInput: setNewCogs },
-                     { label: 'Labour Keywords', icon: Users, color: 'text-indigo-500', list: labourKeywords, setFn: setLabourKeywords, input: newLabour, setInput: setNewLabour },
-                     { label: 'Operations Keywords', icon: Settings, color: 'text-pink-500', list: opsKeywords, setFn: setOpsKeywords, input: newOps, setInput: setNewOps }
+                     { label: 'COGS Keywords', icon: Package, color: 'text-amber-500', list: cogsKeywords, setFn: setCKeywords, input: newCogs, setInput: setNewCogs, hint: '' },
+                     { label: 'Labour Keywords', icon: Users, color: 'text-indigo-500', list: labourKeywords, setFn: setLabourKeywords, input: newLabour, setInput: setNewLabour, hint: '' },
+                     { label: 'Operations Keywords', icon: Settings, color: 'text-pink-500', list: opsKeywords, setFn: setOpsKeywords, input: newOps, setInput: setNewOps, hint: '' },
+                     { label: 'Stock Purchases', icon: Box, color: 'text-sky-500', list: stockPurchaseCategories, setFn: setStockPurchaseCategories, input: newStock, setInput: setNewStock,
+                       hint: 'Bulk buys into storage. Counted as an asset, not an expense — these reach no P&L figure at all. They become COGS when the carry-out is recorded under a COGS category.' }
                    ].map((group) => (
                      <section key={group.label} className="bg-white rounded-[3rem] border border-slate-100 p-8 flex flex-col h-[500px]">
-                        <div className="flex items-center gap-3 mb-6">
+                        <div className="flex items-center gap-3 mb-2">
                            <group.icon className={group.color} size={20} />
                            <h3 className="text-sm font-black uppercase tracking-widest text-slate-900">{group.label}</h3>
                         </div>
+                        {group.hint
+                          ? <p className="text-[10px] font-medium text-slate-400 leading-snug mb-4">{group.hint}</p>
+                          : <div className="mb-4" />}
                         <div className="flex gap-2 mb-6">
                            <input type="text" value={group.input} onChange={e => group.setInput(e.target.value)} placeholder="Add tag..." className="flex-1 bg-slate-50 border border-slate-100 rounded-xl px-4 py-3 text-xs font-bold outline-none" onKeyPress={e => e.key === 'Enter' && (group.list.includes(group.input.toUpperCase()) ? null : (group.setFn([...group.list, group.input.toUpperCase()].sort()), group.setInput('')))}/>
                            <button onClick={() => { if(group.input.trim() && !group.list.includes(group.input.toUpperCase())) { group.setFn([...group.list, group.input.toUpperCase()].sort()); group.setInput(''); } }} className="p-3 bg-indigo-600 text-white rounded-xl shadow-lg"><Plus size={16}/></button>

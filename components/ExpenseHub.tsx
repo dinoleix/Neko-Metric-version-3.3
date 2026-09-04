@@ -86,6 +86,9 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
   const [cogsKeywords, setCogsKeywords] = useState<string[]>(DEFAULT_COGS);
   const [labourKeywords, setLabourKeywords] = useState<string[]>(DEFAULT_LABOUR);
   const [opsKeywords, setOpsKeywords] = useState<string[]>(DEFAULT_OPS);
+  // Asset purchases (bulk buys into storage). Empty by default, so the guard in
+  // classifyRow never fires until an owner configures one.
+  const [stockPurchaseCategories, setStockPurchaseCategories] = useState<string[]>([]);
   const [cogsBucketMapping, setCogsBucketMapping] = useState<Record<string, CogsBucket>>({});
 
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear().toString());
@@ -127,6 +130,7 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
         if (d.cogsKeywords) setCogsKeywords(d.cogsKeywords.map(k => k.trim().toUpperCase()));
         if (d.labourKeywords) setLabourKeywords(d.labourKeywords.map(k => k.trim().toUpperCase()));
         if (d.opsKeywords) setOpsKeywords(d.opsKeywords.map(k => k.trim().toUpperCase()));
+        if (d.stockPurchaseCategories) setStockPurchaseCategories(d.stockPurchaseCategories.map(k => k.trim().toUpperCase()));
         if (d.cogsBucketMapping) setCogsBucketMapping(d.cogsBucketMapping || {});
       }
 
@@ -196,7 +200,13 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
         const val = Number(amt || 0);
         if (val === 0) return;
         const upper = cat.trim().toUpperCase();
-        
+
+        // Asset purchase, not an expense — belongs to no P&L bucket, so it enters
+        // neither the totals nor the COGS breakdown. Must come before the cascade:
+        // the final `else` would otherwise sweep it into csvUncat. The storage card
+        // reads these categories separately, off the same snapshots.
+        if (stockPurchaseCategories.includes(upper)) return;
+
         if (cogsKeywords.includes(upper)) {
           csvCogs += val;
           const bucket = cogsBucketMapping[upper] || 'FOOD';
@@ -378,7 +388,7 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
       staleSnapshots,
       bucketOrigin
     };
-  }, [snapshots, employees, monthlyPayrolls, rentals, adjustments, viewMode, storeFilter, selectedYear, selectedMonth, activeOutletOptions, cogsKeywords, labourKeywords, opsKeywords, cogsBucketMapping, includePending]);
+  }, [snapshots, employees, monthlyPayrolls, rentals, adjustments, viewMode, storeFilter, selectedYear, selectedMonth, activeOutletOptions, cogsKeywords, labourKeywords, opsKeywords, stockPurchaseCategories, cogsBucketMapping, includePending]);
 
   const trajectoryData = useMemo(() => {
     const endM = selectedMonth === 'All Months' ? 11 : MONTH_NAMES.indexOf(selectedMonth);
@@ -404,6 +414,7 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
       filteredSnaps.forEach(snap => {
         const process = (maps: (Record<string, number> | undefined)[]) => {
            forEachCostRow(maps, (upper, val) => {
+              if (stockPurchaseCategories.includes(upper)) return; // asset, not expense
               if (cogsKeywords.includes(upper)) rawCogs += val;
               else if (labourKeywords.includes(upper)) csvLabour += val;
               else if (opsKeywords.includes(upper)) ops += val;
@@ -441,7 +452,7 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
       results.push({ label: month.substring(0, 3), month, year, COGS: totalCogs, OPERATIONS: ops, LABOUR: totalLabour, 'FIXED (RENT)': fixedRent, UNCATEGORIZED: uncat, total: totalCogs + ops + totalLabour + fixedRent + uncat });
     }
     return results;
-  }, [snapshots, rentals, employees, monthlyPayrolls, adjustments, trajectoryMonths, viewMode, storeFilter, selectedMonth, selectedYear, activeOutletOptions, cogsKeywords, labourKeywords, opsKeywords]);
+  }, [snapshots, rentals, employees, monthlyPayrolls, adjustments, trajectoryMonths, viewMode, storeFilter, selectedMonth, selectedYear, activeOutletOptions, cogsKeywords, labourKeywords, opsKeywords, stockPurchaseCategories]);
 
   const maxTrajectoryVal = Math.max(...trajectoryData.map(d => trajectoryMode === 'stacked' ? d.total : Math.max(d.COGS, d.OPERATIONS, d.LABOUR, d['FIXED (RENT)'], d.UNCATEGORIZED)), 1);
 
