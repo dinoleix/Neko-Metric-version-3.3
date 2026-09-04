@@ -75,6 +75,9 @@ import {
   LayoutList
 } from 'lucide-react';
 
+/** How far back the daily-sales screen lists past submissions. */
+const DS_LOG_WINDOW_DAYS = 14;
+
 const ALL_CREW_CATEGORIES = Array.from(
   new Set([...CREW_PURCHASE_CATEGORIES, ...CREW_EXPENSE_CATEGORIES])
 ).sort();
@@ -889,8 +892,17 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
   const fetchDsLogs = async () => {
     setDsLoadingLogs(true);
     try {
+      // Windowed, not the whole history. This used to fetch every log the crew
+      // member had ever submitted, so the read cost grew by one document per day
+      // forever and the list became unusable to scroll. Two weeks is what the
+      // screen is actually for — checking or correcting a recent submission.
       const snap = await getDocs(
-        query(collection(db, 'daily_sales_logs'), where('userId', '==', user.uid), orderBy('date', 'desc'))
+        query(
+          collection(db, 'daily_sales_logs'),
+          where('userId', '==', user.uid),
+          where('date', '>=', istDateString(-DS_LOG_WINDOW_DAYS)),
+          orderBy('date', 'desc'),
+        )
       );
       setDsLogs(snap.docs.map(d => ({ id: d.id, ...d.data() } as DailySalesLog)));
     } catch (err) {
