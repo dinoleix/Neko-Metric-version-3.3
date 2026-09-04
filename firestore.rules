@@ -22,6 +22,17 @@ service cloud.firestore {
         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
     }
     // Doc carries the caller's uid in its ownerId field (crew-created docs)
+    // Admin OR manager. Manager exists so operational write access can be granted
+    // without handing over the admin role, which is what gates user access and
+    // group management. Deliberately NOT used in the /users or /user_groups
+    // blocks — that separation is the whole point of the role.
+    function isTenantStaff() {
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'manager');
+    }
+
     function isFieldOwner() {
       return isAuthenticated() && resource.data.ownerId == request.auth.uid;
     }
@@ -43,9 +54,74 @@ service cloud.firestore {
     }
 
     // Users collection — own profile only; admins can read all (UserManagement)
+    // The tenant this caller belongs to. Falls back to their own uid, because an
+    // owner-admin's profile usually has NO ownerId field at all — App.tsx patches
+    // it in memory and never writes it back. Reading .ownerId directly would be
+    // null for the owner and lock them out of their own business.
+    function callerTenant() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid))
+               .data.get('ownerId', request.auth.uid);
+    }
+
+    // True when the caller owns the business rather than merely administering it:
+    // their profile points at nobody, or at themselves.
+    function isTenantOwner() {
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        callerTenant() == request.auth.uid;
+    }
+
+    // Fields a user must never change on their own document.
+    function privilegedUnchanged() {
+      return request.resource.data.get('role', '')           == resource.data.get('role', '')
+          && request.resource.data.get('ownerId', '')        == resource.data.get('ownerId', '')
+          && request.resource.data.get('groupId', '')        == resource.data.get('groupId', '')
+          && request.resource.data.get('assignedOutlet', '') == resource.data.get('assignedOutlet', '');
+    }
+
     match /users/{userId} {
       allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
-      allow write: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+
+      // First sign-in self-provision. Pinned to viewer and unlinked, so signing in
+      // cannot mint an admin or attach the account to someone else's business.
+      allow create: if isAuthenticated() && request.auth.uid == userId
+        && request.resource.data.get('role', '') == 'viewer'
+        && !('ownerId' in request.resource.data);
+
+      // You may edit your own profile, but not your own privileges. Previously
+      // this was an unvalidated `allow write` on your own document, so any signed
+      // in user could set role:'admin' from the browser console. The client guard
+      // in UserManagement is an alert() and never reached the server.
+      allow update: if isAuthenticated() && request.auth.uid == userId && privilegedUnchanged();
+
+      // Handing out roles is the OWNER's alone — not every admin's. A delegated
+      // admin (e.g. a finance account) can do their job but cannot promote
+      // themselves, demote the owner, or delete accounts.
+      // The `ownerId == ''` case exists so a freshly self-signed-up account can be
+      // adopted into the business. It must NOT extend to admins: an owner's own
+      // profile usually has no ownerId either (App.tsx patches it in memory and
+      // never writes it back), so without the role guard below, any account that
+      // also lacks an ownerId — and therefore passes isTenantOwner() by default —
+      // could demote the real owner.
+      // isTenantOwner() is SELF-ASSERTED: a profile with no ownerId passes it,
+      // and every self-provisioned account (Google sign-in, App.tsx) starts that
+      // way. So this block must never let a caller reach their OWN document —
+      // otherwise a fresh sign-in could write { role:'admin', ownerId:<owner> }
+      // in one go and take over the tenant. Self edits go through the
+      // privilegedUnchanged rule above and nowhere else.
+      allow create, update, delete: if isTenantOwner()
+        && resource.data.get('uid', '') != request.auth.uid
+        && (
+          // Creating a profile for someone else, inside my own tenant.
+          (resource == null && request.resource.data.get('ownerId', '') == request.auth.uid) ||
+          // Someone already in my tenant.
+          resource.data.get('ownerId', '') == request.auth.uid ||
+          // Claiming an unlinked, non-admin account INTO my tenant. The write
+          // must set ownerId to me — it is an adoption, not a free edit.
+          (resource.data.get('ownerId', '') == '' &&
+           resource.data.get('role', '') != 'admin' &&
+           request.resource.data.get('ownerId', '') == request.auth.uid)
+        );
     }
 
     // category_settings uses the admin's UID as the document ID (no userId field inside)
@@ -84,7 +160,10 @@ service cloud.firestore {
 
     // daily_sales_logs — crew writes with their own userId; admin reads via ownerId
     match /daily_sales_logs/{docId} {
-      allow read: if canRead() ||
+      // userId here is the CREW MEMBER who submitted, not the owner, so
+      // isLinkedToOwner (caller.ownerId vs doc.userId) never matches for a
+      // delegated admin. isLinkedViaOwnerField compares ownerId to ownerId.
+      allow read: if canRead() || isLinkedViaOwnerField() ||
         (isAuthenticated() && resource.data.ownerId == request.auth.uid);
       allow create: if isAuthenticated() &&
         request.resource.data.userId == request.auth.uid;
@@ -94,7 +173,10 @@ service cloud.firestore {
 
     // sales_ledger — same pattern as daily_sales_logs
     match /sales_ledger/{docId} {
-      allow read: if canRead() ||
+      // userId here is the CREW MEMBER who submitted, not the owner, so
+      // isLinkedToOwner (caller.ownerId vs doc.userId) never matches for a
+      // delegated admin. isLinkedViaOwnerField compares ownerId to ownerId.
+      allow read: if canRead() || isLinkedViaOwnerField() ||
         (isAuthenticated() && resource.data.ownerId == request.auth.uid);
       allow create: if isAuthenticated() &&
         request.resource.data.userId == request.auth.uid;
@@ -106,7 +188,10 @@ service cloud.firestore {
     // bank_transactions — admin queries by userId; crew-written entries (10K transfer etc.)
     // store ownerId so the admin can also query by ownerId
     match /bank_transactions/{docId} {
-      allow read: if canRead() ||
+      // userId here is the CREW MEMBER who submitted, not the owner, so
+      // isLinkedToOwner (caller.ownerId vs doc.userId) never matches for a
+      // delegated admin. isLinkedViaOwnerField compares ownerId to ownerId.
+      allow read: if canRead() || isLinkedViaOwnerField() ||
         (isAuthenticated() && resource.data.ownerId == request.auth.uid);
       allow create: if isAuthenticated() && (
         request.resource.data.userId == request.auth.uid ||
@@ -121,8 +206,13 @@ service cloud.firestore {
     match /vendors/{docId} {
       allow read: if canRead() || isFieldOwner() || isLinkedViaOwnerField();
       allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
-      allow update: if isDocOwner() || isLinkedToOwner() || isFieldOwner();
-      allow delete: if isDocOwner() || isFieldOwner();
+      // isLinkedViaOwnerField is on the read rule but was missing here, so a
+      // manager or delegated admin could SEE a record created by a crew member
+      // and not edit it: these docs carry the creator's uid in userId, which is
+      // what isLinkedToOwner compares against. ownerId-to-ownerId is the test
+      // that identifies someone else in the same business.
+      allow update: if isDocOwner() || isLinkedToOwner() || isFieldOwner() || isLinkedViaOwnerField();
+      allow delete: if isDocOwner() || isFieldOwner() || isLinkedViaOwnerField();
     }
 
     // products — owner's business only (docs always carry ownerId; query by it)
@@ -132,8 +222,13 @@ service cloud.firestore {
         request.resource.data.userId == request.auth.uid ||
         request.resource.data.ownerId == request.auth.uid
       );
-      allow update: if isDocOwner() || isLinkedToOwner() || isFieldOwner();
-      allow delete: if isDocOwner() || isFieldOwner();
+      // isLinkedViaOwnerField is on the read rule but was missing here, so a
+      // manager or delegated admin could SEE a record created by a crew member
+      // and not edit it: these docs carry the creator's uid in userId, which is
+      // what isLinkedToOwner compares against. ownerId-to-ownerId is the test
+      // that identifies someone else in the same business.
+      allow update: if isDocOwner() || isLinkedToOwner() || isFieldOwner() || isLinkedViaOwnerField();
+      allow delete: if isDocOwner() || isFieldOwner() || isLinkedViaOwnerField();
     }
 
     // fc_ingredients / fc_recipes — Recipe Costing module. Deliberately isolated
@@ -144,8 +239,13 @@ service cloud.firestore {
         request.resource.data.userId == request.auth.uid ||
         request.resource.data.ownerId == request.auth.uid
       );
-      allow update: if isDocOwner() || isLinkedToOwner() || isFieldOwner();
-      allow delete: if isDocOwner() || isFieldOwner();
+      // isLinkedViaOwnerField is on the read rule but was missing here, so a
+      // manager or delegated admin could SEE a record created by a crew member
+      // and not edit it: these docs carry the creator's uid in userId, which is
+      // what isLinkedToOwner compares against. ownerId-to-ownerId is the test
+      // that identifies someone else in the same business.
+      allow update: if isDocOwner() || isLinkedToOwner() || isFieldOwner() || isLinkedViaOwnerField();
+      allow delete: if isDocOwner() || isFieldOwner() || isLinkedViaOwnerField();
     }
 
     match /fc_recipes/{docId} {
@@ -154,8 +254,13 @@ service cloud.firestore {
         request.resource.data.userId == request.auth.uid ||
         request.resource.data.ownerId == request.auth.uid
       );
-      allow update: if isDocOwner() || isLinkedToOwner() || isFieldOwner();
-      allow delete: if isDocOwner() || isFieldOwner();
+      // isLinkedViaOwnerField is on the read rule but was missing here, so a
+      // manager or delegated admin could SEE a record created by a crew member
+      // and not edit it: these docs carry the creator's uid in userId, which is
+      // what isLinkedToOwner compares against. ownerId-to-ownerId is the test
+      // that identifies someone else in the same business.
+      allow update: if isDocOwner() || isLinkedToOwner() || isFieldOwner() || isLinkedViaOwnerField();
+      allow delete: if isDocOwner() || isFieldOwner() || isLinkedViaOwnerField();
     }
 
     // menu_prices — the stated menu list price, one doc per master item name.
@@ -168,7 +273,7 @@ service cloud.firestore {
       allow read: if canRead();
       allow create, update: if isAuthenticated() && (
         request.resource.data.userId == request.auth.uid ||
-        (isAdmin() &&
+        (isTenantStaff() &&
           get(/databases/$(database)/documents/users/$(request.auth.uid)).data.ownerId == request.resource.data.userId)
       );
       allow delete: if isDocOwner();
@@ -182,7 +287,7 @@ service cloud.firestore {
     // can't accumulate self-owned orphan docs that no dropdown ever reads.
     match /crew_categories/{docId} {
       allow read: if canRead() || isFieldOwner() || isLinkedViaOwnerField();
-      allow create: if isAdmin() && request.resource.data.ownerId == request.auth.uid;
+      allow create: if isTenantStaff() && request.resource.data.ownerId == request.auth.uid;
       allow update: if isFieldOwner();
       allow delete: if isFieldOwner();
     }
@@ -191,24 +296,32 @@ service cloud.firestore {
     // Crew also read their assigned outlet's entries (not just their own) so a shift
     // can see what the previous shift recorded and avoid duplicate entries.
     match /crew_entries/{docId} {
-      allow read: if canRead() || isCrewOfSameOutlet() ||
+      // isLinkedViaOwnerField matters for anyone in the tenant who is not the
+      // owner and not crew — a delegated (e.g. finance) admin. These documents
+      // carry the CREW MEMBER's uid in userId, so isLinkedToOwner, which compares
+      // the caller's ownerId against userId, never matches. Without this clause
+      // Find Matching Bill returned nothing for them: the crew leg was denied and
+      // fell back to an empty list.
+      allow read: if canRead() || isCrewOfSameOutlet() || isLinkedViaOwnerField() ||
         (isAuthenticated() && resource.data.ownerId == request.auth.uid);
       allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
       allow update: if isDocOwner() || isLinkedToOwner() ||
-        (isAuthenticated() && resource.data.ownerId == request.auth.uid) || isAdmin();
+        (isAuthenticated() && resource.data.ownerId == request.auth.uid) || isTenantStaff();
       allow delete: if isDocOwner() || isLinkedToOwner() ||
-        (isAuthenticated() && resource.data.ownerId == request.auth.uid) || isAdmin();
+        (isAuthenticated() && resource.data.ownerId == request.auth.uid) || isTenantStaff();
     }
 
     // waste_entries — crew writes; admin reads/deletes via ownerId
     match /waste_entries/{docId} {
-      allow read: if canRead() ||
+      // Same gap as crew_entries: userId is the recording crew member's, so a
+      // delegated admin needs the ownerId-to-ownerId comparison.
+      allow read: if canRead() || isLinkedViaOwnerField() ||
         (isAuthenticated() && resource.data.ownerId == request.auth.uid);
       allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
       allow update: if isDocOwner() || isLinkedToOwner() ||
-        (isAuthenticated() && resource.data.ownerId == request.auth.uid) || isAdmin();
+        (isAuthenticated() && resource.data.ownerId == request.auth.uid) || isTenantStaff();
       allow delete: if isDocOwner() || isLinkedToOwner() ||
-        (isAuthenticated() && resource.data.ownerId == request.auth.uid) || isAdmin();
+        (isAuthenticated() && resource.data.ownerId == request.auth.uid) || isTenantStaff();
     }
 
     // expense_snapshots — admin owns; linked crew can write (they generate entries that feed reporting)
@@ -254,14 +367,92 @@ service cloud.firestore {
       );
     }
 
+    // ---------------------------------------------------------------------
+    // Bank reconciliation working set.
+    //
+    // These three used to fall to the catch-all, whose write clause requires the
+    // document's userId to equal the caller's own uid — i.e. only the business
+    // owner could ever write them. That made "give the finance person the admin
+    // role" not work: they could match bills (crew_entries has its own rule that
+    // accepts isAdmin) but every categorisation of a bank line was denied.
+    //
+    // Writes are admins inside this tenant, plus the owner. Reads stay as the
+    // catch-all had them, so nobody loses visibility.
+    // ---------------------------------------------------------------------
+    match /bank_statement_imports/{docId} {
+      allow read: if resource == null || canRead();
+      allow write: if isDocOwner() || (isTenantStaff() && isLinkedToOwner()) ||
+        (resource == null && isTenantStaff() && isAuthenticated() &&
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('ownerId', request.auth.uid) == request.resource.data.userId);
+    }
+
+    match /categorization_rules/{docId} {
+      allow read: if resource == null || canRead();
+      allow write: if isDocOwner() || (isTenantStaff() && isLinkedToOwner()) ||
+        (resource == null && isTenantStaff() && isAuthenticated() &&
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('ownerId', request.auth.uid) == request.resource.data.userId);
+    }
+
+    match /purchases/{docId} {
+      allow read: if resource == null || canRead();
+      allow write: if isDocOwner() || (isTenantStaff() && isLinkedToOwner()) ||
+        (resource == null && isTenantStaff() && isAuthenticated() &&
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('ownerId', request.auth.uid) == request.resource.data.userId);
+    }
+
+    // user_groups — which modules appear in a member's sidebar.
+    //
+    // PRESENTATION ONLY. No rule in this file reads moduleIds, and none is gated
+    // on group membership. A member of any group can still read every collection
+    // their ownerId link already permits; hiding a nav entry hides the link, not
+    // the data. Do not cite this block as an access control.
+    //
+    // Must sit ABOVE the catch-all: that rule allows writes only when the doc's
+    // userId equals the caller's uid, which would reject a delegated admin
+    // writing under the business owner's id — the same reason menu_prices needed
+    // its own block.
+    match /user_groups/{groupId} {
+      // Every member of the tenant reads: a viewer has to fetch its own group to
+      // know what to render. resource == null mirrors bill_counters, so a getDoc
+      // on a deleted group returns empty instead of erroring.
+      allow read: if isAuthenticated() && (
+        resource == null || isFieldOwner() || isLinkedViaOwnerField()
+      );
+      // Only admins write, and only inside their own tenant.
+      allow create: if isAdmin() && isAuthenticated() && (
+        request.resource.data.ownerId == request.auth.uid ||
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.ownerId == request.resource.data.ownerId
+      );
+      allow update, delete: if isAdmin() && (isFieldOwner() || isLinkedViaOwnerField());
+    }
+
     // Default rule for all other collections
     match /{collection}/{docId} {
       // resource == null allows getDoc() on a not-yet-existing doc (no data to leak);
       // without it, canRead() dereferences resource.data.userId on null and denies.
       allow read: if resource == null || canRead();
+      // Two ways in.
+      //
+      // 1. The document is literally yours — the original rule, unchanged. This
+      //    is how the business owner writes everything.
+      //
+      // 2. You are an admin or manager acting inside your own tenant, on a
+      //    document belonging to the business owner. Without this branch a
+      //    delegated admin could not write ANY of these collections, because
+      //    ownership was the only test — which is why granting someone the admin
+      //    role did not actually let them edit anything here.
+      //
+      // /users and /user_groups have their own blocks above and never reach this
+      // rule, so user access stays admin-and-owner only.
       allow write: if isAuthenticated() && (
-        (resource == null || resource.data.userId == request.auth.uid) &&
-        (request.resource == null || request.resource.data.userId == request.auth.uid)
+        (
+          (resource == null || resource.data.userId == request.auth.uid) &&
+          (request.resource == null || request.resource.data.userId == request.auth.uid)
+        ) || (
+          isTenantStaff() &&
+          (resource == null || resource.data.get('userId', '') == callerTenant()) &&
+          (request.resource == null || request.resource.data.get('userId', '') == callerTenant())
+        )
       );
     }
   }
