@@ -16,7 +16,8 @@ const firebaseConfig = {
   appId: "1:330123207916:web:fb2f2a21e66229fe73f1c9"
 };
 
-import { UserProfile, UserRole, MASTER_OUTLETS, getOutletName } from '../types';
+import { UserProfile, UserRole, UserGroup, MASTER_OUTLETS, getOutletName } from '../types';
+import AccessGroups from './AccessGroups';
 import {
   ShieldCheck,
   Trash2,
@@ -34,13 +35,15 @@ import {
 } from 'lucide-react';
 
 const ROLE_COLORS: Record<UserRole, string> = {
+  manager: 'bg-sky-50 text-sky-600 border-sky-100',
   admin: 'bg-indigo-100 text-indigo-700 border-indigo-200',
   crew: 'bg-amber-100 text-amber-700 border-amber-200',
   viewer: 'bg-emerald-100 text-emerald-700 border-emerald-200'
 };
 
-const UserManagement: React.FC<{ user: User }> = ({ user }) => {
+const UserManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
   const [profiles, setProfiles] = useState<UserProfile[]>([]);
+  const [groups, setGroups] = useState<UserGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [isAdding, setIsAdding] = useState(false);
@@ -79,8 +82,13 @@ const UserManagement: React.FC<{ user: User }> = ({ user }) => {
   const fetchUsers = async () => {
     setLoading(true);
     try {
-      const snap = await getDocs(collection(db, 'users'));
+      const [snap, groupSnap] = await Promise.all([
+        getDocs(collection(db, 'users')),
+        // Sorted client-side: an orderBy here would need a composite index.
+        getDocs(query(collection(db, 'user_groups'), where('ownerId', '==', dataOwnerId))),
+      ]);
       setProfiles(snap.docs.map(d => ({ ...d.data(), uid: d.id } as UserProfile)));
+      setGroups(groupSnap.docs.map(d => ({ id: d.id, ...d.data() } as UserGroup)));
     } catch (err) {
       console.error("Error fetching users:", err);
     } finally {
@@ -88,7 +96,7 @@ const UserManagement: React.FC<{ user: User }> = ({ user }) => {
     }
   };
 
-  useEffect(() => { fetchUsers(); }, []);
+  useEffect(() => { fetchUsers(); }, [dataOwnerId]);
 
   const handleUpdateRole = async (targetUid: string, role: UserRole, outletId?: string) => {
     if (targetUid === user.uid) {
@@ -106,6 +114,21 @@ const UserManagement: React.FC<{ user: User }> = ({ user }) => {
     } catch (err) {
       console.error(err);
       alert("Failed to update user access.");
+    }
+  };
+
+  /**
+   * Unlike handleUpdateRole this does NOT block self-assignment: putting yourself
+   * in a group is legitimate, and the lockout guard lives in the resolver, which
+   * always grants an admin the User Access module whatever the group says.
+   */
+  const handleUpdateGroup = async (targetUid: string, groupId: string) => {
+    try {
+      await setDoc(doc(db, 'users', targetUid), { groupId: groupId || '' }, { merge: true });
+      fetchUsers();
+    } catch (err) {
+      console.error(err);
+      alert("Failed to update the user's group.");
     }
   };
 
@@ -134,7 +157,10 @@ const UserManagement: React.FC<{ user: User }> = ({ user }) => {
         await setDoc(doc(db, 'users', existingProfile.uid), {
           ...existingProfile,
           role: newRole,
-          assignedOutlet: newRole === 'crew' ? newOutlet : undefined,
+          // '' not undefined: Firestore rejects undefined field values outright,
+          // so this write failed for every non-crew role. Matches handleUpdateRole,
+          // which already clears the outlet with an empty string.
+          assignedOutlet: newRole === 'crew' ? newOutlet : '',
           ownerId: user.uid,
         });
         setIsAdding(false);
@@ -158,7 +184,8 @@ const UserManagement: React.FC<{ user: User }> = ({ user }) => {
         email: emailNorm,
         role: newRole,
         createdAt: Date.now(),
-        assignedOutlet: newRole === 'crew' ? newOutlet : undefined,
+        // See the note above: undefined is not a writable Firestore value.
+        assignedOutlet: newRole === 'crew' ? newOutlet : '',
         ownerId: user.uid,
       };
       await setDoc(doc(db, 'users', realUid), profile);
@@ -231,15 +258,16 @@ const UserManagement: React.FC<{ user: User }> = ({ user }) => {
               <tr>
                 <th className="px-8 py-5 text-[10px] font-black text-slate-400 uppercase tracking-widest">Identity / Email</th>
                 <th className="px-8 py-5 text-[10px] font-black text-slate-400 uppercase tracking-widest">Current Role</th>
+                <th className="px-8 py-5 text-[10px] font-black text-slate-400 uppercase tracking-widest">Access Group</th>
                 <th className="px-8 py-5 text-[10px] font-black text-slate-400 uppercase tracking-widest">Assigned Outlet</th>
                 <th className="px-8 py-5 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50">
               {loading ? (
-                <tr><td colSpan={4} className="py-20 text-center"><Loader2 className="mx-auto animate-spin text-indigo-600" /></td></tr>
+                <tr><td colSpan={5} className="py-20 text-center"><Loader2 className="mx-auto animate-spin text-indigo-600" /></td></tr>
               ) : filtered.length === 0 ? (
-                <tr><td colSpan={4} className="py-20 text-center text-slate-400 font-bold uppercase text-xs tracking-widest">No matching users found</td></tr>
+                <tr><td colSpan={5} className="py-20 text-center text-slate-400 font-bold uppercase text-xs tracking-widest">No matching users found</td></tr>
               ) : filtered.map(p => (
                 <tr key={p.uid} className="hover:bg-slate-50/50 transition-colors group">
                   <td className="px-8 py-6">
@@ -261,8 +289,21 @@ const UserManagement: React.FC<{ user: User }> = ({ user }) => {
                       className={`px-3 py-1.5 rounded-lg border text-[10px] font-black uppercase outline-none cursor-pointer ${ROLE_COLORS[p.role] || ROLE_COLORS.viewer}`}
                     >
                       <option value="admin">Admin</option>
+                      <option value="manager">Manager</option>
                       <option value="crew">Crew</option>
                       <option value="viewer">Viewer</option>
+                    </select>
+                  </td>
+                  <td className="px-8 py-6">
+                    <select
+                      value={p.groupId || ''}
+                      onChange={e => handleUpdateGroup(p.uid, e.target.value)}
+                      className="px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-[10px] font-bold uppercase outline-none focus:border-indigo-500 cursor-pointer hover:border-indigo-400 transition-colors max-w-[170px]"
+                      title={p.role === 'crew' ? 'Crew use the fullscreen terminal and have no sidebar, so a group has no effect on them.' : undefined}
+                    >
+                      <option value="">— Role default —</option>
+                      {[...groups].sort((a, b) => a.name.localeCompare(b.name))
+                        .map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
                     </select>
                   </td>
                   <td className="px-8 py-6">
@@ -299,6 +340,13 @@ const UserManagement: React.FC<{ user: User }> = ({ user }) => {
           </table>
         </div>
       </section>
+
+      <AccessGroups
+        dataOwnerId={dataOwnerId}
+        groups={groups}
+        profiles={profiles}
+        onChanged={fetchUsers}
+      />
 
       {/* CREW FEATURES */}
       <section className="bg-white rounded-[3rem] p-10 border border-slate-100 shadow-sm">

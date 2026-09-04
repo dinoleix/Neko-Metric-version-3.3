@@ -1,7 +1,15 @@
 
 export type FileType = 'sales' | 'item' | 'expense' | 'purchase' | 'platform_item' | 'online_order' | 'customer_mapping' | 'bank_statement';
 
-export type UserRole = 'admin' | 'viewer' | 'crew';
+/**
+ * admin   — everything, including user access and group management.
+ * manager — can write operational data, but never touches user access. Exists so
+ *           write permission can be granted without handing over the role that
+ *           gates who gets which role.
+ * viewer  — read-only.
+ * crew    — the fullscreen Crew Terminal only.
+ */
+export type UserRole = 'admin' | 'manager' | 'viewer' | 'crew';
 
 export interface UserProfile {
   uid: string;
@@ -10,6 +18,34 @@ export interface UserProfile {
   createdAt: number;
   assignedOutlet?: string;
   ownerId?: string;
+  /**
+   * Which access group decides this account's sidebar. Undefined means "fall back
+   * to what the role allowed before groups existed" — so an account that is never
+   * assigned a group behaves exactly as it always has.
+   */
+  groupId?: string;
+}
+
+/**
+ * A named set of modules an admin can hand to people — Finance, Procurement.
+ *
+ * Presentation only: no Firestore rule reads `moduleIds`, so membership decides
+ * which links appear in the sidebar, not what data the account can reach.
+ *
+ * `userId` and `ownerId` deliberately carry the same value (the business owner's
+ * uid). It is redundant, but it means every existing rule helper works unchanged —
+ * `vendors` and `products` already do this.
+ */
+export interface UserGroup {
+  id: string;
+  userId: string;
+  ownerId: string;
+  name: string;
+  moduleIds: string[];
+  /** Marks a group created by the starter-group seeder, so it is created once. */
+  seedKey?: UserRole;
+  createdAt: number;
+  updatedAt: number;
 }
 
 export type EntryStatus = 'paid' | 'pending' | 'cancelled';

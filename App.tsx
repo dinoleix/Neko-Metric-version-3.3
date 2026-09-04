@@ -1,94 +1,61 @@
 
-import React, { useState, useEffect, useRef, useCallback, Suspense, lazy } from 'react';
+import React, { useState, useEffect, useRef, useCallback, Suspense } from 'react';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import type { User } from 'firebase/auth';
 import { doc, getDoc, setDoc, collection, query, where, onSnapshot } from 'firebase/firestore';
 import { auth, db } from './firebase';
-import { UserRole, UserProfile, BankAccount, getOutletName } from './types';
+import { UserRole, UserProfile, UserGroup, BankAccount, getOutletName } from './types';
 import Login from './components/Login';
+import {
+  MODULES, MODULE_BY_ID, MODULE_SECTIONS, ModuleId, AppModule, landingModule,
+} from './moduleRegistry';
+import { resolveAllowedModules } from './moduleAccess';
+import {
+  LogOut,
+  Cat,
+  ChevronRight,
+  Eye,
+  Smartphone,
+  MapPin,
+  Calendar,
+  Wallet,
+  Banknote,
+} from 'lucide-react';
 
-// Tabs are lazy-loaded so the initial bundle only ships the active screen;
-// each import below becomes its own chunk fetched on first visit to that tab.
-const Dashboard = lazy(() => import('./components/Dashboard'));
-const Uploader = lazy(() => import('./components/Uploader'));
-const SalesHub = lazy(() => import('./components/SalesHub'));
-const RawSalesHub = lazy(() => import('./components/RawSalesHub'));
-const ExpenseHub = lazy(() => import('./components/ExpenseHub'));
-const ItemSalesHub = lazy(() => import('./components/ItemSalesHub'));
-const PnLHub = lazy(() => import('./components/PnLHub'));
-const PnLHubCrew = lazy(() => import('./components/PnLHubCrew'));
-const PnLAnalytics = lazy(() => import('./components/PnLAnalytics'));
-const WasteManagementV2 = lazy(() => import('./components/WasteManagementV2'));
-const IntegrityAudit = lazy(() => import('./components/IntegrityAudit'));
-const Team = lazy(() => import('./components/Team'));
-const Rentals = lazy(() => import('./components/Rentals'));
-const DataCatalog = lazy(() => import('./components/DataCatalog'));
-const CategorySettings = lazy(() => import('./components/CategorySettings'));
-const PartnershipModel = lazy(() => import('./components/PartnershipModel'));
-const ExecDashboard = lazy(() => import('./components/ExecDashboard'));
-const CrewTerminal = lazy(() => import('./components/CrewTerminal'));
-const CrewReports = lazy(() => import('./components/CrewReports'));
-const UserManagement = lazy(() => import('./components/UserManagement'));
-const BankManagement = lazy(() => import('./components/BankManagement'));
-const BankReconciliation = lazy(() => import('./components/BankReconciliation'));
-const VendorManagement = lazy(() => import('./components/VendorManagement'));
-const CashFlowTracker = lazy(() => import('./components/CashFlowTracker'));
-const HolidayRegistry = lazy(() => import('./components/HolidayRegistry'));
-const OnlineProfitCenter = lazy(() => import('./components/OnlineProfitCenter'));
-const ConsumablesEfficiency = lazy(() => import('./components/ConsumablesEfficiency'));
-const RecipeCostLab = lazy(() => import('./components/RecipeCostLab'));
-const MenuPriceBoard = lazy(() => import('./components/MenuPriceBoard'));
+const CrewTerminalComponent = MODULE_BY_ID.get('crew-terminal')!.Component;
 
 const TabLoader: React.FC = () => (
   <div className="flex items-center justify-center py-24">
     <div className="w-8 h-8 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin" />
   </div>
 );
-import {
-  LayoutDashboard, 
-  LogOut, 
-  UploadCloud, 
-  Cat, 
-  TrendingUp, 
-  Receipt, 
-  ShoppingBag, 
-  PieChart, 
-  Users, 
-  Building2, 
-  Database,
-  ChevronRight,
-  BarChart3,
-  Settings2,
-  ShieldAlert,
-  Trash2,
-  Zap,
-  ShieldCheck,
-  Sparkles,
-  Handshake,
-  Crown,
-  Globe,
-  PlusSquare,
-  Eye,
-  Smartphone,
-  ShieldHalf,
-  MapPin,
-  Calendar,
-  Wallet,
-  Clock3,
-  Banknote,
-  Store,
-  Flame,
-  ChefHat,
-  IndianRupee
-} from 'lucide-react';
 
-type AppTab = 'exec-dashboard' | 'dashboard' | 'sales' | 'raw-verify' | 'items' | 'pnl' | 'pnl-crew' | 'cash-flow' | 'pnl-insights' | 'waste-v2' | 'integrity' | 'team' | 'rentals' | 'catalog' | 'upload' | 'category-settings' | 'expenses' | 'partnership' | 'crew-terminal' | 'crew-reports' | 'users' | 'bank-management' | 'bank-audit' | 'holidays' | 'online-profit' | 'vendor-management' | 'consumables' | 'recipe-costing' | 'menu-prices';
+/**
+ * One sidebar button. Hoisted to module scope on purpose: defined inside App it
+ * was a fresh component type on every render, so every button remounted whenever
+ * any state changed.
+ */
+const NavItem: React.FC<{ module: AppModule; active: boolean; onSelect: (id: ModuleId) => void }> = ({ module, active, onSelect }) => (
+  <button
+    onClick={() => onSelect(module.id)}
+    className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${
+      active
+        ? 'bg-indigo-600 shadow-lg shadow-indigo-900/40 translate-x-1'
+        : 'hover:bg-slate-800 text-slate-400 hover:text-white'
+    }`}
+  >
+    {module.icon}
+    <span className="font-bold text-sm">{module.label}</span>
+    {active && <ChevronRight className="ml-auto opacity-50" size={14} />}
+  </button>
+);
 
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<AppTab>('exec-dashboard');
+  const [activeTab, setActiveTab] = useState<ModuleId>('exec-dashboard');
+  const [userGroup, setUserGroup] = useState<UserGroup | null>(null);
   const [showTimeoutWarning, setShowTimeoutWarning] = useState(false);
   const [primaryCashAccount, setPrimaryCashAccount] = useState<BankAccount | null>(null);
   const [primaryTenKAccount, setPrimaryTenKAccount] = useState<BankAccount | null>(null);
@@ -135,14 +102,12 @@ const App: React.FC = () => {
               profile.ownerId = profile.uid;
             }
             setUserProfile(profile);
-            // If user is crew, set them to terminal immediately
-            if (profile.role === 'crew') {
-              setActiveTab('crew-terminal');
-            } else if (profile.role !== 'admin') {
-              // The CEO Dashboard is admin-only (group net profit, per-outlet
-              // margins), so viewers land on Sales Hub instead of an empty tab
-              setActiveTab('sales');
-            }
+            // Landing tab comes from the same resolver the sidebar uses, so an
+            // account can never open on a module its group does not include.
+            // No group is loaded yet at this point, so this is the role default;
+            // it is corrected once the group resolves.
+            const initial = landingModule(profile.role, resolveAllowedModules(profile, null));
+            if (initial) setActiveTab(initial);
           } else {
             // Profile missing from database, auto-create a default record
             const newProfile: UserProfile = { 
@@ -153,12 +118,15 @@ const App: React.FC = () => {
             };
             await setDoc(doc(db, 'users', u.uid), newProfile);
             setUserProfile(newProfile);
-            setActiveTab('sales'); // default viewer — CEO Dashboard is admin-only
+            const initial = landingModule('viewer', resolveAllowedModules(newProfile, null));
+            if (initial) setActiveTab(initial);
           }
         } catch (err) {
           console.error("Error fetching user profile:", err);
-          setUserProfile({ uid: u.uid, email: u.email || '', role: 'viewer', createdAt: Date.now() });
-          setActiveTab('sales'); // default viewer — CEO Dashboard is admin-only
+          const fallback: UserProfile = { uid: u.uid, email: u.email || '', role: 'viewer', createdAt: Date.now() };
+          setUserProfile(fallback);
+          const initial = landingModule('viewer', resolveAllowedModules(fallback, null));
+          if (initial) setActiveTab(initial);
         }
       } else {
         setUser(null);
@@ -168,6 +136,28 @@ const App: React.FC = () => {
     });
     return () => unsubscribe();
   }, []);
+
+  /**
+   * The account's access group, when it has one. A failure here is deliberately
+   * non-fatal: resolveAllowedModules falls back to the role defaults, so a
+   * deleted group or a denied read leaves the sidebar as it was before groups
+   * existed rather than emptying it.
+   */
+  useEffect(() => {
+    const groupId = userProfile?.groupId;
+    if (!groupId) { setUserGroup(null); return; }
+    let cancelled = false;
+    getDoc(doc(db, 'user_groups', groupId))
+      .then(snap => {
+        if (cancelled) return;
+        setUserGroup(snap.exists() ? ({ id: snap.id, ...snap.data() } as UserGroup) : null);
+      })
+      .catch(err => {
+        console.warn('[access] could not load group; using role defaults:', err);
+        if (!cancelled) setUserGroup(null);
+      });
+    return () => { cancelled = true; };
+  }, [userProfile?.groupId]);
 
   useEffect(() => {
     if (!userProfile || userProfile.role !== 'crew') return;
@@ -206,6 +196,16 @@ const App: React.FC = () => {
   const isCrew = role === 'crew';
   const isAdmin = role === 'admin';
   const dataOwnerId = userProfile.ownerId || user.uid;
+
+  // Single source of truth for "what can this account open". Nav, render, the
+  // read-only banner and the landing tab all read this one set, so they can no
+  // longer disagree the way the four hand-written copies did.
+  const allowed = resolveAllowedModules(userProfile, userGroup);
+  const activeModule = MODULE_BY_ID.get(activeTab);
+  const goToLanding = () => {
+    const id = landingModule(role, allowed);
+    if (id) setActiveTab(id);
+  };
 
   // If user is crew, provide a specialized fullscreen layout
   if (isCrew) {
@@ -289,27 +289,15 @@ const App: React.FC = () => {
         </header>
         <main className="p-4 md:p-10 max-w-4xl mx-auto">
            <Suspense fallback={<TabLoader />}>
-             <CrewTerminal user={user} profile={userProfile} />
+             {/* Same lazy component the registry holds, so crew and the admin's
+                 Crew Terminal tab can never load two different builds of it. */}
+             <CrewTerminalComponent user={user} profile={userProfile} />
            </Suspense>
         </main>
       </div>
     );
   }
 
-  const NavItem: React.FC<{ tab: AppTab, icon: React.ReactNode, label: string }> = ({ tab, icon, label }) => (
-    <button
-      onClick={() => setActiveTab(tab)}
-      className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${
-        activeTab === tab 
-          ? 'bg-indigo-600 shadow-lg shadow-indigo-900/40 translate-x-1' 
-          : 'hover:bg-slate-800 text-slate-400 hover:text-white'
-      }`}
-    >
-      {icon}
-      <span className="font-bold text-sm">{label}</span>
-      {activeTab === tab && <ChevronRight className="ml-auto opacity-50" size={14} />}
-    </button>
-  );
 
   return (
     <div className="min-h-screen flex flex-col md:flex-row bg-slate-50">
@@ -342,58 +330,23 @@ const App: React.FC = () => {
         </div>
         
         <nav className="mt-6 px-4 space-y-1.5 flex-1">
-          <div className="pb-2 px-4">
-            <p className="text-[10px] font-black uppercase tracking-widest text-slate-600">Executive</p>
-          </div>
-          {isAdmin && <NavItem tab="exec-dashboard" icon={<Crown size={18} />} label="CEO Dashboard" />}
-
-          <div className="pt-4 pb-2 px-4">
-            <p className="text-[10px] font-black uppercase tracking-widest text-slate-600">Intelligence</p>
-          </div>
-          <NavItem tab="sales" icon={<TrendingUp size={18} />} label="Sales Hub" />
-          <NavItem tab="expenses" icon={<Receipt size={18} />} label="Expense Hub" />
-          <NavItem tab="items" icon={<ShoppingBag size={18} />} label="Item Insights" />
-          <NavItem tab="online-profit" icon={<Globe size={18} />} label="Online Profit Center" />
-          <NavItem tab="waste-v2" icon={<Zap size={18} />} label="Waste Radar" />
-          {isAdmin && <NavItem tab="consumables" icon={<Flame size={18} />} label="Consumables" />}
-          <NavItem tab="pnl" icon={<PieChart size={18} />} label="P&L Command" />
-          <NavItem tab="pnl-crew" icon={<Smartphone size={18} />} label="P&L Command (Crew)" />
-          <NavItem tab="cash-flow" icon={<Banknote size={18} />} label="Cash Reality" />
-          <NavItem tab="pnl-insights" icon={<Sparkles size={18} />} label="Margin Intelligence" />
-          <NavItem tab="partnership" icon={<Handshake size={18} />} label="Partnership Forge" />
-
-          <div className="pt-4 pb-2 px-4">
-            <p className="text-[10px] font-black uppercase tracking-widest text-slate-600">Crew Terminal</p>
-          </div>
-          {!isReadOnly && <NavItem tab="crew-terminal" icon={<Smartphone size={18} />} label="Crew Terminal" />}
-          {isAdmin && <NavItem tab="crew-reports" icon={<BarChart3 size={18} />} label="Crew Reports" />}
-
-          {!isReadOnly && (
-            <>
-              <div className="pt-4 pb-2 px-4">
-                <p className="text-[10px] font-black uppercase tracking-widest text-slate-600">Operations</p>
-              </div>
-              {isAdmin && <NavItem tab="users" icon={<ShieldHalf size={18} />} label="User Access" />}
-              <NavItem tab="dashboard" icon={<LayoutDashboard size={18} />} label="Operations Control" />
-              <NavItem tab="integrity" icon={<ShieldCheck size={18} />} label="Data Integrity" />
-              <NavItem tab="catalog" icon={<Database size={18} />} label="Data Catalog" />
-              <NavItem tab="raw-verify" icon={<ShieldAlert size={18} />} label="Raw Data Verify" />
-              <NavItem tab="category-settings" icon={<Settings2 size={18} />} label="Mapping" />
-              <NavItem tab="team" icon={<Users size={18} />} label="Team" />
-              <NavItem tab="rentals" icon={<Building2 size={18} />} label="Store Rentals" />
-              <NavItem tab="holidays" icon={<Calendar size={18} />} label="Holiday Registry" />
-              <NavItem tab="bank-management" icon={<Wallet size={18} />} label="Bank Accounts" />
-              <NavItem tab="bank-audit" icon={<ShieldCheck size={18} />} label="Bank Reconcile" />
-              <NavItem tab="vendor-management" icon={<Store size={18} />} label="Vendors" />
-              <NavItem tab="recipe-costing" icon={<ChefHat size={18} />} label="Recipe Costing" />
-              <NavItem tab="menu-prices" icon={<IndianRupee size={18} />} label="Menu Prices" />
-
-              <div className="pt-4 pb-2 px-4">
-                <p className="text-[10px] font-black uppercase tracking-widest text-slate-600">Inputs</p>
-              </div>
-              <NavItem tab="upload" icon={<PlusSquare size={18} />} label="Data Inflow" />
-            </>
-          )}
+          {MODULE_SECTIONS.map(section => {
+            const items = MODULES.filter(m => m.section === section && allowed.has(m.id));
+            // Sections with nothing in them are not rendered. Previously the
+            // Executive and Crew Terminal headings were unconditional, so a viewer
+            // saw two headings with no entries under them.
+            if (items.length === 0) return null;
+            return (
+              <React.Fragment key={section}>
+                <div className="pt-4 pb-2 px-4 first:pt-0">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-600">{section}</p>
+                </div>
+                {items.map(m => (
+                  <NavItem key={m.id} module={m} active={activeTab === m.id} onSelect={setActiveTab} />
+                ))}
+              </React.Fragment>
+            );
+          })}
         </nav>
 
         <div className="p-4 border-t border-slate-800 mt-auto">
@@ -421,7 +374,7 @@ const App: React.FC = () => {
 
       <main className="flex-1 overflow-y-auto">
         <div className="max-w-7xl mx-auto p-6 md:p-10">
-          {isReadOnly && activeTab !== 'sales' && activeTab !== 'expenses' && activeTab !== 'items' && activeTab !== 'waste-v2' && activeTab !== 'pnl' && activeTab !== 'pnl-crew' && activeTab !== 'pnl-insights' && activeTab !== 'partnership' && (
+          {isReadOnly && !activeModule?.suppressReadOnlyBanner && (
             <div className="bg-emerald-50 border border-emerald-100 p-4 rounded-xl flex items-center gap-3 mb-8">
                <Eye className="text-emerald-600" size={18} />
                <p className="text-emerald-800 text-xs font-bold uppercase tracking-widest">You are in Executive Read-Only mode</p>
@@ -429,36 +382,18 @@ const App: React.FC = () => {
           )}
 
           <Suspense fallback={<TabLoader />}>
-          {activeTab === 'exec-dashboard' && isAdmin && <ExecDashboard user={user} dataOwnerId={dataOwnerId} />}
-          {activeTab === 'dashboard' && !isReadOnly && <Dashboard user={user} dataOwnerId={dataOwnerId} />}
-          {activeTab === 'sales' && <SalesHub user={user} dataOwnerId={dataOwnerId} />}
-          {activeTab === 'online-profit' && <OnlineProfitCenter user={user} dataOwnerId={dataOwnerId} />}
-          {activeTab === 'raw-verify' && !isReadOnly && <RawSalesHub user={user} dataOwnerId={dataOwnerId} />}
-          {activeTab === 'expenses' && <ExpenseHub user={user} dataOwnerId={dataOwnerId} />}
-          {activeTab === 'items' && <ItemSalesHub user={user} dataOwnerId={dataOwnerId} />}
-          {activeTab === 'waste-v2' && <WasteManagementV2 user={user} dataOwnerId={dataOwnerId} />}
-          {activeTab === 'consumables' && isAdmin && <ConsumablesEfficiency user={user} dataOwnerId={dataOwnerId} />}
-
-          {activeTab === 'integrity' && !isReadOnly && <IntegrityAudit user={user} dataOwnerId={dataOwnerId} />}
-          {activeTab === 'pnl' && <PnLHub user={user} dataOwnerId={dataOwnerId} readOnly={isReadOnly} />}
-          {activeTab === 'pnl-crew' && <PnLHubCrew user={user} dataOwnerId={dataOwnerId} readOnly={isReadOnly} />}
-          {activeTab === 'cash-flow' && <CashFlowTracker user={user} dataOwnerId={dataOwnerId} />}
-          {activeTab === 'pnl-insights' && <PnLAnalytics user={user} dataOwnerId={dataOwnerId} />}
-          {activeTab === 'partnership' && <PartnershipModel user={user} dataOwnerId={dataOwnerId} />}
-          {activeTab === 'catalog' && !isReadOnly && <DataCatalog user={user} dataOwnerId={dataOwnerId} />}
-          {activeTab === 'category-settings' && !isReadOnly && <CategorySettings user={user} dataOwnerId={dataOwnerId} />}
-          {activeTab === 'team' && !isReadOnly && <Team user={user} dataOwnerId={dataOwnerId} />}
-          {activeTab === 'rentals' && !isReadOnly && <Rentals user={user} dataOwnerId={dataOwnerId} />}
-          {activeTab === 'holidays' && !isReadOnly && <HolidayRegistry user={user} dataOwnerId={dataOwnerId} />}
-          {activeTab === 'bank-management' && !isReadOnly && <BankManagement user={user} dataOwnerId={dataOwnerId} />}
-          {activeTab === 'bank-audit' && !isReadOnly && <BankReconciliation user={user} dataOwnerId={dataOwnerId} />}
-          {activeTab === 'vendor-management' && !isReadOnly && <VendorManagement user={user} dataOwnerId={dataOwnerId} />}
-          {activeTab === 'recipe-costing' && !isReadOnly && <RecipeCostLab user={user} dataOwnerId={dataOwnerId} />}
-          {activeTab === 'menu-prices' && !isReadOnly && <MenuPriceBoard user={user} dataOwnerId={dataOwnerId} />}
-          {activeTab === 'upload' && !isReadOnly && <Uploader user={user} dataOwnerId={dataOwnerId} onSuccess={() => setActiveTab('exec-dashboard')} />}
-          {activeTab === 'crew-terminal' && <CrewTerminal user={user} profile={userProfile} />}
-          {activeTab === 'crew-reports' && isAdmin && <CrewReports user={user} profile={userProfile} />}
-          {activeTab === 'users' && isAdmin && <UserManagement user={user} />}
+            {!activeModule || !allowed.has(activeModule.id) ? (
+              <div className="bg-white border border-slate-200 rounded-2xl p-10 text-center">
+                <p className="text-sm font-black uppercase tracking-widest text-slate-400">No access</p>
+                <p className="text-slate-500 mt-2">
+                  This module is not part of your access group. Contact your administrator if you need it.
+                </p>
+              </div>
+            ) : activeModule.render ? (
+              activeModule.render({ user, userProfile, dataOwnerId, isReadOnly, goTo: setActiveTab, goToLanding })
+            ) : (
+              <activeModule.Component user={user} dataOwnerId={dataOwnerId} />
+            )}
           </Suspense>
         </div>
       </main>
