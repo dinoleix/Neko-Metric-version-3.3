@@ -128,10 +128,24 @@ type MatchCandidate = {
   channel?: 'Cash' | 'Online';
   /** Cash taken from the ₹10k vault rather than the counter float. */
   fromVault?: boolean;
+  /**
+   * Supplier, normalised for grouping. A single bank payment settles bills from
+   * ONE vendor, so combinations are only formed within a vendor. Empty when the
+   * bill records no vendor.
+   */
+  vendor: string;
 };
 
 /** Sentinel for the category filter. Not a real category — no transaction stores it. */
 const UNMAPPED = '__UNMAPPED__';
+
+/** Rank colours for suggested bill combinations. Index is the rank. */
+const COMBO_TONES = [
+  { panel: 'bg-emerald-50 border-emerald-200', badge: 'bg-emerald-600 text-white', ring: 'ring-emerald-400', cta: 'bg-emerald-600 hover:bg-emerald-700' },
+  { panel: 'bg-indigo-50 border-indigo-200',   badge: 'bg-indigo-600 text-white',  ring: 'ring-indigo-400',  cta: 'bg-indigo-600 hover:bg-indigo-700' },
+  { panel: 'bg-amber-50 border-amber-200',     badge: 'bg-amber-600 text-white',   ring: 'ring-amber-400',   cta: 'bg-amber-600 hover:bg-amber-700' },
+  { panel: 'bg-sky-50 border-sky-200',         badge: 'bg-sky-600 text-white',     ring: 'ring-sky-400',     cta: 'bg-sky-600 hover:bg-sky-700' },
+];
 
 const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
   const [selectedMonth, setSelectedMonth] = useState(MONTH_NAMES[new Date().getMonth()]);
@@ -165,6 +179,9 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
   const [discoveryResults, setDiscoveryResults] = useState<MatchCandidate[]>([]);
   const [isSearchingDiscovery, setIsSearchingDiscovery] = useState(false);
   const [discoveryDateRange, setDiscoveryDateRange] = useState<number>(0); // 0, 1 or 2 days either side
+  /** Which suggested combination is highlighted, by index. */
+  const [selectedCombo, setSelectedCombo] = useState<number | null>(null);
+  const [linkingCombo, setLinkingCombo] = useState(false);
   const [categories, setCategories] = useState<string[]>(RECONCILIATION_CATEGORIES);
   const [newCategoryName, setNewCategoryName] = useState('');
   const [isAddingCategory, setIsAddingCategory] = useState(false);
@@ -497,6 +514,53 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
     }
   };
 
+  /**
+   * Links every bill in a combination to the bank line.
+   *
+   * matchedPurchaseIds holds the set; matchedPurchaseId keeps the first so the
+   * older single-match readers still resolve to something real rather than null.
+   * Each bill is marked verified in its own collection, the same as a single link.
+   */
+  const handleLinkCombination = async (combo: { items: MatchCandidate[]; sum: number }) => {
+    if (!discoveryTxn?.id) return;
+    const cats = Array.from(new Set(combo.items.map(i => (i.category || 'COGS').toUpperCase())));
+    const category = cats.length === 1 ? cats[0] : 'COGS';
+    if (cats.length > 1 && !window.confirm(
+      `These ${combo.items.length} bills carry different categories (${cats.join(', ')}).\n\n` +
+      `The bank line will be categorised as COGS. Continue?`
+    )) return;
+
+    setLinkingCombo(true);
+    try {
+      const batch = writeBatch(db);
+      batch.update(doc(db, 'bank_statement_imports', discoveryTxn.id), {
+        category,
+        isVerified: true,
+        isReconciled: true,
+        aiSuggested: false,
+        matchedPurchaseId: combo.items[0].id,
+        matchedPurchaseIds: combo.items.map(i => i.id),
+        matchedSource: combo.items[0].source,
+      });
+      combo.items.forEach(i => {
+        if (i.source === 'crew_entries') {
+          batch.update(doc(db, 'crew_entries', i.id), { isBankVerified: true });
+        } else {
+          batch.update(doc(db, 'purchases', i.id), { category, isBankVerified: true });
+        }
+      });
+      await batch.commit();
+      setDiscoveryTxn(null);
+      setSelectedCombo(null);
+      await fetchReconciliationData();
+    } catch (err: any) {
+      console.error('[combo] link failed:', err);
+      alert(err?.code === 'permission-denied'
+        ? 'You do not have permission to link these bills.'
+        : `Could not link the combination: ${err?.message || err}`);
+    } finally { setLinkingCombo(false); }
+  };
+
   const handleDeleteTransaction = async (id: string) => {
     if (!confirm("Delete this bank transaction?")) return;
     try {
@@ -681,6 +745,87 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
       setSelectedDay('all');
     }
   }, [availableDays, selectedDay]);
+
+  /**
+   * Combinations of bills that add up to the bank line.
+   *
+   * One bank debit often settles several bills at once, so the useful question is
+   * not "which bill equals this" but "which set does". Naive subset enumeration is
+   * 2^n, so this is a depth-first search bounded three ways: at most MAX_SIZE
+   * bills per combination, a branch abandoned the moment its running total
+   * overshoots the target, and a hard cap on nodes visited so a long candidate
+   * list cannot lock the browser.
+   *
+   * Cash entries are excluded — they never passed through the bank, so they can
+   * never be part of what a bank line settled.
+   *
+   * Singles are excluded too: the list below is already sorted by closeness, so a
+   * one-bill match is visible without help.
+   */
+  const comboSuggestions = useMemo(() => {
+    if (!discoveryTxn) return [];
+    const target = discoveryTxn.amount;
+    const MAX_SIZE = 4;
+    const MAX_NODES = 60000;
+    // Within ₹1 counts as exact; beyond 3% of the line it is not a near miss.
+    const tolerance = Math.max(1, target * 0.03);
+
+    const eligible = discoveryResults
+      .filter(p => p.channel !== 'Cash')
+      .filter(p => p.amount > 0 && p.amount <= target + tolerance);
+
+    // One payment settles one supplier's bills, so a combination that mixes
+    // vendors is not a real-world possibility however neatly it sums. Bills with
+    // no vendor recorded are grouped together and flagged, rather than dropped —
+    // otherwise a business that does not fill in vendors gets no suggestions and
+    // no explanation.
+    const groups = new Map<string, MatchCandidate[]>();
+    eligible.forEach(p => {
+      const key = p.vendor || '';
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(p);
+    });
+
+    const found: { items: MatchCandidate[]; sum: number; diff: number; vendor: string; vendorKnown: boolean }[] = [];
+    let nodes = 0;
+
+    groups.forEach((groupItems, vendorKey) => {
+      const items = [...groupItems].sort((a, b) => b.amount - a.amount);
+      const walk = (start: number, chosen: MatchCandidate[], sum: number) => {
+        if (nodes++ > MAX_NODES || found.length >= 400) return;
+        if (chosen.length >= 2) {
+          const diff = Math.abs(sum - target);
+          if (diff <= tolerance) {
+            found.push({
+              items: [...chosen], sum, diff,
+              vendor: vendorKey || 'Vendor not recorded',
+              vendorKnown: !!vendorKey,
+            });
+          }
+        }
+        if (chosen.length === MAX_SIZE) return;
+        for (let i = start; i < items.length; i++) {
+          // Descending order, so a too-large item is skipped rather than ending
+          // the loop — smaller ones after it may still fit.
+          if (sum + items[i].amount > target + tolerance) continue;
+          chosen.push(items[i]);
+          walk(i + 1, chosen, sum + items[i].amount);
+          chosen.pop();
+        }
+      };
+      walk(0, [], 0);
+    });
+
+    // Closest first; then a known vendor over an unrecorded one, since that is a
+    // real constraint satisfied rather than merely not contradicted; then fewest
+    // bills, which is the likelier story.
+    return found
+      .sort((a, b) =>
+        a.diff - b.diff ||
+        Number(b.vendorKnown) - Number(a.vendorKnown) ||
+        a.items.length - b.items.length)
+      .slice(0, 4);
+  }, [discoveryTxn, discoveryResults]);
 
   const handleManualMap = async (
     btId: string,
@@ -1077,6 +1222,7 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
         billNo: d.billNo || '',
         label: d.productName || 'Purchase',
         note: d.vendor,
+        vendor: (d.vendor || '').trim().toUpperCase(),
       }));
 
       const seenCrew = new Set<string>();
@@ -1097,6 +1243,7 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
           note: [d.vendorName, d.status === 'pending' ? 'UNPAID' : null].filter(Boolean).join(' · '),
           channel: d.type === 'purchase' ? 'Online' : 'Cash',
           fromVault: d.paidFrom === '10k',
+          vendor: (d.vendorName || '').trim().toUpperCase(),
         });
       });
 
@@ -1968,6 +2115,22 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
                             <span className="text-[10px] font-bold text-slate-300 uppercase">Not linked</span>
                           ) : matchedBills[bt.matchedPurchaseId] ? (() => {
                             const m = matchedBills[bt.matchedPurchaseId!];
+                            // A Push to Purchase Records row is this bank line copied
+                            // into `purchases`. Its description and amount are the
+                            // narration and amount already shown two columns left, so
+                            // rendering it here says nothing — and this column exists
+                            // to check that real bills matched the bank, which a
+                            // self-generated record cannot evidence.
+                            if (m.fromBankPush) {
+                              return (
+                                <span
+                                  title="Pushed into purchase records from this bank line. No supplier bill is linked."
+                                  className="text-[10px] font-bold text-slate-300 uppercase"
+                                >
+                                  Pushed · no bill
+                                </span>
+                              );
+                            }
                             const diff = Math.abs(m.amount - bt.amount);
                             return (
                               <div className="flex flex-col gap-1">
@@ -2469,7 +2632,83 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
                     <Loader2 size={48} className="animate-spin text-indigo-600 mb-4" />
                     <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Querying Datacenter...</p>
                   </div>
-                ) : discoveryResults.length === 0 ? (
+                ) : null}
+
+                {comboSuggestions.length > 0 && !isSearchingDiscovery && (
+                  <div className="mb-6 space-y-3">
+                    <div className="flex items-baseline gap-3 flex-wrap">
+                      <h4 className="text-[11px] font-black text-slate-900 uppercase tracking-widest">Bills that add up to this amount</h4>
+                      <span className="text-[10px] font-bold text-slate-400">
+                        one payment settles several bills from the same supplier
+                      </span>
+                    </div>
+                    {comboSuggestions.map((combo, idx) => {
+                      const tone = COMBO_TONES[idx % COMBO_TONES.length];
+                      const exact = combo.diff < 1;
+                      const isOpen = selectedCombo === idx;
+                      return (
+                        <div key={idx} className={`rounded-2xl border transition-all ${tone.panel} ${isOpen ? 'ring-2 ' + tone.ring : ''}`}>
+                          <button
+                            onClick={() => setSelectedCombo(isOpen ? null : idx)}
+                            className="w-full text-left px-5 py-4 flex items-center justify-between gap-4"
+                          >
+                            <div className="flex items-center gap-3 flex-wrap">
+                              <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full ${tone.badge}`}>
+                                {idx === 0 ? 'Best match' : `Option ${idx + 1}`}
+                              </span>
+                              <span className="text-sm font-black text-slate-900 tabular-nums">
+                                &#8377;{combo.sum.toLocaleString('en-IN')}
+                              </span>
+                              <span className={`text-[10px] font-black uppercase tracking-widest ${exact ? 'text-emerald-600' : 'text-amber-600'}`}>
+                                {exact ? 'Exact' : `₹${Math.round(combo.diff).toLocaleString('en-IN')} off`}
+                              </span>
+                              <span className="text-[10px] font-bold text-slate-400 uppercase">
+                                {combo.items.length} bills
+                              </span>
+                              <span
+                                title={combo.vendorKnown
+                                  ? 'All bills in this combination are from this supplier'
+                                  : 'These bills record no supplier, so it cannot be confirmed they are from the same one'}
+                                className={`text-[10px] font-black uppercase tracking-tight truncate max-w-[180px] ${
+                                  combo.vendorKnown ? 'text-slate-600' : 'text-amber-600'
+                                }`}
+                              >
+                                {combo.vendorKnown ? combo.vendor : '⚠ vendor not recorded'}
+                              </span>
+                            </div>
+                            <ChevronDown size={15} className={`text-slate-400 shrink-0 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+                          </button>
+                          {isOpen && (
+                            <div className="px-5 pb-5 space-y-2">
+                              {combo.items.map(i => (
+                                <div key={i.id} className="flex items-center justify-between gap-3 text-[11px] bg-white/70 rounded-xl px-3 py-2">
+                                  <span className="font-bold text-slate-700 truncate">{i.label}</span>
+                                  <span className="font-black text-slate-900 tabular-nums shrink-0">&#8377;{i.amount.toLocaleString('en-IN')}</span>
+                                </div>
+                              ))}
+                              {!combo.vendorKnown && (
+                                <p className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2 leading-snug">
+                                  None of these bills records a supplier, so they may not be from the same one.
+                                  A single bank payment goes to one vendor — check before linking.
+                                </p>
+                              )}
+                              <button
+                                onClick={() => handleLinkCombination(combo)}
+                                disabled={linkingCombo}
+                                className={`w-full mt-1 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest text-white flex items-center justify-center gap-2 disabled:opacity-50 ${tone.cta}`}
+                              >
+                                {linkingCombo ? <Loader2 size={14} className="animate-spin" /> : <ArrowRightLeft size={14} />}
+                                Link all {combo.items.length} bills
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {isSearchingDiscovery ? null : discoveryResults.length === 0 ? (
                   <div className="text-center py-20 border-2 border-dashed border-slate-100 rounded-[2rem]">
                     <Database size={48} className="mx-auto text-slate-200 mb-4" />
                     <h4 className="text-sm font-black text-slate-400 uppercase tracking-widest">No matching bills found</h4>
@@ -2485,15 +2724,18 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
                       // hiding it would leave you wondering where the entry went,
                       // which is the same confusion an empty list already caused.
                       const cashOnly = p.channel === 'Cash';
+                      const comboIdx = comboSuggestions.findIndex(c => c.items.some(i => i.id === p.id));
+                      const inSelected = selectedCombo !== null && comboSuggestions[selectedCombo]?.items.some(i => i.id === p.id);
+                      const tone = comboIdx >= 0 ? COMBO_TONES[comboIdx % COMBO_TONES.length] : null;
 
                       return (
-                        <div key={p.id} className={`p-6 rounded-[2rem] border transition-all flex items-start justify-between gap-4 ${
+                        <div className={`p-6 rounded-[2rem] border transition-all flex items-start justify-between gap-4 ${
                           cashOnly
                             ? 'bg-slate-50 border-slate-100 opacity-70'
                             : isExact
                               ? 'bg-emerald-50 border-emerald-100 hover:shadow-lg'
                               : 'bg-white border-slate-100 hover:shadow-lg'
-                        }`}>
+                        } ${inSelected && tone ? 'ring-2 ' + tone.ring : ''}`} key={p.id}>
                           <div>
                              <div className="flex items-center gap-2 mb-1">
                                <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full ${isExact ? 'bg-emerald-500 text-white' : 'bg-slate-900 text-white'}`}>
@@ -2503,6 +2745,14 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
                                <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full ${p.source === 'crew_entries' ? 'bg-amber-100 text-amber-700' : 'bg-sky-100 text-sky-700'}`}>
                                  {p.source === 'crew_entries' ? 'Crew' : 'CSV'}
                                </span>
+                               {tone && (
+                                 <span
+                                   title="This bill is part of a suggested combination above"
+                                   className={`text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full ${tone.badge}`}
+                                 >
+                                   {comboIdx === 0 ? 'Best match' : `Option ${comboIdx + 1}`}
+                                 </span>
+                               )}
                                {p.channel && (
                                  <span
                                    title={p.channel === 'Cash'
