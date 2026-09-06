@@ -18,6 +18,17 @@ export const ai = {
           }),
         });
 
+        // /api/gemini is a Vercel serverless function. `vite dev` does not run
+        // those and there is no proxy, so it 404s on localhost — which otherwise
+        // surfaces as a bare "request failed (404)" and reads like a broken
+        // feature rather than an environment that cannot host it.
+        if (res.status === 404) {
+          throw new Error(
+            'AI is not available on the local dev server: /api/gemini is a Vercel function ' +
+            'that vite dev does not run. Use the deployed site, or run `vercel dev` locally.'
+          );
+        }
+
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
           throw new Error(err.error || `Gemini request failed (${res.status})`);

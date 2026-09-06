@@ -18,6 +18,9 @@ import {
   deleteField
 } from 'firebase/firestore';
 import { db } from '../firebase';
+import { documentId } from 'firebase/firestore';
+import CategoryRegistry from './CategoryRegistry';
+import { ai } from '../geminiService';
 import {
   BankTransaction,
   CategorizationRule,
@@ -26,6 +29,7 @@ import {
   DailySalesLog,
   SalesSummaryRecord,
   RECONCILIATION_CATEGORIES,
+  isInternalTransfer,
   MONTH_NAMES,
   YEAR_OPTIONS,
   MASTER_OUTLETS,
@@ -38,6 +42,7 @@ import {
   CheckCircle2,
   AlertCircle,
   ArrowRightLeft,
+  Ban,
   Plus,
   Loader2,
   CalendarDays,
@@ -114,7 +119,19 @@ type MatchCandidate = {
   billNo: string;
   label: string;
   note?: string;
+  /**
+   * How the crew paid. DailyCounterEntry.type carries this: 'purchase' is an
+   * online/bank payment, 'expense' is cash from the counter — the same reading
+   * Crew Reports uses. Undefined for CSV purchase records, which have no such
+   * distinction.
+   */
+  channel?: 'Cash' | 'Online';
+  /** Cash taken from the ₹10k vault rather than the counter float. */
+  fromVault?: boolean;
 };
+
+/** Sentinel for the category filter. Not a real category — no transaction stores it. */
+const UNMAPPED = '__UNMAPPED__';
 
 const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
   const [selectedMonth, setSelectedMonth] = useState(MONTH_NAMES[new Date().getMonth()]);
@@ -129,6 +146,19 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
   const [filterMode, setFilterMode] = useState<'all' | 'unverified' | 'verified'>('unverified');
   const [selectedBankId, setSelectedBankId] = useState<string>('all');
   const [selectedType, setSelectedType] = useState<'all' | 'debit' | 'credit'>('all');
+  // A specific day inside the selected month, or 'all'. Scoped to the month
+  // rather than a free date input: a free date could sit outside the chosen
+  // month and silently return nothing.
+  const [selectedDay, setSelectedDay] = useState<string>('all');
+  // 'all', a category name, or UNMAPPED for lines that carry no category at all —
+  // the ones that still need a decision.
+  const [selectedCategory, setSelectedCategory] = useState<string>('all');
+  /** Resolved detail for linked bills, keyed by the matched document id. */
+  const [matchedBills, setMatchedBills] = useState<Record<string, {
+    label: string; amount: number; billNo: string; source: 'purchases' | 'crew_entries';
+    /** Created by Push to Purchase Records from a bank line, not uploaded. */
+    fromBankPush: boolean;
+  }>>({});
   
   // Match Discovery Modal
   const [discoveryTxn, setDiscoveryTxn] = useState<BankTransaction | null>(null);
@@ -144,7 +174,7 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
   const [pushingId, setPushingId] = useState<string | null>(null);
   const [dailySalesLogs, setDailySalesLogs] = useState<DailySalesLog[]>([]);
   const [salesSummary, setSalesSummary] = useState<SalesSummaryRecord[]>([]);
-  const [activeView, setActiveView] = useState<'mapping' | 'delta' | 'channel-delta' | 'analytics'>('mapping');
+  const [activeView, setActiveView] = useState<'mapping' | 'delta' | 'channel-delta' | 'analytics' | 'categories'>('mapping');
   const [analyticsView, setAnalyticsView] = useState<'list' | 'hbar' | 'vbar' | 'donut'>('hbar');
   const [deltaOutletFilter, setDeltaOutletFilter] = useState<string>('all');
   const [channelOutletFilter, setChannelOutletFilter] = useState<string>('all');
@@ -272,6 +302,12 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
     
     return bankTransactions
       .filter(t => t.date.startsWith(datePrefix))
+      .filter(t => selectedDay === 'all' || t.date === selectedDay)
+      .filter(t => {
+        if (selectedCategory === 'all') return true;
+        const cat = (t.category || '').trim().toUpperCase();
+        return selectedCategory === UNMAPPED ? !cat : cat === selectedCategory;
+      })
       .filter(t => {
         if (filterMode === 'verified') return t.isVerified;
         if (filterMode === 'unverified') return !t.isVerified;
@@ -292,7 +328,7 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
         );
       })
       .sort((a, b) => b.date.localeCompare(a.date));
-  }, [bankTransactions, selectedMonth, selectedYear, searchTerm, filterMode, selectedBankId, selectedType]);
+  }, [bankTransactions, selectedMonth, selectedYear, selectedDay, selectedCategory, searchTerm, filterMode, selectedBankId, selectedType]);
 
   const [markedCreditIds, setMarkedCreditIds] = useState<Set<string>>(new Set());
 
@@ -542,6 +578,110 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
     else next.add(id);
     setSelectedBatchIds(next);
   };
+  /**
+   * Days in the selected month that actually carry transactions, newest first,
+   * with a count each. Built from the month slice only — offering empty days
+   * would make the filter look broken when one is picked.
+   */
+  /**
+   * Uncategorised count for the period currently in view, ignoring the category
+   * filter itself so the number does not change when you select it.
+   */
+  const unmappedCount = useMemo(() => {
+    const monthIdx = (MONTH_NAMES.indexOf(selectedMonth) + 1).toString().padStart(2, '0');
+    const datePrefix = `${selectedYear}-${monthIdx}`;
+    return bankTransactions.filter(t =>
+      t.date?.startsWith(datePrefix) &&
+      (selectedDay === 'all' || t.date === selectedDay) &&
+      !(t.category || '').trim()
+    ).length;
+  }, [bankTransactions, selectedMonth, selectedYear, selectedDay]);
+
+  /**
+   * Resolves matchedPurchaseId into something displayable.
+   *
+   * Fetched by document id in chunks of 30 (Firestore's `in` limit) rather than
+   * one read per row, and only for ids not already resolved — so paging through
+   * a month costs a couple of queries, not one per transaction.
+   *
+   * matchedSource says which collection to look in. Links made before that field
+   * existed have none, so those ids are looked for in both.
+   */
+  useEffect(() => {
+    const wanted = filteredBT
+      .filter(t => t.type === 'debit' && t.matchedPurchaseId)
+      .map(t => ({ id: t.matchedPurchaseId!, source: t.matchedSource }))
+      .filter(w => !matchedBills[w.id]);
+    if (wanted.length === 0) return;
+
+    let cancelled = false;
+    (async () => {
+      const byCollection: Record<string, string[]> = { purchases: [], crew_entries: [] };
+      wanted.forEach(w => {
+        if (w.source) byCollection[w.source].push(w.id);
+        else { byCollection.purchases.push(w.id); byCollection.crew_entries.push(w.id); }
+      });
+
+      const found: Record<string, any> = {};
+      for (const [coll, ids] of Object.entries(byCollection)) {
+        const unique = Array.from(new Set(ids));
+        for (let i = 0; i < unique.length; i += 30) {
+          try {
+            const snap = await getDocs(query(
+              collection(db, coll),
+              where(documentId(), 'in', unique.slice(i, i + 30)),
+            ));
+            snap.docs.forEach(d => {
+              const v = d.data() as any;
+              // Don't let a legacy id found in both collections overwrite a
+              // definite match — first one wins, purchases is checked first.
+              if (found[d.id]) return;
+              found[d.id] = {
+                source: coll as 'purchases' | 'crew_entries',
+                // Push to Purchase Records writes into `purchases` with this
+                // marker. Such a record was generated FROM a bank line, so
+                // calling it "CSV" claims an upload that never happened.
+                fromBankPush: v._fileId === 'BANK_PUSH',
+                amount: Number(v.amount || 0),
+                billNo: v.billNo || v.billNumber || '',
+                label: coll === 'purchases'
+                  ? (v.productName || v.vendor || 'Purchase record')
+                  : (v.description || v.vendorName || 'Crew entry'),
+              };
+            });
+          } catch (err) {
+            console.warn(`[matched] ${coll} lookup failed:`, err);
+          }
+        }
+      }
+      if (!cancelled && Object.keys(found).length) {
+        setMatchedBills(prev => ({ ...prev, ...found }));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [filteredBT, matchedBills]);
+
+  const availableDays = useMemo(() => {
+    const monthIdx = (MONTH_NAMES.indexOf(selectedMonth) + 1).toString().padStart(2, '0');
+    const datePrefix = `${selectedYear}-${monthIdx}`;
+    const counts = new Map<string, number>();
+    bankTransactions.forEach(t => {
+      if (!t.date?.startsWith(datePrefix)) return;
+      counts.set(t.date, (counts.get(t.date) || 0) + 1);
+    });
+    return Array.from(counts.entries())
+      .sort((a, b) => b[0].localeCompare(a[0]))
+      .map(([date, count]) => ({ date, count }));
+  }, [bankTransactions, selectedMonth, selectedYear]);
+
+  // Changing month or year strands a day from the old period, which would show
+  // an empty list with no obvious cause.
+  useEffect(() => {
+    if (selectedDay !== 'all' && !availableDays.some(d => d.date === selectedDay)) {
+      setSelectedDay('all');
+    }
+  }, [availableDays, selectedDay]);
+
   const handleManualMap = async (
     btId: string,
     category: string,
@@ -563,7 +703,11 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
         category: normalizedCategory,
         isVerified,
         isReconciled: true,
-        matchedPurchaseId: purchaseId || bt.matchedPurchaseId || null
+        // A human decided, so this is no longer a machine guess.
+        aiSuggested: false,
+        matchedPurchaseId: purchaseId || bt.matchedPurchaseId || null,
+        // Record the collection too — the id alone cannot say which one.
+        ...(purchaseId ? { matchedSource: matchSource } : {}),
       });
 
       // 2. If a bill is linked, mark it verified in whichever collection it lives in.
@@ -630,6 +774,7 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
 
       await updateDoc(doc(db, 'bank_statement_imports', bt.id), {
         matchedPurchaseId: purchaseRef.id,
+        matchedSource: 'purchases',
         pushedToPurchases: true,
         isVerified: true,
         isReconciled: true,
@@ -647,6 +792,103 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
     }
   };
 
+  /**
+   * Second pass of Auto-Map: asks Gemini to categorise only what the keyword
+   * rules could NOT match.
+   *
+   * Deliberately constrained, because this is money:
+   *  - it never sees a transaction the rules already handled;
+   *  - it is given the existing category list and anything it returns outside
+   *    that list is discarded, so it cannot invent a category;
+   *  - results are written with aiSuggested so a guess is never displayed as if
+   *    it were a deterministic rule match;
+   *  - rows stay unverified, exactly as the rule pass leaves them.
+   *
+   * Context sent is the business's own history: past description-to-category
+   * decisions, and any comments left on earlier transactions, which is usually
+   * where the reasoning for an unusual categorisation was written down.
+   */
+  const aiSuggestCategories = async (
+    unmatched: BankTransaction[],
+  ): Promise<Map<string, string>> => {
+    const out = new Map<string, string>();
+    if (unmatched.length === 0) return out;
+
+    // Compact history: one entry per description signature, the category used
+    // most often for it. Sending every past transaction would be enormous and
+    // mostly repetition.
+    const sigCounts = new Map<string, Map<string, number>>();
+    bankTransactions.forEach(t => {
+      const cat = (t.category || '').trim().toUpperCase();
+      if (!cat) return;
+      const sig = t.description.split(' ').slice(0, 4).join(' ').toLowerCase();
+      if (!sigCounts.has(sig)) sigCounts.set(sig, new Map());
+      const m = sigCounts.get(sig)!;
+      m.set(cat, (m.get(cat) || 0) + 1);
+    });
+    const history = Array.from(sigCounts.entries())
+      .map(([sig, counts]) => {
+        const [cat, n] = Array.from(counts.entries()).sort((a, b) => b[1] - a[1])[0];
+        return { sig, cat, n };
+      })
+      .sort((a, b) => b.n - a.n)
+      .slice(0, 150)
+      .map(h => `"${h.sig}" -> ${h.cat}`);
+
+    // Comments carry the human reasoning behind an unusual call.
+    const notes = bankTransactions
+      .filter(t => t.comment?.trim() && t.category)
+      .slice(0, 40)
+      .map(t => `"${t.description.slice(0, 60)}" (${t.category}) note: ${t.comment!.trim().slice(0, 120)}`);
+
+    const batchList = unmatched.slice(0, 120);
+    const prompt = [
+      'You categorise Indian restaurant bank statement lines.',
+      '',
+      'Allowed categories — you MUST use one of these exactly, or null:',
+      availableCategories.join(', '),
+      '',
+      'How this business has categorised similar narrations before:',
+      ...history,
+      '',
+      notes.length ? 'Notes staff left on past transactions:' : '',
+      ...notes,
+      '',
+      'Categorise these narrations. Return ONLY a JSON array of',
+      '{"i": <index>, "category": "<one of the allowed categories>"}.',
+      'Omit any line you are not confident about — a wrong category is worse',
+      'than none, because these figures feed a profit and loss statement.',
+      '',
+      ...batchList.map((t, i) => `${i}: ${t.type === 'debit' ? 'PAID' : 'RECEIVED'} ₹${t.amount} — ${t.description}`),
+    ].filter(Boolean).join('\n');
+
+    const res = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: prompt,
+      config: { responseMimeType: 'application/json' },
+    });
+
+    let text = (res.text || '').trim();
+    const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fence) text = fence[1].trim();
+    const start = text.indexOf('[');
+    const end = text.lastIndexOf(']');
+    if (start === -1 || end === -1) return out;
+
+    let parsed: any[];
+    try { parsed = JSON.parse(text.slice(start, end + 1)); } catch { return out; }
+
+    const allowed = new Set(availableCategories.map(c => c.toUpperCase()));
+    parsed.forEach(row => {
+      const idx = Number(row?.i);
+      const cat = String(row?.category || '').trim().toUpperCase();
+      // Anything outside the known list is dropped rather than created.
+      if (!Number.isInteger(idx) || !batchList[idx] || !allowed.has(cat)) return;
+      out.set(batchList[idx].id!, cat);
+    });
+    return out;
+  };
+
   const handleBulkAutoMap = async () => {
     setLoading(true);
     const batch = writeBatch(db);
@@ -659,19 +901,48 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
     
     const periodTransactions = bankTransactions.filter(t => t.date.startsWith(datePrefix));
 
+    // Pass 1 — deterministic. Keyword rules and frequency history only.
+    const unmatched: BankTransaction[] = [];
     for (const bt of periodTransactions) {
       if (bt.isVerified) continue;
-      
+
       const suggested = suggestCategory(bt.description);
       if (suggested && suggested !== bt.category) {
         batch.update(doc(db, 'bank_statement_imports', bt.id!), {
           category: suggested,
           isVerified: false, // Keep as unverified so user can review/confirm
-          isReconciled: true
+          isReconciled: true,
+          aiSuggested: false, // a rule matched this, not the model
         });
         count++;
+      } else if (!suggested && !(bt.category || '').trim()) {
+        unmatched.push(bt);
       }
     }
+
+    // Pass 2 — the model, on the leftovers only.
+    let aiCount = 0;
+    let aiError: string | null = null;
+    if (unmatched.length > 0) {
+      try {
+        const guesses = await aiSuggestCategories(unmatched);
+        guesses.forEach((cat, id) => {
+          batch.update(doc(db, 'bank_statement_imports', id), {
+            category: cat,
+            isVerified: false,
+            isReconciled: true,
+            aiSuggested: true,
+          });
+          aiCount++;
+        });
+      } catch (err) {
+        // A model failure must not lose the rule matches already in the batch.
+        console.error('[auto-map] AI pass failed:', err);
+        aiError = (err as any)?.message || String(err);
+      }
+    }
+
+    count += aiCount;
 
     if (count > 0) {
       try {
@@ -687,9 +958,21 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
           return t;
         }));
         await fetchReconciliationData();
+        alert(
+          `Auto-mapped ${count} transaction${count === 1 ? '' : 's'} — ` +
+          `${count - aiCount} by rule, ${aiCount} suggested by AI.\n\n` +
+          `All remain unverified for you to confirm. AI suggestions are badged.` +
+          (aiError ? `\n\nOnly rule matches were applied — the AI pass failed:\n${aiError}` : '') +
+          (unmatched.length > aiCount ? `\n\n${unmatched.length - aiCount} left uncategorised — filter by Uncategorised to work through them.` : '')
+        );
       } catch (err) {
         console.error("Bulk auto-map failed:", err);
+        alert('Auto-map could not save. See console.');
       }
+    } else {
+      alert(aiError
+        ? `Nothing was auto-mapped.\n\nThe AI pass failed:\n${aiError}`
+        : 'Nothing to auto-map — every unverified transaction this month already has a category or no rule matched.');
     }
     setLoading(false);
   };
@@ -812,6 +1095,8 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
           billNo: d.billNumber || '',
           label: d.description || d.vendorName || 'Crew entry',
           note: [d.vendorName, d.status === 'pending' ? 'UNPAID' : null].filter(Boolean).join(' · '),
+          channel: d.type === 'purchase' ? 'Online' : 'Cash',
+          fromVault: d.paidFrom === '10k',
         });
       });
 
@@ -849,6 +1134,9 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
     let mappedDebitValue = 0;
 
     periodBT.forEach(t => {
+      // Money moved between the business's own accounts is neither spend nor
+      // income. Counting it inflates both sides by the same amount.
+      if (isInternalTransfer(t.category)) return;
       if (t.type === 'debit') {
         const amt = Number(t.amount) || 0;
         totalDebitValue += amt;
@@ -956,6 +1244,47 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
               </select>
               <ChevronDown size={12} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
             </div>
+            <div className="relative ml-2">
+              <select
+                value={selectedDay}
+                onChange={e => setSelectedDay(e.target.value)}
+                disabled={availableDays.length === 0}
+                title="Narrow to a single day inside the selected month"
+                className="pl-4 pr-10 py-2.5 bg-white rounded-xl text-[10px] font-black uppercase outline-none appearance-none border border-slate-200 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <option value="all">
+                  {availableDays.length === 0
+                    ? 'No dates'
+                    : `All dates (${availableDays.length} ${availableDays.length === 1 ? 'day' : 'days'})`}
+                </option>
+                {availableDays.map(d => (
+                  <option key={d.date} value={d.date}>
+                    {new Date(d.date + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
+                    {' · '}{d.count}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown size={12} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            </div>
+            <div className="relative ml-2">
+              <select
+                value={selectedCategory}
+                onChange={e => setSelectedCategory(e.target.value)}
+                title="Show one category, or everything still uncategorised"
+                className={`pl-4 pr-10 py-2.5 rounded-xl text-[10px] font-black uppercase outline-none appearance-none border shadow-sm ${
+                  selectedCategory === UNMAPPED
+                    ? 'bg-rose-50 border-rose-200 text-rose-600'
+                    : 'bg-white border-slate-200'
+                }`}
+              >
+                <option value="all">All categories</option>
+                <option value={UNMAPPED}>Uncategorised · {unmappedCount}</option>
+                {availableCategories.map(cat => (
+                  <option key={cat} value={cat}>{cat}</option>
+                ))}
+              </select>
+              <ChevronDown size={12} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            </div>
             <button
               onClick={handleRepairDirections}
               disabled={isRepairing}
@@ -1044,7 +1373,21 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
         >
           Category Analytics
         </button>
+        <button
+          onClick={() => setActiveView('categories')}
+          className={`px-6 py-2.5 rounded-[1.5rem] text-[10px] font-black uppercase tracking-widest transition-all ${activeView === 'categories' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-600'}`}
+        >
+          Categories &amp; Rules
+        </button>
       </div>
+
+      {activeView === 'categories' && (
+        <CategoryRegistry
+          transactions={bankTransactions}
+          rules={rules}
+          onChanged={fetchReconciliationData}
+        />
+      )}
 
       {/* ── SALES DELTA PANEL ─────────────────────────────────── */}
       {activeView === 'delta' && (() => {
@@ -1535,7 +1878,7 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
               <table className="w-full text-left border-separate border-spacing-0">
                 <thead>
                   <tr className="bg-slate-50/50">
-                    <th className="px-8 py-6 border-b border-slate-100">
+                    <th className="px-3 py-4 border-b border-slate-100 w-10">
                       <div 
                         onClick={toggleSelectAll}
                         className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center cursor-pointer transition-all ${
@@ -1547,11 +1890,12 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
                         {selectedBatchIds.size === filteredBT.length && filteredBT.length > 0 && <Check size={14} className="text-white" />}
                       </div>
                     </th>
-                    <th className="px-8 py-6 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">Transaction Date</th>
-                    <th className="px-8 py-6 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">Entity / Narration</th>
-                    <th className="px-8 py-6 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">Amount</th>
-                    <th className="px-8 py-6 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">Functional Category</th>
-                    <th className="px-8 py-6 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100 text-right">Verification</th>
+                    <th className="px-3 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">Transaction Date</th>
+                    <th className="px-3 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">Entity / Narration</th>
+                    <th className="px-3 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">Amount</th>
+                    <th className="px-3 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">Matched Bill</th>
+                    <th className="px-3 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">Functional Category</th>
+                    <th className="px-3 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100 text-right">Verification</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-50">
@@ -1561,7 +1905,7 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
 
                     return (
                       <tr key={bt.id} className={`group hover:bg-slate-50/50 transition-colors ${bt.isVerified ? 'opacity-60' : ''} ${selectedBatchIds.has(bt.id!) ? 'bg-indigo-50/30' : ''}`}>
-                        <td className="px-8 py-6">
+                        <td className="px-3 py-4">
                            <div 
                              onClick={() => toggleSelectOne(bt.id!)}
                              className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center cursor-pointer transition-all ${
@@ -1573,14 +1917,14 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
                              {selectedBatchIds.has(bt.id!) && <Check size={14} className="text-white" />}
                            </div>
                         </td>
-                        <td className="px-8 py-6">
+                        <td className="px-3 py-4">
                            <div className="flex flex-col">
                              <span className="text-sm font-black text-slate-900">{new Date(bt.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}</span>
                              <span className="text-[9px] font-bold text-slate-400 uppercase">{new Date(bt.date).getFullYear()}</span>
                            </div>
                         </td>
-                        <td className="px-8 py-6 max-w-[280px] w-[280px]">
-                           <p className="text-xs font-bold text-slate-700 uppercase leading-snug break-words line-clamp-3" title={bt.description}>{bt.description}</p>
+                        <td className="px-3 py-4 max-w-[240px]">
+                           <p className="text-[11px] font-bold text-slate-700 uppercase leading-snug break-words line-clamp-2" title={bt.description}>{bt.description}</p>
                            {bt.referenceNo && !bt.referenceNo.startsWith('AUTO-') && (
                              <span className="text-[9px] font-black text-slate-400 uppercase tracking-tighter">UTR: {bt.referenceNo}</span>
                            )}
@@ -1611,14 +1955,53 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
                              </p>
                            ) : null}
                         </td>
-                        <td className="px-8 py-6">
+                        <td className="px-3 py-4">
                           <div className={`flex items-baseline gap-1 ${bt.type === 'credit' ? 'text-emerald-600' : 'text-slate-900'}`}>
                             <span className="text-xs font-black">₹</span>
                             <span className="text-lg font-black tracking-tighter">{bt.amount.toLocaleString()}</span>
                           </div>
                         </td>
-                        <td className="px-8 py-6">
-                           <div className="flex items-center gap-3">
+                        <td className="px-3 py-4 max-w-[170px]">
+                          {bt.type !== 'debit' ? (
+                            <span className="text-[10px] font-bold text-slate-300 uppercase">&mdash;</span>
+                          ) : !bt.matchedPurchaseId ? (
+                            <span className="text-[10px] font-bold text-slate-300 uppercase">Not linked</span>
+                          ) : matchedBills[bt.matchedPurchaseId] ? (() => {
+                            const m = matchedBills[bt.matchedPurchaseId!];
+                            const diff = Math.abs(m.amount - bt.amount);
+                            return (
+                              <div className="flex flex-col gap-1">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span
+                                    title={m.source === 'crew_entries'
+                                      ? 'Logged by crew in the Crew Terminal'
+                                      : m.fromBankPush
+                                        ? 'Created from this bank line by Push to Purchase Records — not an uploaded bill'
+                                        : 'Imported from a purchase CSV'}
+                                    className={`text-[8px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded ${
+                                      m.source === 'crew_entries'
+                                        ? 'bg-amber-100 text-amber-700'
+                                        : m.fromBankPush
+                                          ? 'bg-slate-200 text-slate-600'
+                                          : 'bg-sky-100 text-sky-700'
+                                    }`}>
+                                    {m.source === 'crew_entries' ? 'Crew' : m.fromBankPush ? 'From bank' : 'CSV'}
+                                  </span>
+                                  {m.billNo && <span className="text-[8px] font-black text-slate-400 uppercase">{m.billNo}</span>}
+                                </div>
+                                <span className="text-[11px] font-bold text-slate-700 leading-snug line-clamp-2" title={m.label}>{m.label}</span>
+                                <span className={`text-[10px] font-black tabular-nums ${diff < 1 ? 'text-emerald-600' : 'text-amber-600'}`}>
+                                  &#8377;{m.amount.toLocaleString('en-IN')}
+                                  {diff >= 1 && <span className="font-bold"> · &#8377;{diff.toLocaleString('en-IN')} off</span>}
+                                </span>
+                              </div>
+                            );
+                          })() : (
+                            <span className="text-[10px] font-bold text-slate-400 uppercase" title={bt.matchedPurchaseId}>Linked · loading</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-4">
+                           <div className="flex items-center gap-1.5 flex-wrap">
                               <button 
                                 onClick={() => findMatchingPurchases(bt, 0)}
                                 className={`p-2 rounded-xl border transition-all ${discoveryTxn?.id === bt.id ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-400 border-slate-200 hover:text-indigo-600 hover:border-indigo-200'}`}
@@ -1631,10 +2014,12 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
                                   value={bt.category?.toUpperCase() || ''} 
                                   onChange={e => handleManualMap(bt.id!, e.target.value, false)}
                                   disabled={isUpdating}
-                                  className={`pl-10 pr-10 py-2.5 rounded-xl text-[10px] font-black uppercase outline-none appearance-none border transition-all ${
-                                    bt.category 
-                                      ? 'bg-white border-slate-200 text-slate-900' 
-                                      : 'bg-rose-50 border-rose-100 text-rose-500'
+                                  className={`pl-8 pr-7 py-2 rounded-xl text-[10px] font-black uppercase outline-none appearance-none border transition-all max-w-[150px] truncate ${
+                                    !bt.category
+                                      ? 'bg-rose-50 border-rose-100 text-rose-500'
+                                      : bt.aiSuggested
+                                        ? 'bg-violet-50 border-violet-200 text-violet-700'
+                                        : 'bg-white border-slate-200 text-slate-900'
                                   }`}
                                 >
                                   <option value="">Unmapped</option>
@@ -1642,9 +2027,17 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
                                     <option key={cat} value={cat}>{cat}</option>
                                   ))}
                                 </select>
-                                <Tag size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                                <ChevronDown size={12} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                                <Tag size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                                <ChevronDown size={11} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400" />
                               </div>
+                              {bt.aiSuggested && (
+                                <span
+                                  title="Suggested by AI from past categorisations, not matched by a keyword rule. Confirm or change it."
+                                  className="text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-full bg-violet-100 text-violet-700 border border-violet-200 whitespace-nowrap"
+                                >
+                                  AI guess
+                                </span>
+                              )}
 
                               {!bt.category && suggestion && (
                                 <button
@@ -1656,7 +2049,7 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
                               )}
                            </div>
                         </td>
-                        <td className="px-8 py-6 text-right">
+                        <td className="px-3 py-4 text-right">
                            <div className="flex items-center justify-end gap-3">
                               <button
                                 onClick={() => {
@@ -1759,7 +2152,18 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
         const catMap: Record<string, { debit: number; debitVerified: number; credit: number; creditVerified: number; count: number }> = {};
         let grandDebit = 0, grandCredit = 0;
 
+        // Internal transfers are tallied separately and kept out of catMap, so
+        // they appear in neither the inflow/outflow totals nor the category
+        // chart — a transfer between own accounts is not a business flow.
+        let transferValue = 0, transferCount = 0;
+
         periodBT.forEach((t: BankTransaction) => {
+          const amt0 = Number(t.amount) || 0;
+          if (isInternalTransfer(t.category)) {
+            transferValue += amt0;
+            transferCount++;
+            return;
+          }
           const cat = t.category?.toUpperCase() || 'UNMAPPED';
           if (!catMap[cat]) catMap[cat] = { debit: 0, debitVerified: 0, credit: 0, creditVerified: 0, count: 0 };
           const amt = Number(t.amount) || 0;
@@ -1784,12 +2188,13 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
         return (
           <div className="space-y-8">
             {/* Summary strip */}
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
               {[
-                { label: 'Total Outflow', value: grandDebit, sub: `${periodBT.filter((t: BankTransaction) => t.type === 'debit').length} debit transactions`, color: 'slate', sign: '' },
-                { label: 'Total Inflow', value: grandCredit, sub: `${periodBT.filter((t: BankTransaction) => t.type === 'credit').length} credit transactions`, color: 'emerald', sign: '+' },
+                { label: 'Total Outflow', value: grandDebit, sub: `${periodBT.filter((t: BankTransaction) => t.type === 'debit' && !isInternalTransfer(t.category)).length} debit transactions`, color: 'slate', sign: '' },
+                { label: 'Total Inflow', value: grandCredit, sub: `${periodBT.filter((t: BankTransaction) => t.type === 'credit' && !isInternalTransfer(t.category)).length} credit transactions`, color: 'emerald', sign: '+' },
                 { label: 'Mapped Spend', value: mappedDebit, sub: `${mappedPct}% of outflows categorised`, color: 'indigo', sign: '' },
                 { label: 'Verified Spend', value: verifiedDebit, sub: `${verifiedPct}% of outflows confirmed`, color: 'violet', sign: '' },
+                { label: 'Internal Transfers', value: transferValue, sub: `${transferCount} between own accounts · excluded above`, color: 'amber', sign: '' },
               ].map(({ label, value, sub, color, sign }) => (
                 <div key={label} className="bg-white rounded-[2rem] border border-slate-100 shadow-sm px-7 py-6">
                   <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-3">{label}</p>
@@ -2075,9 +2480,20 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
                     {discoveryResults.map(p => {
                       const amountDiff = Math.abs(p.amount - discoveryTxn.amount);
                       const isExact = amountDiff < 1;
-                      
+                      // Cash never went through the bank, so it cannot be the
+                      // counterpart of a bank line. Shown but not linkable —
+                      // hiding it would leave you wondering where the entry went,
+                      // which is the same confusion an empty list already caused.
+                      const cashOnly = p.channel === 'Cash';
+
                       return (
-                        <div key={p.id} className={`p-6 rounded-[2rem] border transition-all hover:shadow-lg flex items-start justify-between gap-4 ${isExact ? 'bg-emerald-50 border-emerald-100' : 'bg-white border-slate-100'}`}>
+                        <div key={p.id} className={`p-6 rounded-[2rem] border transition-all flex items-start justify-between gap-4 ${
+                          cashOnly
+                            ? 'bg-slate-50 border-slate-100 opacity-70'
+                            : isExact
+                              ? 'bg-emerald-50 border-emerald-100 hover:shadow-lg'
+                              : 'bg-white border-slate-100 hover:shadow-lg'
+                        }`}>
                           <div>
                              <div className="flex items-center gap-2 mb-1">
                                <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full ${isExact ? 'bg-emerald-500 text-white' : 'bg-slate-900 text-white'}`}>
@@ -2087,6 +2503,20 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
                                <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full ${p.source === 'crew_entries' ? 'bg-amber-100 text-amber-700' : 'bg-sky-100 text-sky-700'}`}>
                                  {p.source === 'crew_entries' ? 'Crew' : 'CSV'}
                                </span>
+                               {p.channel && (
+                                 <span
+                                   title={p.channel === 'Cash'
+                                     ? (p.fromVault ? 'Paid in cash from the ₹10k vault' : 'Paid in cash from the counter')
+                                     : 'Paid online or by bank transfer'}
+                                   className={`text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full ${
+                                     p.channel === 'Cash'
+                                       ? 'bg-emerald-100 text-emerald-700'
+                                       : 'bg-indigo-100 text-indigo-700'
+                                   }`}
+                                 >
+                                   {p.channel}{p.fromVault ? ' · 10K' : ''}
+                                 </span>
+                               )}
                              </div>
                              <h5 className="text-sm font-black text-slate-900 line-clamp-1 mb-2">{p.label}</h5>
                              <div className="flex items-center gap-4">
@@ -2094,17 +2524,35 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
                                 <span className="text-[10px] font-bold text-slate-400 uppercase">{new Date(p.date).toLocaleDateString()}</span>
                                 {p.note && <span className="text-[10px] font-bold text-slate-400 uppercase truncate max-w-[160px]">{p.note}</span>}
                              </div>
+                             {cashOnly && (
+                               <p className="text-[10px] font-bold text-slate-500 mt-2.5 flex items-start gap-1.5 max-w-sm">
+                                 <Ban size={12} className="text-slate-400 mt-0.5 shrink-0" />
+                                 <span>
+                                   Paid in cash{p.fromVault ? ' from the ₹10k vault' : ' at the counter'}, so it never
+                                   passed through the bank and cannot be matched to a bank line. If this bank line is
+                                   the cash withdrawal that funded it, categorise the withdrawal itself instead.
+                                 </span>
+                               </p>
+                             )}
                           </div>
 
                           <button 
                             onClick={async () => {
+                              if (cashOnly) return;
                               await handleManualMap(discoveryTxn.id!, (p.category || 'COGS').toUpperCase(), true, p.id, p.source);
                               setDiscoveryTxn(null);
                             }}
-                            className={`p-3 rounded-2xl transition-all ${isExact ? 'bg-emerald-600 text-white shadow-emerald-200' : 'bg-slate-900 text-white shadow-slate-200'} shadow-xl`}
-                            title="Auto-Map Category"
+                            disabled={cashOnly}
+                            className={`p-3 rounded-2xl transition-all shadow-xl ${
+                              cashOnly
+                                ? 'bg-slate-200 text-slate-400 shadow-none cursor-not-allowed'
+                                : isExact
+                                  ? 'bg-emerald-600 text-white shadow-emerald-200'
+                                  : 'bg-slate-900 text-white shadow-slate-200'
+                            }`}
+                            title={cashOnly ? 'Cash purchases cannot be matched to a bank transaction' : 'Link this bill and apply its category'}
                           >
-                            <ArrowRightLeft size={18} />
+                            {cashOnly ? <Ban size={18} /> : <ArrowRightLeft size={18} />}
                           </button>
                         </div>
                       );

@@ -893,12 +893,25 @@ export interface BankTransaction {
   bankAccountId?: string;
   isReconciled: boolean;
   matchedPurchaseId?: string; // Legacy
+  /**
+   * Which collection matchedPurchaseId points at. A bank line can be linked to a
+   * CSV purchase record or to a crew entry, and the id alone cannot tell them
+   * apart. Absent on links made before this existed — resolve those by trying
+   * `purchases` first, then `crew_entries`.
+   */
+  matchedSource?: 'purchases' | 'crew_entries';
   matchedPurchaseIds?: string[]; // Legacy
   reconciledAmount?: number; // Legacy
   category?: string;
   isVerified?: boolean;
   pushedToPurchases?: boolean; // True when this transaction was used to create a new purchase record
   comment?: string;
+  /**
+   * This category came from the AI pass of Auto-Map, not from a keyword rule.
+   * Kept so a guess is never displayed as if it were a deterministic match —
+   * cleared the moment a human categorises or verifies the row.
+   */
+  aiSuggested?: boolean;
   createdAt: number;
 }
 
@@ -952,6 +965,22 @@ export interface CashObligation {
   createdAt: number;
 }
 
+/**
+ * Categories that move money between the business's OWN accounts rather than in
+ * or out of the business. They must be excluded from inflow/outflow totals —
+ * counting a transfer inflates both sides by the same amount and makes the month
+ * look busier than it was.
+ *
+ * Matched case-insensitively against a bank line's category.
+ */
+export const INTERNAL_TRANSFER_CATEGORIES = [
+  'BANK2BANK XFER',
+  'TRANSFER',
+];
+
+export const isInternalTransfer = (category?: string): boolean =>
+  !!category && INTERNAL_TRANSFER_CATEGORIES.includes(category.trim().toUpperCase());
+
 export const RECONCILIATION_CATEGORIES = [
   'COGS',
   'OPERATIONS',
@@ -959,6 +988,7 @@ export const RECONCILIATION_CATEGORIES = [
   'PAYROLL',
   'LOAN_EMI',
   'PERSONAL',
+  'BANK2BANK XFER',
   'OTHER'
 ];
 
