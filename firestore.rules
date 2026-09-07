@@ -109,8 +109,14 @@ service cloud.firestore {
       // otherwise a fresh sign-in could write { role:'admin', ownerId:<owner> }
       // in one go and take over the tenant. Self edits go through the
       // privilegedUnchanged rule above and nowhere else.
+      //
+      // Compared against the PATH-bound `userId`, not resource.data.uid: on
+      // create, `resource` is null (the document does not exist yet), so
+      // reading resource.data.get(...) unconditionally threw and denied every
+      // new-user creation with "Missing or insufficient permissions" — the
+      // bug this comment is now warning against.
       allow create, update, delete: if isTenantOwner()
-        && resource.data.get('uid', '') != request.auth.uid
+        && userId != request.auth.uid
         && (
           // Creating a profile for someone else, inside my own tenant.
           (resource == null && request.resource.data.get('ownerId', '') == request.auth.uid) ||
