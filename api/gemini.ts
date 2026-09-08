@@ -42,8 +42,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.status(401).json({ error: 'Sign in required' });
     return;
   }
+
+  // Two failure modes were previously collapsed into the same 401 "Sign in
+  // required", which made a server misconfiguration look identical to a real
+  // expired session — adminApp() throwing on missing/malformed Vercel env vars
+  // landed in the same catch as a genuinely bad token, so every caller got told
+  // to sign in again regardless of which one it actually was.
+  let app;
   try {
-    await getAuth(adminApp()).verifyIdToken(token);
+    app = adminApp();
+  } catch (err: any) {
+    console.error('Gemini proxy: admin credentials not configured:', err);
+    res.status(500).json({
+      error: 'AI is not set up on the server yet — Firebase Admin credentials are missing ' +
+        'or invalid in Vercel (FIREBASE_PROJECT_ID / FIREBASE_CLIENT_EMAIL / FIREBASE_PRIVATE_KEY).',
+    });
+    return;
+  }
+
+  try {
+    await getAuth(app).verifyIdToken(token);
   } catch (err) {
     console.error('Gemini proxy: token verification failed:', err);
     res.status(401).json({ error: 'Sign in required' });

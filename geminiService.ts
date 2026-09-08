@@ -44,10 +44,12 @@ export const ai = {
           );
         }
 
-        if (res.status === 401) {
-          throw new Error('Your session has expired — sign in again and retry.');
-        }
-
+        // No hardcoded 401 message here on purpose — the server now
+        // distinguishes "your token didn't verify" (401, sign in again) from
+        // "the server's own Firebase Admin credentials are missing" (500, a
+        // Vercel setup problem) and puts the real reason in the body. A fixed
+        // client-side string for any 401 previously overwrote that distinction
+        // and told everyone to sign in again even when the fault was ours.
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
           throw new Error(err.error || `Gemini request failed (${res.status})`);
