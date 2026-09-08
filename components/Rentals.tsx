@@ -81,6 +81,11 @@ const Rentals: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwne
     if (!newStoreName || !newOutletId || isNaN(rent)) return;
 
     try {
+      // Firestore rejects `undefined` outright — writing it here failed every
+      // new-rental save that left lat/long blank, the same bug class that broke
+      // user creation. Omit the keys entirely rather than write undefined; the
+      // edit path already does the equivalent with deleteField() on an existing
+      // document, this is that for a document that doesn't exist yet.
       const rental: Omit<StoreRental, 'id'> = {
         storeName: newStoreName,
         outletId: newOutletId,
@@ -90,8 +95,8 @@ const Rentals: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwne
         status: 'active',
         tier: newTier,
         address: newAddress,
-        latitude: newLat ? parseFloat(newLat) : undefined,
-        longitude: newLng ? parseFloat(newLng) : undefined,
+        ...(newLat ? { latitude: parseFloat(newLat) } : {}),
+        ...(newLng ? { longitude: parseFloat(newLng) } : {}),
         history: [{ date: newStartDate, amount: rent, reason: 'Initial Agreement' }],
         userId: user.uid
       };

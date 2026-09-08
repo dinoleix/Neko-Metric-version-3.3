@@ -1671,6 +1671,20 @@ ${allSourceStrings.join('\n')}`;
                   {trackedConsumables.map((c, idx) => {
                     const patch = (next: Partial<TrackedConsumable>) =>
                       setTrackedConsumables(trackedConsumables.map((x, i) => i === idx ? { ...x, ...next } : x));
+                    // patch({ key: undefined }) spreads onto the existing object and sets
+                    // the key TO undefined rather than removing it, and this whole array is
+                    // written straight into setDoc at the Commit Logic button — Firestore
+                    // rejects undefined outright, so clearing any of these three number
+                    // fields would fail the entire settings save. A genuine `delete` on the
+                    // in-memory object keeps the key out from the start.
+                    const patchOptionalNumber = (key: 'estimatedUnitCost' | 'unitsPerPurchase' | 'alertThresholdPct', raw: string) =>
+                      setTrackedConsumables(trackedConsumables.map((x, i) => {
+                        if (i !== idx) return x;
+                        const next = { ...x };
+                        if (raw) next[key] = parseFloat(raw);
+                        else delete next[key];
+                        return next;
+                      }));
                     return (
                       <div key={c.id} className={`p-6 rounded-3xl border transition-all ${c.active === false ? 'bg-slate-50 border-slate-100 opacity-60' : 'bg-white border-slate-200 shadow-sm'}`}>
                         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-end">
@@ -1694,7 +1708,7 @@ ${allSourceStrings.join('\n')}`;
                           </div>
                           <div className="lg:col-span-2 space-y-1.5">
                             <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest" title="Used to estimate months where no quantity was recorded">Est. ₹/unit</label>
-                            <input type="number" min="0" value={c.estimatedUnitCost ?? ''} onChange={e => patch({ estimatedUnitCost: e.target.value ? parseFloat(e.target.value) : undefined })} placeholder="1900"
+                            <input type="number" min="0" value={c.estimatedUnitCost ?? ''} onChange={e => patchOptionalNumber('estimatedUnitCost', e.target.value)} placeholder="1900"
                               className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl font-bold text-sm outline-none focus:border-indigo-400" />
                           </div>
                           <div className="lg:col-span-1 flex items-center gap-2 justify-end pb-1">
@@ -1711,12 +1725,12 @@ ${allSourceStrings.join('\n')}`;
                         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-4 pt-4 border-t border-slate-100">
                           <div className="space-y-1.5">
                             <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Units per entry</label>
-                            <input type="number" min="1" value={c.unitsPerPurchase ?? 1} onChange={e => patch({ unitsPerPurchase: e.target.value ? parseFloat(e.target.value) : undefined })}
+                            <input type="number" min="1" value={c.unitsPerPurchase ?? 1} onChange={e => patchOptionalNumber('unitsPerPurchase', e.target.value)}
                               className="w-full px-4 py-2.5 bg-slate-50 border border-slate-100 rounded-xl font-bold text-sm outline-none focus:border-indigo-400" />
                           </div>
                           <div className="space-y-1.5">
                             <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Alert threshold %</label>
-                            <input type="number" min="1" value={c.alertThresholdPct ?? 15} onChange={e => patch({ alertThresholdPct: e.target.value ? parseFloat(e.target.value) : undefined })}
+                            <input type="number" min="1" value={c.alertThresholdPct ?? 15} onChange={e => patchOptionalNumber('alertThresholdPct', e.target.value)}
                               className="w-full px-4 py-2.5 bg-slate-50 border border-slate-100 rounded-xl font-bold text-sm outline-none focus:border-indigo-400" />
                           </div>
                         </div>
