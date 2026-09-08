@@ -699,6 +699,15 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     if (!hasBillItems && !amount) return;
     if (!category) return;
 
+    // A purchase with no vendor can never be matched to the bank payment that
+    // settled it — this is what made reconciling deferred, lump-sum vendor
+    // payments unworkable. Scoped to 'purchase' only: cash expenses never touch
+    // the bank, so a vendor there is a nice-to-have, not load-bearing.
+    if (entryType === 'purchase' && !selectedVendorId) {
+      alert('Pick a vendor for this purchase — it is required so it can be matched to the bank payment later. Use the + button to add a new one.');
+      return;
+    }
+
     // Bill-builder lines already enforce qty > 0, so only the simple form needs this
     if (activeConsumable && !hasBillItems && !(parseFloat(quantity) > 0)) {
       alert(`Enter how many ${activeConsumable.unitLabel}s this covers — ${activeConsumable.label} is tracked by unit.`);
@@ -2397,7 +2406,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
                 <>
                   {/* Vendor */}
                   <div>
-                    <label className="block text-xs font-medium text-slate-500 mb-1.5 ml-0.5">Vendor <span className="text-slate-300">· optional</span></label>
+                    <label className="block text-xs font-medium text-slate-500 mb-1.5 ml-0.5">Vendor <span className="text-rose-400">*</span></label>
                     <div className="flex gap-2.5">
                       <div className="relative flex-1">
                         <Store className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={17} />
@@ -2755,7 +2764,9 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
                     <div className="space-y-4">
                       {/* Vendor */}
                       <div className="space-y-2">
-                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">Vendor (Optional)</label>
+                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 block">
+                          {entryType === 'purchase' ? <>Vendor <span className="text-rose-400 normal-case">(required)</span></> : 'Vendor (Optional)'}
+                        </label>
                         <div className="relative">
                           <Store className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" size={18} />
                           <select value={selectedVendorId} onChange={e => setSelectedVendorId(e.target.value)}

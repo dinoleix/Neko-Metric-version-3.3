@@ -978,6 +978,19 @@ export const INTERNAL_TRANSFER_CATEGORIES = [
   'TRANSFER',
 ];
 
+/**
+ * Capital / non-operating bank categories: real money out of the bank, but not
+ * operating spend. They stay in the inflow and outflow totals — the cash genuinely
+ * left — and are pulled out of the operating category chart, where a single bulk
+ * purchase would otherwise dwarf the running costs it sits beside.
+ */
+export const CAPITAL_CATEGORIES = [
+  'STORAGE',
+];
+
+export const isCapitalCategory = (category?: string): boolean =>
+  !!category && CAPITAL_CATEGORIES.includes(category.trim().toUpperCase());
+
 export const isInternalTransfer = (category?: string): boolean =>
   !!category && INTERNAL_TRANSFER_CATEGORIES.includes(category.trim().toUpperCase());
 
@@ -989,6 +1002,10 @@ export const RECONCILIATION_CATEGORIES = [
   'LOAN_EMI',
   'PERSONAL',
   'BANK2BANK XFER',
+  // Bulk buys into central storage. This tags the BANK LINE only — it is a
+  // separate list from the P&L category keywords, so adding it here does not
+  // affect how the spend is classified in the P&L.
+  'STORAGE',
   'OTHER'
 ];
 

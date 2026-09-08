@@ -20,6 +20,7 @@ import {
 import { db } from '../firebase';
 import { documentId } from 'firebase/firestore';
 import CategoryRegistry from './CategoryRegistry';
+import VendorLedger from './VendorLedger';
 import { ai } from '../geminiService';
 import {
   BankTransaction,
@@ -30,6 +31,7 @@ import {
   SalesSummaryRecord,
   RECONCILIATION_CATEGORIES,
   isInternalTransfer,
+  isCapitalCategory,
   MONTH_NAMES,
   YEAR_OPTIONS,
   MASTER_OUTLETS,
@@ -43,6 +45,7 @@ import {
   AlertCircle,
   ArrowRightLeft,
   Ban,
+  Box,
   Plus,
   Loader2,
   CalendarDays,
@@ -191,7 +194,7 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
   const [pushingId, setPushingId] = useState<string | null>(null);
   const [dailySalesLogs, setDailySalesLogs] = useState<DailySalesLog[]>([]);
   const [salesSummary, setSalesSummary] = useState<SalesSummaryRecord[]>([]);
-  const [activeView, setActiveView] = useState<'mapping' | 'delta' | 'channel-delta' | 'analytics' | 'categories'>('mapping');
+  const [activeView, setActiveView] = useState<'mapping' | 'delta' | 'channel-delta' | 'analytics' | 'categories' | 'vendor-ledger'>('mapping');
   const [analyticsView, setAnalyticsView] = useState<'list' | 'hbar' | 'vbar' | 'donut'>('hbar');
   const [deltaOutletFilter, setDeltaOutletFilter] = useState<string>('all');
   const [channelOutletFilter, setChannelOutletFilter] = useState<string>('all');
@@ -1526,6 +1529,12 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
         >
           Categories &amp; Rules
         </button>
+        <button
+          onClick={() => setActiveView('vendor-ledger')}
+          className={`px-6 py-2.5 rounded-[1.5rem] text-[10px] font-black uppercase tracking-widest transition-all ${activeView === 'vendor-ledger' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-600'}`}
+        >
+          Vendor Ledger
+        </button>
       </div>
 
       {activeView === 'categories' && (
@@ -1533,6 +1542,15 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
           transactions={bankTransactions}
           rules={rules}
           onChanged={fetchReconciliationData}
+        />
+      )}
+
+      {activeView === 'vendor-ledger' && (
+        <VendorLedger
+          user={user}
+          dataOwnerId={dataOwnerId}
+          bankTransactions={bankTransactions}
+          onLinked={fetchReconciliationData}
         />
       )}
 
@@ -2319,12 +2337,23 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
         // they appear in neither the inflow/outflow totals nor the category
         // chart — a transfer between own accounts is not a business flow.
         let transferValue = 0, transferCount = 0;
+        // Capital spend is real cash out, so it stays in the totals below — it is
+        // only kept out of catMap so it does not dominate the operating chart.
+        const capitalMap: Record<string, { debit: number; credit: number; count: number }> = {};
 
         periodBT.forEach((t: BankTransaction) => {
           const amt0 = Number(t.amount) || 0;
           if (isInternalTransfer(t.category)) {
             transferValue += amt0;
             transferCount++;
+            return;
+          }
+          if (isCapitalCategory(t.category)) {
+            const key = t.category!.trim().toUpperCase();
+            if (!capitalMap[key]) capitalMap[key] = { debit: 0, credit: 0, count: 0 };
+            capitalMap[key].count++;
+            if (t.type === 'debit') { capitalMap[key].debit += amt0; grandDebit += amt0; }
+            else { capitalMap[key].credit += amt0; grandCredit += amt0; }
             return;
           }
           const cat = t.category?.toUpperCase() || 'UNMAPPED';
@@ -2539,6 +2568,48 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
                 </div>
               );
             })()}
+
+            {Object.keys(capitalMap).length > 0 && (
+              <div className="bg-white rounded-[2.5rem] border border-slate-100 shadow-sm p-8">
+                <div className="flex items-start justify-between gap-4 mb-6 flex-wrap">
+                  <div className="flex items-center gap-4">
+                    <div className="p-3 bg-slate-100 text-slate-500 rounded-2xl"><Box size={20} /></div>
+                    <div>
+                      <h3 className="text-lg font-black text-slate-900 tracking-tight">Capital &amp; Stock Purchases</h3>
+                      <p className="text-slate-500 text-[11px] font-medium mt-0.5 max-w-xl leading-snug">
+                        Shown apart from the operating categories, where one bulk purchase would dwarf
+                        the running costs beside it. Still counted in the inflow and outflow totals above —
+                        the cash genuinely left the bank.
+                      </p>
+                    </div>
+                  </div>
+                  <span className="text-2xl font-black text-slate-700 tabular-nums">
+                    &#8377;{Math.round(Object.values(capitalMap).reduce((a, v) => a + v.debit, 0)).toLocaleString('en-IN')}
+                  </span>
+                </div>
+                <div className="space-y-3">
+                  {(Object.entries(capitalMap) as [string, { debit: number; credit: number; count: number }][])
+                    .sort((a, b) => b[1].debit - a[1].debit)
+                    .map(([cat, v]) => {
+                      const capMax = Math.max(...Object.values(capitalMap).map(x => x.debit), 1);
+                      return (
+                        <div key={cat}>
+                          <div className="flex items-center justify-between gap-4 mb-1.5">
+                            <span className="text-[11px] font-black text-slate-600 uppercase tracking-widest truncate">{cat}</span>
+                            <div className="flex items-baseline gap-3 shrink-0">
+                              <span className="text-[10px] font-bold text-slate-400 uppercase">{v.count} txn</span>
+                              <span className="text-sm font-black text-slate-800 tabular-nums">&#8377;{Math.round(v.debit).toLocaleString('en-IN')}</span>
+                            </div>
+                          </div>
+                          <div className="h-2.5 w-full bg-slate-100 rounded-full overflow-hidden">
+                            <div className="h-full bg-slate-400 rounded-full" style={{ width: `${(v.debit / capMax) * 100}%` }} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                </div>
+              </div>
+            )}
           </div>
         );
       })()}

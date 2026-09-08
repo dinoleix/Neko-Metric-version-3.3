@@ -27,7 +27,12 @@ const ProjectionEngine: React.FC<ProjectionEngineProps> = ({ outlet, userId }) =
       const result = await generateSalesProjection(outlet.outletId, userId, outlet.latitude, outlet.longitude);
       setProjection(result);
     } catch (err: any) {
-      setError("Failed to generate AI projection. Please try again.");
+      // Was a hardcoded generic string that discarded the real error — the
+      // same "AI is not available on the local dev server" / "sign in
+      // required" / model-error messages geminiService.ts already throws were
+      // being replaced with this before ever reaching the screen.
+      console.error('[projection] generation failed:', err);
+      setError(err?.message || "Failed to generate AI projection. Please try again.");
     } finally {
       setLoading(false);
     }
