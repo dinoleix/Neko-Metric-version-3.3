@@ -78,6 +78,7 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
   const [storeFilter, setStoreFilter] = useState<'all' | string>('all');
   const [chartType, setChartType] = useState<ChartType>('line');
   const [outletChartType, setOutletChartType] = useState<ChartType>('line');
+  const [trafficChannel, setTrafficChannel] = useState<'all' | 'dinein' | 'online'>('all');
   
   const [hoveredPoint, setHoveredPoint] = useState<{ x: number, y: number, value: number, label: string, color?: string, subLabel?: string } | null>(null);
 
@@ -196,7 +197,9 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
       labels: [] as string[],
       outletTrends: {} as Record<string, number[]>,
       hourlyIntensity: new Array(24).fill(0),
+      hourlyIntensityOnline: new Array(24).fill(0),
       weekdayRevenue: { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0 } as Record<number, number>,
+      weekdayRevenueOnline: { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0 } as Record<number, number>,
       dayParts: {
         morning: { id: 'morning', label: 'Morning Opener', hours: '09:00 - 12:00', revenue: 0, icon: Sunrise, color: 'text-amber-500', bg: 'bg-amber-50' },
         afternoon: { id: 'afternoon', label: 'Peak Afternoon', hours: '12:00 - 16:00', revenue: 0, icon: Sun, color: 'text-indigo-500', bg: 'bg-indigo-50' },
@@ -205,7 +208,7 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
       }
     };
 
-    if (isInvalidRange) return { ...totals, yieldEfficiency: 0, maxVal: 1, maxOutletVal: 1, isSingleMonth: false, isInvalidRange: true, maxHourVal: 1 };
+    if (isInvalidRange) return { ...totals, yieldEfficiency: 0, maxVal: 1, maxOutletVal: 1, isSingleMonth: false, isInvalidRange: true, maxHourVal: 1, hourlyIntensityDineIn: new Array(24).fill(0), weekdayRevenueDineIn: { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0 } as Record<number, number> };
 
     const filteredSnapshots = snapshots.filter(s => {
       const sVal = parseInt(s.year) * 12 + MONTH_NAMES.indexOf(s.month);
@@ -237,6 +240,16 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
           else if (i >= 16 && i < 20) totals.dayParts.evening.revenue += (Number(v) || 0);
           else totals.dayParts.night.revenue += (Number(v) || 0);
         }
+      });
+
+      const hDistOnline = Array.isArray(s.onlineHourlyDistribution) ? s.onlineHourlyDistribution : [];
+      hDistOnline.forEach((v, i) => {
+        if (i < 24) totals.hourlyIntensityOnline[i] += (Number(v) || 0);
+      });
+
+      const wDistOnline = Array.isArray(s.onlineWeekdayDistribution) ? s.onlineWeekdayDistribution : [];
+      wDistOnline.forEach((v, i) => {
+        if (i < 7) totals.weekdayRevenueOnline[i] += (Number(v) || 0);
       });
 
       const dTrend = Array.isArray(s.dailyTrend) ? s.dailyTrend : [];
@@ -289,6 +302,14 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
     const yieldEfficiency = totalGoodGross > 0 ? ((totals.posGoodNet + totals.onlineGoodNet + totals.eventRevenue) / totalGoodGross) * 100 : 0;
     const maxHourVal = Math.max(...totals.hourlyIntensity, 1);
 
+    // Dine-in-only = blended total minus the online-only series already tracked
+    // per hour/weekday (onlineHourlyDistribution / onlineWeekdayDistribution),
+    // floored at 0 to absorb any rounding drift between the two aggregates.
+    const hourlyIntensityDineIn = totals.hourlyIntensity.map((v, i) => Math.max(0, v - totals.hourlyIntensityOnline[i]));
+    const weekdayRevenueDineIn = Object.fromEntries(
+      Object.entries(totals.weekdayRevenue).map(([k, v]) => [k, Math.max(0, v - totals.weekdayRevenueOnline[Number(k)])])
+    ) as Record<number, number>;
+
     const numMonths = endVal - startVal + 1;
     // BUG-10 fix: use actual calendar days for single-month avg (30 is wrong for Feb and 31-day months)
     const daysInStartMonth = new Date(parseInt(startYear), MONTH_NAMES.indexOf(startMonth) + 1, 0).getDate();
@@ -296,9 +317,10 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
     const avgDailyOrders = totals.settledOrderCount / totalDays;
     const avgBillValue = totals.settledOrderCount > 0 ? totalGoodGross / totals.settledOrderCount : 0;
 
-    return { 
+    return {
       ...totals, yieldEfficiency, avgDailyOrders, avgBillValue, totalGoodGross,
-      maxVal: Math.max(...totals.trendValues, 1), 
+      hourlyIntensityDineIn, weekdayRevenueDineIn,
+      maxVal: Math.max(...totals.trendValues, 1),
       maxOutletVal: Math.max(...Object.values(totals.outletTrends).flatMap(t => t), 1),
       maxHourVal, isSingleMonth, isInvalidRange
     };
@@ -582,8 +604,18 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
               </section>
             )}
 
-            {activeTab === 'traffic-trend' && (
+            {activeTab === 'traffic-trend' && (() => {
+              const hourlySeries = trafficChannel === 'online' ? analytics.hourlyIntensityOnline : trafficChannel === 'dinein' ? analytics.hourlyIntensityDineIn : analytics.hourlyIntensity;
+              const weekdaySeriesObj = trafficChannel === 'online' ? analytics.weekdayRevenueOnline : trafficChannel === 'dinein' ? analytics.weekdayRevenueDineIn : analytics.weekdayRevenue;
+              const maxHourValActive = Math.max(...hourlySeries, 1);
+              return (
               <div className="space-y-12 animate-in slide-in-from-right-4 duration-500">
+                <div className="flex bg-slate-200/50 p-1.5 rounded-[1.5rem] w-fit border border-slate-100 shadow-inner">
+                  <button onClick={() => setTrafficChannel('all')} className={`px-6 py-2.5 rounded-2xl text-xs font-black uppercase tracking-widest transition-all ${trafficChannel === 'all' ? 'bg-white text-slate-900 shadow-lg translate-y-[-1px]' : 'text-slate-500 hover:text-slate-800'}`}>All Channels</button>
+                  <button onClick={() => setTrafficChannel('dinein')} className={`px-6 py-2.5 rounded-2xl text-xs font-black uppercase tracking-widest transition-all ${trafficChannel === 'dinein' ? 'bg-white text-indigo-600 shadow-lg translate-y-[-1px]' : 'text-slate-500 hover:text-slate-800'}`}>Dine-In</button>
+                  <button onClick={() => setTrafficChannel('online')} className={`px-6 py-2.5 rounded-2xl text-xs font-black uppercase tracking-widest transition-all ${trafficChannel === 'online' ? 'bg-white text-emerald-600 shadow-lg translate-y-[-1px]' : 'text-slate-500 hover:text-slate-800'}`}>Online / Delivery</button>
+                </div>
+
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                   <section className="bg-white rounded-[3rem] p-10 border border-slate-100 shadow-sm overflow-hidden">
                     <div className="flex flex-col md:flex-row md:items-center justify-between mb-12 gap-8">
@@ -591,25 +623,25 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
                           <div className="p-3 bg-indigo-50 text-indigo-600 rounded-2xl shadow-inner"><Clock size={24}/></div>
                           <div>
                             <h3 className="text-2xl font-black text-slate-900 tracking-tight uppercase">Aggregated Sales Intensity</h3>
-                            <p className="text-slate-400 text-sm font-medium">Peak transactional windows</p>
+                            <p className="text-slate-400 text-sm font-medium">Peak transactional windows{trafficChannel !== 'all' ? ` — ${trafficChannel === 'online' ? 'Online/Delivery only' : 'Dine-In only'}` : ''}</p>
                           </div>
                         </div>
                     </div>
 
-                    {analytics.hourlyIntensity.every(v => v === 0) ? (
+                    {hourlySeries.every(v => v === 0) ? (
                         <div className="py-20 text-center bg-slate-50 rounded-[2.5rem] border border-dashed border-slate-200">
                           <div className="w-16 h-16 bg-white rounded-full flex items-center justify-center mx-auto mb-6 shadow-sm"><RefreshCw size={24} className="text-indigo-400" /></div>
-                          <h4 className="text-lg font-black text-slate-800 uppercase tracking-tight">Re-Sync Required</h4>
+                          <h4 className="text-lg font-black text-slate-800 uppercase tracking-tight">{trafficChannel !== 'all' ? 'No Data For This Channel' : 'Re-Sync Required'}</h4>
                         </div>
                     ) : (
                         <div className="h-[340px] w-full pl-12 pr-4 group/chart flex flex-col">
                           <div className="relative flex-1 min-h-0">
                             <svg viewBox="0 0 1000 300" className="w-full h-full overflow-visible" preserveAspectRatio="none">
-                              {[0, 0.5, 1].map(p => (<g key={p}><line x1="0" y1={280 - p * 250} x2="1000" y2={280 - p * 250} stroke="#f1f5f9" strokeWidth="1" strokeDasharray={p === 0 ? "0" : "4 4"} /><text x="-12" y={280 - p * 250 + 4} textAnchor="end" className="fill-slate-500 text-[10px] font-black">{p === 0 ? '0' : `${Math.round((analytics.maxHourVal * p) / 1000)}k`}</text></g>))}
-                              {analytics.hourlyIntensity.map((val, i) => {
+                              {[0, 0.5, 1].map(p => (<g key={p}><line x1="0" y1={280 - p * 250} x2="1000" y2={280 - p * 250} stroke="#f1f5f9" strokeWidth="1" strokeDasharray={p === 0 ? "0" : "4 4"} /><text x="-12" y={280 - p * 250 + 4} textAnchor="end" className="fill-slate-500 text-[10px] font-black">{p === 0 ? '0' : `${Math.round((maxHourValActive * p) / 1000)}k`}</text></g>))}
+                              {hourlySeries.map((val, i) => {
                                   const x = (i / 23) * 1000;
                                   const barWidth = (1000 / 24) * 0.75;
-                                  const h = (val / (analytics.maxHourVal || 1)) * 250;
+                                  const h = (val / (maxHourValActive || 1)) * 250;
                                   return (
                                     <g key={i} className="cursor-help" onMouseEnter={(e) => { const rect = e.currentTarget.getBoundingClientRect(); setHoveredPoint({ x: rect.left + rect.width/2, y: rect.top, value: val, label: `${i.toString().padStart(2, '0')}:00h` }); }} onMouseLeave={() => setHoveredPoint(null)}>
                                       <rect x={x - barWidth / 2} y={280 - h} width={barWidth} height={h} fill={i >= 12 && i < 16 ? "#6366f1" : "#818cf8"} rx="4" className="hover:fill-indigo-400 transition-colors" />
@@ -631,29 +663,29 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
                           <div className="p-3 bg-emerald-50 text-emerald-600 rounded-2xl shadow-inner"><Calendar size={24}/></div>
                           <div>
                             <h3 className="text-2xl font-black text-slate-900 tracking-tight uppercase">Weekday Revenue Distribution</h3>
-                            <p className="text-slate-400 text-sm font-medium">Performance by day of week</p>
+                            <p className="text-slate-400 text-sm font-medium">Performance by day of week{trafficChannel !== 'all' ? ` — ${trafficChannel === 'online' ? 'Online/Delivery only' : 'Dine-In only'}` : ''}</p>
                           </div>
                         </div>
                     </div>
 
-                    {Object.values(analytics.weekdayRevenue).every(v => v === 0) ? (
+                    {Object.values(weekdaySeriesObj).every(v => v === 0) ? (
                         <div className="py-20 text-center bg-slate-50 rounded-[2.5rem] border border-dashed border-slate-200">
                           <div className="w-16 h-16 bg-white rounded-full flex items-center justify-center mx-auto mb-6 shadow-sm"><Activity size={24} className="text-emerald-400" /></div>
-                          <h4 className="text-lg font-black text-slate-800 uppercase tracking-tight">No Weekday Data</h4>
+                          <h4 className="text-lg font-black text-slate-800 uppercase tracking-tight">{trafficChannel !== 'all' ? 'No Data For This Channel' : 'No Weekday Data'}</h4>
                         </div>
                     ) : (
                         <div className="h-[340px] w-full pl-12 pr-4 group/chart flex flex-col">
                           <div className="relative flex-1 min-h-0">
                             <svg viewBox="0 0 1000 300" className="w-full h-full overflow-visible" preserveAspectRatio="none">
                               {(() => {
-                                const weekdayValues = Object.values(analytics.weekdayRevenue) as number[];
+                                const weekdayValues = Object.values(weekdaySeriesObj) as number[];
                                 const maxWeekday = Math.max(...weekdayValues, 1);
                                 const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
                                 return (
                                   <>
                                     {[0, 0.5, 1].map(p => (<g key={p}><line x1="0" y1={280 - p * 250} x2="1000" y2={280 - p * 250} stroke="#f1f5f9" strokeWidth="1" strokeDasharray={p === 0 ? "0" : "4 4"} /><text x="-12" y={280 - p * 250 + 4} textAnchor="end" className="fill-slate-500 text-[10px] font-black">{p === 0 ? '0' : `${Math.round((maxWeekday * p) / 1000)}k`}</text></g>))}
                                     {days.map((day, i) => {
-                                      const val = analytics.weekdayRevenue[i] || 0;
+                                      const val = weekdaySeriesObj[i] || 0;
                                       const x = (i / 6) * 1000;
                                       const barWidth = (1000 / 7) * 0.75;
                                       const h = (val / maxWeekday) * 250;
@@ -706,7 +738,8 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
                     </p>
                 </div>
               </div>
-            )}
+              );
+            })()}
 
             {activeTab === 'reconciliation' && (
               <div className="space-y-8 animate-in slide-in-from-right-4 duration-500">
