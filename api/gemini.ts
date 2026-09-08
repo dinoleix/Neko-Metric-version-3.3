@@ -11,17 +11,30 @@ import { getAuth } from 'firebase-admin/auth';
  * Lazy singleton: a warm Vercel function instance can serve several
  * invocations, and calling initializeApp() a second time throws.
  *
- * FIREBASE_PRIVATE_KEY needs the \n un-escaped — Vercel's env var UI stores a
- * single line, so the real PEM's newlines have to be entered as literal `\n`
- * and restored here, or the key fails to parse.
+ * One env var, FIREBASE_SERVICE_ACCOUNT, holding the raw service-account JSON
+ * verbatim. The original design split this into three separate fields
+ * (FIREBASE_PROJECT_ID / FIREBASE_CLIENT_EMAIL / FIREBASE_PRIVATE_KEY) with
+ * the private key's embedded newlines re-escaped as literal `\n` for Vercel's
+ * single-line UI — that's exactly the kind of hand-transcription a private
+ * key is the worst possible value to go through, since one dropped or
+ * mismatched character fails silently. Pasting the whole JSON blob once has
+ * one place to get wrong instead of three.
  */
 function adminApp() {
   if (getApps().length) return getApps()[0];
-  const projectId = process.env.FIREBASE_PROJECT_ID;
-  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-  const privateKey = (process.env.FIREBASE_PRIVATE_KEY || '').replace(/\\n/g, '\n');
+  const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
+  if (!raw) {
+    throw new Error('FIREBASE_SERVICE_ACCOUNT is not set');
+  }
+  let parsed: { project_id?: string; client_email?: string; private_key?: string };
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error('FIREBASE_SERVICE_ACCOUNT is not valid JSON');
+  }
+  const { project_id: projectId, client_email: clientEmail, private_key: privateKey } = parsed;
   if (!projectId || !clientEmail || !privateKey) {
-    throw new Error('Firebase Admin credentials are not configured on the server');
+    throw new Error('FIREBASE_SERVICE_ACCOUNT is missing project_id, client_email, or private_key');
   }
   return initializeApp({ credential: cert({ projectId, clientEmail, privateKey }) });
 }
@@ -54,8 +67,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   } catch (err: any) {
     console.error('Gemini proxy: admin credentials not configured:', err);
     res.status(500).json({
-      error: 'AI is not set up on the server yet — Firebase Admin credentials are missing ' +
-        'or invalid in Vercel (FIREBASE_PROJECT_ID / FIREBASE_CLIENT_EMAIL / FIREBASE_PRIVATE_KEY).',
+      error: `AI is not set up on the server yet — ${err?.message || 'FIREBASE_SERVICE_ACCOUNT is missing or invalid'} in Vercel.`,
     });
     return;
   }
