@@ -1,16 +1,31 @@
+import { auth } from './firebase';
+
 /**
  * Compatibility shim: same `ai.models.generateContent` shape every caller in
  * this codebase already uses, but routed through the /api/gemini serverless
  * proxy instead of the browser SDK — the Gemini key now lives server-side
  * only (GEMINI_API_KEY, no VITE_ prefix) and never reaches the client bundle.
+ *
+ * Every call attaches the signed-in user's Firebase ID token. The proxy used
+ * to check nothing about who was calling it — anyone who found the URL could
+ * spend the Gemini budget with a bare POST. The server now verifies this
+ * token before doing anything else.
  */
 export const ai = {
   get models() {
     return {
       generateContent: async (params: { model?: string; contents: string | any[]; config?: any }) => {
+        const token = await auth.currentUser?.getIdToken();
+        if (!token) {
+          throw new Error('You must be signed in to use AI features.');
+        }
+
         const res = await fetch('/api/gemini', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
           body: JSON.stringify({
             model: params.model,
             contents: params.contents,
@@ -27,6 +42,10 @@ export const ai = {
             'AI is not available on the local dev server: /api/gemini is a Vercel function ' +
             'that vite dev does not run. Use the deployed site, or run `vercel dev` locally.'
           );
+        }
+
+        if (res.status === 401) {
+          throw new Error('Your session has expired — sign in again and retry.');
         }
 
         if (!res.ok) {
