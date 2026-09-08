@@ -602,21 +602,23 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
                           <h4 className="text-lg font-black text-slate-800 uppercase tracking-tight">Re-Sync Required</h4>
                         </div>
                     ) : (
-                        <div className="relative h-[300px] w-full pl-12 pr-4 group/chart">
-                          <svg viewBox="0 0 1000 300" className="w-full h-full overflow-visible" preserveAspectRatio="none">
-                            {[0, 0.5, 1].map(p => (<g key={p}><line x1="0" y1={280 - p * 250} x2="1000" y2={280 - p * 250} stroke="#f1f5f9" strokeWidth="1" strokeDasharray={p === 0 ? "0" : "4 4"} /><text x="-12" y={280 - p * 250 + 4} textAnchor="end" className="fill-slate-400 text-[10px] font-black">{p === 0 ? '0' : `${Math.round((analytics.maxHourVal * p) / 1000)}k`}</text></g>))}
-                            {analytics.hourlyIntensity.map((val, i) => {
-                                const x = (i / 23) * 1000;
-                                const barWidth = (1000 / 24) * 0.75;
-                                const h = (val / (analytics.maxHourVal || 1)) * 250;
-                                return (
-                                  <g key={i} className="cursor-help" onMouseEnter={(e) => { const rect = e.currentTarget.getBoundingClientRect(); setHoveredPoint({ x: rect.left + rect.width/2, y: rect.top, value: val, label: `${i.toString().padStart(2, '0')}:00h` }); }} onMouseLeave={() => setHoveredPoint(null)}>
-                                    <rect x={x - barWidth / 2} y={280 - h} width={barWidth} height={h} fill={i >= 12 && i < 16 ? "#6366f1" : "#818cf8"} rx="4" className="hover:fill-indigo-400 transition-colors" />
-                                  </g>
-                                );
-                            })}
-                          </svg>
-                          <div className="flex justify-between mt-8 text-[9px] font-black text-slate-500 uppercase tracking-widest border-t border-slate-50 pt-4 px-1">
+                        <div className="h-[340px] w-full pl-12 pr-4 group/chart flex flex-col">
+                          <div className="relative flex-1 min-h-0">
+                            <svg viewBox="0 0 1000 300" className="w-full h-full overflow-visible" preserveAspectRatio="none">
+                              {[0, 0.5, 1].map(p => (<g key={p}><line x1="0" y1={280 - p * 250} x2="1000" y2={280 - p * 250} stroke="#f1f5f9" strokeWidth="1" strokeDasharray={p === 0 ? "0" : "4 4"} /><text x="-12" y={280 - p * 250 + 4} textAnchor="end" className="fill-slate-500 text-[10px] font-black">{p === 0 ? '0' : `${Math.round((analytics.maxHourVal * p) / 1000)}k`}</text></g>))}
+                              {analytics.hourlyIntensity.map((val, i) => {
+                                  const x = (i / 23) * 1000;
+                                  const barWidth = (1000 / 24) * 0.75;
+                                  const h = (val / (analytics.maxHourVal || 1)) * 250;
+                                  return (
+                                    <g key={i} className="cursor-help" onMouseEnter={(e) => { const rect = e.currentTarget.getBoundingClientRect(); setHoveredPoint({ x: rect.left + rect.width/2, y: rect.top, value: val, label: `${i.toString().padStart(2, '0')}:00h` }); }} onMouseLeave={() => setHoveredPoint(null)}>
+                                      <rect x={x - barWidth / 2} y={280 - h} width={barWidth} height={h} fill={i >= 12 && i < 16 ? "#6366f1" : "#818cf8"} rx="4" className="hover:fill-indigo-400 transition-colors" />
+                                    </g>
+                                  );
+                              })}
+                            </svg>
+                          </div>
+                          <div className="shrink-0 flex justify-between mt-4 text-[9px] font-black text-slate-500 uppercase tracking-widest border-t border-slate-100 pt-4 px-1">
                             {[0, 6, 12, 18, 23].map(h => <span key={h}>{h.toString().padStart(2, '0')}h</span>)}
                           </div>
                         </div>
@@ -640,31 +642,33 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
                           <h4 className="text-lg font-black text-slate-800 uppercase tracking-tight">No Weekday Data</h4>
                         </div>
                     ) : (
-                        <div className="relative h-[300px] w-full pl-12 pr-4 group/chart">
-                          <svg viewBox="0 0 1000 300" className="w-full h-full overflow-visible" preserveAspectRatio="none">
-                            {(() => {
-                              const weekdayValues = Object.values(analytics.weekdayRevenue) as number[];
-                              const maxWeekday = Math.max(...weekdayValues, 1);
-                              const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-                              return (
-                                <>
-                                  {[0, 0.5, 1].map(p => (<g key={p}><line x1="0" y1={280 - p * 250} x2="1000" y2={280 - p * 250} stroke="#f1f5f9" strokeWidth="1" strokeDasharray={p === 0 ? "0" : "4 4"} /><text x="-12" y={280 - p * 250 + 4} textAnchor="end" className="fill-slate-400 text-[10px] font-black">{p === 0 ? '0' : `${Math.round((maxWeekday * p) / 1000)}k`}</text></g>))}
-                                  {days.map((day, i) => {
-                                    const val = analytics.weekdayRevenue[i] || 0;
-                                    const x = (i / 6) * 1000;
-                                    const barWidth = (1000 / 7) * 0.75;
-                                    const h = (val / maxWeekday) * 250;
-                                    return (
-                                      <g key={day} className="cursor-help" onMouseEnter={(e) => { const rect = e.currentTarget.getBoundingClientRect(); setHoveredPoint({ x: rect.left + rect.width/2, y: rect.top, value: val, label: day }); }} onMouseLeave={() => setHoveredPoint(null)}>
-                                        <rect x={x - barWidth / 2} y={280 - h} width={barWidth} height={h} fill={i === 0 || i === 6 ? "#10b981" : "#34d399"} rx="4" className="hover:fill-emerald-400 transition-colors" />
-                                      </g>
-                                    );
-                                  })}
-                                </>
-                              );
-                            })()}
-                          </svg>
-                          <div className="flex justify-between mt-8 text-[9px] font-black text-slate-500 uppercase tracking-widest border-t border-slate-50 pt-4 px-1">
+                        <div className="h-[340px] w-full pl-12 pr-4 group/chart flex flex-col">
+                          <div className="relative flex-1 min-h-0">
+                            <svg viewBox="0 0 1000 300" className="w-full h-full overflow-visible" preserveAspectRatio="none">
+                              {(() => {
+                                const weekdayValues = Object.values(analytics.weekdayRevenue) as number[];
+                                const maxWeekday = Math.max(...weekdayValues, 1);
+                                const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+                                return (
+                                  <>
+                                    {[0, 0.5, 1].map(p => (<g key={p}><line x1="0" y1={280 - p * 250} x2="1000" y2={280 - p * 250} stroke="#f1f5f9" strokeWidth="1" strokeDasharray={p === 0 ? "0" : "4 4"} /><text x="-12" y={280 - p * 250 + 4} textAnchor="end" className="fill-slate-500 text-[10px] font-black">{p === 0 ? '0' : `${Math.round((maxWeekday * p) / 1000)}k`}</text></g>))}
+                                    {days.map((day, i) => {
+                                      const val = analytics.weekdayRevenue[i] || 0;
+                                      const x = (i / 6) * 1000;
+                                      const barWidth = (1000 / 7) * 0.75;
+                                      const h = (val / maxWeekday) * 250;
+                                      return (
+                                        <g key={day} className="cursor-help" onMouseEnter={(e) => { const rect = e.currentTarget.getBoundingClientRect(); setHoveredPoint({ x: rect.left + rect.width/2, y: rect.top, value: val, label: day }); }} onMouseLeave={() => setHoveredPoint(null)}>
+                                          <rect x={x - barWidth / 2} y={280 - h} width={barWidth} height={h} fill={i === 0 || i === 6 ? "#10b981" : "#34d399"} rx="4" className="hover:fill-emerald-400 transition-colors" />
+                                        </g>
+                                      );
+                                    })}
+                                  </>
+                                );
+                              })()}
+                            </svg>
+                          </div>
+                          <div className="shrink-0 flex justify-between mt-4 text-[9px] font-black text-slate-500 uppercase tracking-widest border-t border-slate-100 pt-4 px-1">
                             {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => <span key={d}>{d}</span>)}
                           </div>
                         </div>
