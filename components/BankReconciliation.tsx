@@ -137,10 +137,26 @@ type MatchCandidate = {
    * bill records no vendor.
    */
   vendor: string;
+  /** True when the vendor name reads as present inside the bank line's own
+   * description string (see normalizeForMatch below) — e.g. vendor "Adarsh
+   * Gupta" against a bank description containing "UPI/ADARSHGUPTA/...". */
+  vendorMatchesDescription?: boolean;
+  /** Already linked to some bank transaction (isBankVerified on its own doc).
+   * Discovery still shows it — the "right" match is sometimes a correction to
+   * an existing wrong one — but the UI must make that obvious before another
+   * transaction claims it too, since nothing here unlinks the old one. */
+  alreadyMapped?: boolean;
 };
 
 /** Sentinel for the category filter. Not a real category — no transaction stores it. */
 const UNMAPPED = '__UNMAPPED__';
+
+/**
+ * Strips everything but letters/digits and uppercases, so "Adarsh Gupta" and
+ * a bank string like "UPI/ADARSHGUPTA/HDFC0001234" compare equal despite the
+ * spacing, slashes and codes banks pack into transaction descriptions.
+ */
+const normalizeForMatch = (s: string) => (s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 
 /** Rank colours for suggested bill combinations. Index is the rank. */
 const COMBO_TONES = [
@@ -1178,17 +1194,20 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
       // or two later, but it can equally be paid first and entered after — a
       // forward-only window silently missed the whole first case.
       //
+      // A range query (>=/<=), not `in`: at ±15 days or wider the day list
+      // exceeds Firestore's 30-value cap on `in` clauses (2*daysOffset+1 dates —
+      // ±15 alone is already 31). >=/<= on `date` reuses the same (ownerId/
+      // userId, date) composite indexes the `in` version needed, so this scales
+      // to any offset with no new index.
+      //
       // All UTC arithmetic: `new Date('YYYY-MM-DD')` is UTC midnight, so mixing
       // in local getDate/setDate would shift the window by a day at negative
-      // offsets. Widest span is 5 dates, well inside the 30-value `in` limit.
+      // offsets.
       const txnDate = new Date(txn.date);
-      const searchDates: string[] = [];
-
-      for (let i = -daysOffset; i <= daysOffset; i++) {
-        const d = new Date(txnDate);
-        d.setUTCDate(d.getUTCDate() + i);
-        searchDates.push(d.toISOString().split('T')[0]);
-      }
+      const rangeStart = new Date(txnDate); rangeStart.setUTCDate(rangeStart.getUTCDate() - daysOffset);
+      const rangeEnd = new Date(txnDate); rangeEnd.setUTCDate(rangeEnd.getUTCDate() + daysOffset);
+      const startDateStr = rangeStart.toISOString().split('T')[0];
+      const endDateStr = rangeEnd.toISOString().split('T')[0];
 
       // Both spend sources, not just CSV-imported purchases. Each leg is isolated
       // so one failing (e.g. a missing index) still lets the others return.
@@ -1199,7 +1218,8 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
           const snap = await getDocs(query(
             collection(db, coll),
             where(field, '==', value),
-            where('date', 'in', searchDates)
+            where('date', '>=', startDateStr),
+            where('date', '<=', endDateStr)
           ));
           return snap.docs.map(d => ({ id: d.id, ...d.data() }));
         } catch (err) {
@@ -1226,6 +1246,7 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
         label: d.productName || 'Purchase',
         note: d.vendor,
         vendor: (d.vendor || '').trim().toUpperCase(),
+        alreadyMapped: d.isBankVerified === true,
       }));
 
       const seenCrew = new Set<string>();
@@ -1247,12 +1268,28 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
           channel: d.type === 'purchase' ? 'Online' : 'Cash',
           fromVault: d.paidFrom === '10k',
           vendor: (d.vendorName || '').trim().toUpperCase(),
+          alreadyMapped: d.isBankVerified === true,
         });
       });
 
-      // Closest amount first, regardless of which collection it came from
-      setDiscoveryResults(candidates.sort((a, b) =>
-        Math.abs(a.amount - txn.amount) - Math.abs(b.amount - txn.amount)));
+      // A vendor name that literally reads inside the bank line's own
+      // description (e.g. vendor "Adarsh Gupta" against a bank description
+      // containing "ADARSHGUPTA") is strong independent evidence beyond date
+      // and amount, so those candidates surface first regardless of the date
+      // offset searched. Within each group, closest amount first.
+      const txnCompact = normalizeForMatch(txn.description);
+      const withVendorMatch = candidates.map(c => ({
+        ...c,
+        vendorMatchesDescription: normalizeForMatch(c.vendor).length >= 3 && txnCompact.includes(normalizeForMatch(c.vendor)),
+      }));
+
+      setDiscoveryResults(withVendorMatch.sort((a, b) => {
+        if (a.vendorMatchesDescription !== b.vendorMatchesDescription) return a.vendorMatchesDescription ? -1 : 1;
+        // Genuinely available bills first; already-claimed ones still show
+        // (for correcting a wrong earlier match) but sink within their tier.
+        if (a.alreadyMapped !== b.alreadyMapped) return a.alreadyMapped ? 1 : -1;
+        return Math.abs(a.amount - txn.amount) - Math.abs(b.amount - txn.amount);
+      }));
       setDiscoveryTxn(txn);
     } catch (err) {
       console.error(err);
@@ -2682,9 +2719,9 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
                        <span className="text-[10px] font-bold text-slate-400 uppercase">{new Date(discoveryTxn.date).toLocaleDateString()}</span>
                     </div>
                   </div>
-                  <div className="flex items-center justify-end gap-3">
+                  <div className="flex items-center justify-end gap-3 flex-wrap">
                     <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest mr-2">Search Range:</span>
-                    {[0, 1, 2].map(days => (
+                    {[0, 1, 2, 7, 15, 20, 30].map(days => (
                       <button
                         key={days}
                         onClick={() => findMatchingPurchases(discoveryTxn, days)}
@@ -2803,9 +2840,11 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
                         <div className={`p-6 rounded-[2rem] border transition-all flex items-start justify-between gap-4 ${
                           cashOnly
                             ? 'bg-slate-50 border-slate-100 opacity-70'
-                            : isExact
-                              ? 'bg-emerald-50 border-emerald-100 hover:shadow-lg'
-                              : 'bg-white border-slate-100 hover:shadow-lg'
+                            : p.alreadyMapped
+                              ? 'bg-orange-50/50 border-orange-100 opacity-80'
+                              : isExact
+                                ? 'bg-emerald-50 border-emerald-100 hover:shadow-lg'
+                                : 'bg-white border-slate-100 hover:shadow-lg'
                         } ${inSelected && tone ? 'ring-2 ' + tone.ring : ''}`} key={p.id}>
                           <div>
                              <div className="flex items-center gap-2 mb-1">
@@ -2816,6 +2855,22 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
                                <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full ${p.source === 'crew_entries' ? 'bg-amber-100 text-amber-700' : 'bg-sky-100 text-sky-700'}`}>
                                  {p.source === 'crew_entries' ? 'Crew' : 'CSV'}
                                </span>
+                               {p.vendorMatchesDescription && (
+                                 <span
+                                   title={`"${p.vendor}" appears inside the bank transaction's own description`}
+                                   className="text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full bg-violet-100 text-violet-700"
+                                 >
+                                   Vendor In Bank Text
+                                 </span>
+                               )}
+                               {p.alreadyMapped && (
+                                 <span
+                                   title="This bill is already linked to a different bank transaction. Linking it here too will leave that other transaction pointing at a bill that's no longer really its match."
+                                   className="text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 flex items-center gap-1"
+                                 >
+                                   <AlertCircle size={10} /> Already Matched
+                                 </span>
+                               )}
                                {tone && (
                                  <span
                                    title="This bill is part of a suggested combination above"
@@ -2855,11 +2910,25 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
                                  </span>
                                </p>
                              )}
+                             {!cashOnly && p.alreadyMapped && (
+                               <p className="text-[10px] font-bold text-orange-600 mt-2.5 flex items-start gap-1.5 max-w-sm">
+                                 <AlertCircle size={12} className="mt-0.5 shrink-0" />
+                                 <span>
+                                   Already linked to another bank transaction. Only link it here too if that earlier
+                                   match was wrong — the old transaction won't be unlinked automatically.
+                                 </span>
+                               </p>
+                             )}
                           </div>
 
-                          <button 
+                          <button
                             onClick={async () => {
                               if (cashOnly) return;
+                              if (p.alreadyMapped && !window.confirm(
+                                `"${p.label}" is already linked to a different bank transaction. Link it here as well?\n\n` +
+                                `The earlier transaction will still show it as matched — it won't be unlinked automatically. ` +
+                                `Only continue if that earlier match was wrong.`
+                              )) return;
                               await handleManualMap(discoveryTxn.id!, (p.category || 'COGS').toUpperCase(), true, p.id, p.source);
                               setDiscoveryTxn(null);
                             }}
@@ -2867,11 +2936,13 @@ const BankReconciliation: React.FC<{ user: User; dataOwnerId: string }> = ({ use
                             className={`p-3 rounded-2xl transition-all shadow-xl ${
                               cashOnly
                                 ? 'bg-slate-200 text-slate-400 shadow-none cursor-not-allowed'
-                                : isExact
-                                  ? 'bg-emerald-600 text-white shadow-emerald-200'
-                                  : 'bg-slate-900 text-white shadow-slate-200'
+                                : p.alreadyMapped
+                                  ? 'bg-orange-500 text-white shadow-orange-200'
+                                  : isExact
+                                    ? 'bg-emerald-600 text-white shadow-emerald-200'
+                                    : 'bg-slate-900 text-white shadow-slate-200'
                             }`}
-                            title={cashOnly ? 'Cash purchases cannot be matched to a bank transaction' : 'Link this bill and apply its category'}
+                            title={cashOnly ? 'Cash purchases cannot be matched to a bank transaction' : p.alreadyMapped ? 'Already matched elsewhere — click to link anyway' : 'Link this bill and apply its category'}
                           >
                             {cashOnly ? <Ban size={18} /> : <ArrowRightLeft size={18} />}
                           </button>

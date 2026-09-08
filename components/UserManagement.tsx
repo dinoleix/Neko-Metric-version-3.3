@@ -105,7 +105,11 @@ const UserManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
     }
     try {
       const userRef = doc(db, 'users', targetUid);
-      const updates: Partial<UserProfile> = { role, ownerId: user.uid };
+      // dataOwnerId, not user.uid: a delegated admin's own uid is not the
+      // tenant — stamping it here would re-point the target account at the
+      // delegated admin instead of the real business owner, making every
+      // entry that account later submits invisible to the owner's queries.
+      const updates: Partial<UserProfile> = { role, ownerId: dataOwnerId };
       if (role === 'crew' && outletId) updates.assignedOutlet = outletId;
       else updates.assignedOutlet = '';
 
@@ -161,7 +165,7 @@ const UserManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
           // so this write failed for every non-crew role. Matches handleUpdateRole,
           // which already clears the outlet with an empty string.
           assignedOutlet: newRole === 'crew' ? newOutlet : '',
-          ownerId: user.uid,
+          ownerId: dataOwnerId,
         });
         setIsAdding(false);
         setNewEmail('');
@@ -186,7 +190,7 @@ const UserManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
         createdAt: Date.now(),
         // See the note above: undefined is not a writable Firestore value.
         assignedOutlet: newRole === 'crew' ? newOutlet : '',
-        ownerId: user.uid,
+        ownerId: dataOwnerId,
       };
       await setDoc(doc(db, 'users', realUid), profile);
 

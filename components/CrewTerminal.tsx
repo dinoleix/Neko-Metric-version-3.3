@@ -526,21 +526,40 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
         // isCrewOfSameOutlet() in firestore.rules; every returned doc satisfies
         // it because the query pins both ownerId and outletId.
         // Uses the existing (ownerId, outletId, date) composite index.
-        try {
-          const snap = await getDocs(query(
-            collection(db, 'crew_entries'),
-            where('ownerId', '==', ownerId),
-            where('outletId', '==', profile.assignedOutlet),
-            where('date', '>=', start),
-            where('date', '<=', end)
-          ));
-          docs = snap.docs.map(d => ({ id: d.id, ...d.data() } as DailyCounterEntry));
-        } catch (err) {
-          console.warn('[CrewTerminal] outlet entries query failed, falling back to own entries:', err);
-          const byUser = await runEntries('userId', user.uid);
-          allFailed = byUser.failed;
-          docs = byUser.docs.map(d => ({ id: d.id, ...d.data() } as DailyCounterEntry));
-        }
+        //
+        // outletId is stamped on an entry at the moment it's created, from
+        // whatever profile.assignedOutlet was at the time. If an admin later
+        // reassigns this crew member to a different outlet, filtering by the
+        // CURRENT assignedOutlet alone would silently drop every entry they
+        // logged under the old one from their own history — the entry is still
+        // intact (admins query by ownerId only, no outlet filter), but the crew
+        // member who typed it would see it vanish. Always also fetch their own
+        // entries by userId regardless of outlet, and merge, so nothing they
+        // personally typed is ever lost to a reassignment.
+        const runOutlet = async () => {
+          try {
+            const snap = await getDocs(query(
+              collection(db, 'crew_entries'),
+              where('ownerId', '==', ownerId),
+              where('outletId', '==', profile.assignedOutlet),
+              where('date', '>=', start),
+              where('date', '<=', end)
+            ));
+            return { docs: snap.docs, failed: false };
+          } catch (err) {
+            console.warn('[CrewTerminal] outlet entries query failed:', err);
+            return { docs: [] as any[], failed: true };
+          }
+        };
+        const [byOutlet, byUser] = await Promise.all([
+          runOutlet(),
+          runEntries('userId', user.uid),
+        ]);
+        allFailed = byOutlet.failed && byUser.failed;
+        const seen = new Set<string>();
+        docs = [...byOutlet.docs, ...byUser.docs]
+          .filter(d => { if (seen.has(d.id)) return false; seen.add(d.id); return true; })
+          .map(d => ({ id: d.id, ...d.data() } as DailyCounterEntry));
       } else {
         // No outlet assigned — can only safely read one's own entries
         const byUser = await runEntries('userId', user.uid);
