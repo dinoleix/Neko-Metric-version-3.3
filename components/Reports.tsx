@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, orderBy, limit } from 'firebase/firestore';
 import { db } from '../firebase';
-import { expenseMapsOf, purchaseMapsOf, forEachCostRow, totalExpenseOf, totalPurchaseOf } from '../pnlService';
+import { expenseMapsOf, purchaseMapsOf, forEachCostRow, totalExpenseOf } from '../pnlService';
 import { getCachedCollection } from '../referenceCache';
 import {
   ExpenseRecord,
@@ -13,7 +13,8 @@ import {
   ExpenseMonthlySnapshot,
   MONTH_NAMES,
   YEAR_OPTIONS,
-  getOutletName
+  getOutletName,
+  ALWAYS_EXCLUDED_PURCHASE_CATEGORIES
 } from '../types';
 import { 
   TrendingUp, 
@@ -150,12 +151,17 @@ const Reports: React.FC<{ user: User }> = ({ user }) => {
       expByCategory[cat] = (expByCategory[cat] || 0) + v;
     }));
 
-    // Purchase Logic
-    const totalPur = eSnaps.reduce((acc, s) => acc + totalPurchaseOf(s), 0);
+    // Purchase Logic. STORAGE (bulk buys into central storage) is excluded —
+    // it's inventory sitting in stock, not consumed spend, so it must never
+    // appear in a purchase total or category breakdown. totalPurchaseOf() has
+    // no category granularity to filter by, so the total is derived from the
+    // (now-filtered) category breakdown instead of that raw snapshot field.
     const purByCategory: Record<string, number> = {};
     eSnaps.forEach(s => forEachCostRow(purchaseMapsOf(s), (cat, v) => {
+      if (ALWAYS_EXCLUDED_PURCHASE_CATEGORIES.includes(cat)) return;
       purByCategory[cat] = (purByCategory[cat] || 0) + v;
     }));
+    const totalPur = Object.values(purByCategory).reduce((a, b) => a + b, 0);
 
     return {
       sales: { posGross, posNet, onlineGross, onlineNet, totalRev: posGross + onlineGross },

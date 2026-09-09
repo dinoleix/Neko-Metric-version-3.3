@@ -311,7 +311,11 @@ service cloud.firestore {
       allow read: if canRead() || isCrewOfSameOutlet() || isLinkedViaOwnerField() ||
         (isAuthenticated() && resource.data.ownerId == request.auth.uid);
       allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
-      allow update: if isDocOwner() || isLinkedToOwner() ||
+      // isCrewOfSameOutlet() added so one crew member can settle a bill a
+      // teammate on a different shift logged — Settle Pending Bills bulk-marks
+      // paid across a whole month, which routinely spans more than one author.
+      // Already true for read (shift handover); update needed the same reach.
+      allow update: if isDocOwner() || isLinkedToOwner() || isCrewOfSameOutlet() ||
         (isAuthenticated() && resource.data.ownerId == request.auth.uid) || isTenantStaff();
       allow delete: if isDocOwner() || isLinkedToOwner() ||
         (isAuthenticated() && resource.data.ownerId == request.auth.uid) || isTenantStaff();

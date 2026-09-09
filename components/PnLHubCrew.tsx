@@ -24,7 +24,8 @@ import {
   DEFAULT_OPS,
   YEAR_OPTIONS,
   MONTH_NAMES,
-  MASTER_OUTLETS
+  MASTER_OUTLETS,
+  ALWAYS_EXCLUDED_PURCHASE_CATEGORIES
 } from '../types';
 import { 
   PieChart, 
@@ -96,9 +97,10 @@ const PnLHubCrew: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean
   const [cogsKeywords, setCogsKeywords] = useState<string[]>(DEFAULT_COGS);
   const [labourKeywords, setLabourKeywords] = useState<string[]>(DEFAULT_LABOUR);
   const [opsKeywords, setOpsKeywords] = useState<string[]>(DEFAULT_OPS);
-  // Asset purchases (bulk buys into storage). Empty by default, so the guard
-  // below never fires until an owner configures one.
-  const [stockPurchaseCategories, setStockPurchaseCategories] = useState<string[]>([]);
+  // Asset purchases (bulk buys into storage). Starts with the always-excluded
+  // set (STORAGE) so that guard fires even before an owner configures anything;
+  // the fetch below adds whatever else the owner has configured.
+  const [stockPurchaseCategories, setStockPurchaseCategories] = useState<string[]>(ALWAYS_EXCLUDED_PURCHASE_CATEGORIES);
 
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear().toString());
   const [selectedMonth, setSelectedMonth] = useState(MONTH_NAMES[new Date().getMonth()]);
@@ -191,7 +193,7 @@ const PnLHubCrew: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean
         if (data.cogsKeywords) setCogsKeywords(norm(data.cogsKeywords));
         if (data.labourKeywords) setLabourKeywords(norm(data.labourKeywords));
         if (data.opsKeywords) setOpsKeywords(norm(data.opsKeywords));
-        if (data.stockPurchaseCategories) setStockPurchaseCategories(norm(data.stockPurchaseCategories));
+        setStockPurchaseCategories(Array.from(new Set([...ALWAYS_EXCLUDED_PURCHASE_CATEGORIES, ...norm(data.stockPurchaseCategories || [])])));
       }
       
       setSalesSnaps(sSnaps.docs.map(d => d.data() as SalesMonthlySnapshot));

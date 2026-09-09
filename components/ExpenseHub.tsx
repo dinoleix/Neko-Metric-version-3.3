@@ -18,7 +18,8 @@ import {
   getOutletName, 
   CategorySettings,
   YEAR_OPTIONS,
-  MONTH_NAMES
+  MONTH_NAMES,
+  ALWAYS_EXCLUDED_PURCHASE_CATEGORIES
 } from '../types';
 import { 
   Receipt, 
@@ -86,9 +87,10 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
   const [cogsKeywords, setCogsKeywords] = useState<string[]>(DEFAULT_COGS);
   const [labourKeywords, setLabourKeywords] = useState<string[]>(DEFAULT_LABOUR);
   const [opsKeywords, setOpsKeywords] = useState<string[]>(DEFAULT_OPS);
-  // Asset purchases (bulk buys into storage). Empty by default, so the guard in
-  // classifyRow never fires until an owner configures one.
-  const [stockPurchaseCategories, setStockPurchaseCategories] = useState<string[]>([]);
+  // Asset purchases (bulk buys into storage). Starts with the always-excluded
+  // set (STORAGE) so the guard in classifyRow fires even before an owner
+  // configures anything; the fetch below adds whatever else they've configured.
+  const [stockPurchaseCategories, setStockPurchaseCategories] = useState<string[]>(ALWAYS_EXCLUDED_PURCHASE_CATEGORIES);
   const [cogsBucketMapping, setCogsBucketMapping] = useState<Record<string, CogsBucket>>({});
 
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear().toString());
@@ -130,7 +132,7 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
         if (d.cogsKeywords) setCogsKeywords(d.cogsKeywords.map(k => k.trim().toUpperCase()));
         if (d.labourKeywords) setLabourKeywords(d.labourKeywords.map(k => k.trim().toUpperCase()));
         if (d.opsKeywords) setOpsKeywords(d.opsKeywords.map(k => k.trim().toUpperCase()));
-        if (d.stockPurchaseCategories) setStockPurchaseCategories(d.stockPurchaseCategories.map(k => k.trim().toUpperCase()));
+        setStockPurchaseCategories(Array.from(new Set([...ALWAYS_EXCLUDED_PURCHASE_CATEGORIES, ...(d.stockPurchaseCategories || []).map(k => k.trim().toUpperCase())])));
         if (d.cogsBucketMapping) setCogsBucketMapping(d.cogsBucketMapping || {});
       }
 
@@ -365,7 +367,24 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
     const finalUncatBreakdown = Object.entries(uncatCatMap).sort((a, b) => b[1].amount - a[1].amount);
     const currentTotal = adjustedCogsTotal + totalLabour + fixedRent + csvOps + csvUncat;
 
-    return { 
+    // "Bought into storage" this period — informational only, never folded into
+    // any total above (see the guard in classifyRow). Counts what was bought,
+    // not what's been paid, so pending crew entries count too regardless of
+    // the accrual toggle — the stock is in the room either way.
+    let storageTotal = 0;
+    filteredSnaps.forEach((snap: ExpenseMonthlySnapshot) => {
+      const scan = (map?: Record<string, number>) => {
+        Object.entries(map || {}).forEach(([cat, amt]) => {
+          if ((cat || '').trim().toUpperCase() === 'STORAGE') storageTotal += Number(amt) || 0;
+        });
+      };
+      scan(snap.purchaseByCategory);
+      scan(snap.crewPurchaseByCategory);
+      scan(snap.crewPendingPurchaseByCategory);
+    });
+
+    return {
+      storageTotal,
       totalCombined: currentTotal, 
       categories,
       opsBreakdown: finalOpsBreakdown,
@@ -675,6 +694,23 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
             <RefreshCw size={15} className={isRecounting ? 'animate-spin' : ''} />
             {isRecounting ? 'Recounting' : 'Recount Now'}
           </button>
+        </div>
+      )}
+
+      {analytics.storageTotal > 0 && (
+        <div className="bg-sky-50 border border-sky-200 rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center gap-4">
+          <div className="p-2.5 bg-sky-500/15 rounded-xl shrink-0">
+            <Box className="text-sky-600" size={20} />
+          </div>
+          <div className="flex-1">
+            <p className="text-[10px] font-black uppercase tracking-widest text-sky-700">Bought into storage this period &mdash; not included in any total below</p>
+            <p className="text-sm font-bold text-sky-900 mt-1">
+              <span className="tabular-nums">&#8377;{Math.round(analytics.storageTotal).toLocaleString('en-IN')}</span> spent
+              on bulk stock purchases. This is inventory sitting in storage, not consumed spend, so it never counts
+              toward COGS, Operational Outflow, or Aggregate Velocity &mdash; it's tracked here purely so you know how
+              much went into storage this period.
+            </p>
+          </div>
         </div>
       )}
 

@@ -23,7 +23,8 @@ import {
   DEFAULT_LABOUR,
   DEFAULT_OPS,
   YEAR_OPTIONS,
-  MONTH_NAMES
+  MONTH_NAMES,
+  ALWAYS_EXCLUDED_PURCHASE_CATEGORIES
 } from '../types';
 import { 
   BarChart3, 
@@ -104,9 +105,10 @@ const PnLAnalytics: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
   const [cogsKeywords, setCogsKeywords] = useState<string[]>(DEFAULT_COGS);
   const [labourKeywords, setLabourKeywords] = useState<string[]>(DEFAULT_LABOUR);
   const [opsKeywords, setOpsKeywords] = useState<string[]>(DEFAULT_OPS);
-  // Asset purchases (bulk buys into storage). Empty by default, so the guard
-  // below never fires until an owner configures one.
-  const [stockPurchaseCategories, setStockPurchaseCategories] = useState<string[]>([]);
+  // Asset purchases (bulk buys into storage). Starts with the always-excluded
+  // set (STORAGE) so that guard fires even before an owner configures anything;
+  // the fetch below adds whatever else the owner has configured.
+  const [stockPurchaseCategories, setStockPurchaseCategories] = useState<string[]>(ALWAYS_EXCLUDED_PURCHASE_CATEGORIES);
 
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear().toString());
   const [selectedMonth, setSelectedMonth] = useState(MONTH_NAMES[new Date().getMonth()]);
@@ -142,7 +144,7 @@ const PnLAnalytics: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
         if (data.cogsKeywords) setCogsKeywords(data.cogsKeywords.map(k => k.trim().toUpperCase()));
         if (data.labourKeywords) setLabourKeywords(data.labourKeywords.map(k => k.trim().toUpperCase()));
         if (data.opsKeywords) setOpsKeywords(data.opsKeywords.map(k => k.trim().toUpperCase()));
-        if (data.stockPurchaseCategories) setStockPurchaseCategories(data.stockPurchaseCategories.map(k => k.trim().toUpperCase()));
+        setStockPurchaseCategories(Array.from(new Set([...ALWAYS_EXCLUDED_PURCHASE_CATEGORIES, ...(data.stockPurchaseCategories || []).map(k => k.trim().toUpperCase())])));
       }
 
       setRentals(rent);

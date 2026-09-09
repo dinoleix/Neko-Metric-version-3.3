@@ -224,11 +224,17 @@ const EntriesDataTable = ({ rows }: { rows: (string | number)[][] }) => {
 };
 
 const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, profile }) => {
-  const [activeMode, setActiveMode] = useState<'landing' | 'view' | 'add' | 'edit' | 'daily-sales' | 'transfer-10k' | 'record-waste'>('landing');
+  const [activeMode, setActiveMode] = useState<'landing' | 'view' | 'add' | 'edit' | 'daily-sales' | 'transfer-10k' | 'record-waste' | 'pending-bills'>('landing');
   const [entryType, setEntryType] = useState<'expense' | 'purchase'>('purchase');
   const [entries, setEntries] = useState<DailyCounterEntry[]>([]);
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
   const [allBankAccounts, setAllBankAccounts] = useState<BankAccount[]>([]);
+  // Settle Pending Bills — bulk mark-paid for several bills from one vendor at once
+  const [pendingBills, setPendingBills] = useState<DailyCounterEntry[]>([]);
+  const [pendingBillsLoading, setPendingBillsLoading] = useState(false);
+  const [expandedVendorKey, setExpandedVendorKey] = useState<string | null>(null);
+  const [selectedBillIds, setSelectedBillIds] = useState<Set<string>>(new Set());
+  const [markingPaid, setMarkingPaid] = useState(false);
   // 10K transfer state
   const [transferAmount, setTransferAmount] = useState('');
   const [transferring, setTransferring] = useState(false);
@@ -622,6 +628,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     // explicit fetchEntries() after every submit/delete — no need to refetch here.
     if (activeMode === 'daily-sales') fetchDsLogs();
     if (activeMode === 'record-waste') fetchServingOptions();
+    if (activeMode === 'pending-bills') { setSelectedBillIds(new Set()); setExpandedVendorKey(null); fetchPendingBills(); }
   }, [activeMode]);
 
   useEffect(() => {
@@ -1195,6 +1202,168 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     console.log('[Rebuild] DONE ✓', snapId, `(${entryCount} paid entries)`);
   };
 
+  // ── Settle Pending Bills ────────────────────────────────────────────────
+  // A vendor bill is often entered as 'pending' the day it arrives and only
+  // actually paid weeks later, in one lump sum covering several bills. This
+  // lets crew select the bills that lump sum covers and mark them all paid
+  // together, so Bank Reconciliation's combo-matching finds them ready-made
+  // the moment the real bank line lands.
+  const fetchPendingBills = async () => {
+    setPendingBillsLoading(true);
+    try {
+      const ownerId = profile.ownerId || user.uid;
+      // Pending bills can sit for weeks before settlement, so this deliberately
+      // does not reuse the tight date-preset window the main entries list uses.
+      const start = istDateString(-365);
+      const end = istToday();
+
+      const runLeg = async (field: 'ownerId' | 'userId', value: string) => {
+        try {
+          const snap = await getDocs(query(
+            collection(db, 'crew_entries'),
+            where(field, '==', value),
+            where('date', '>=', start),
+            where('date', '<=', end)
+          ));
+          return snap.docs;
+        } catch (err) {
+          console.warn(`[CrewTerminal] pending bills ${field} query failed:`, err);
+          return [];
+        }
+      };
+
+      // Dual-leg: legacy entries pre-dating the ownerId field carry only userId.
+      const [byOwner, byUser] = await Promise.all([
+        runLeg('ownerId', ownerId),
+        runLeg('userId', user.uid),
+      ]);
+
+      const seen = new Set<string>();
+      const merged = [...byOwner, ...byUser]
+        .filter(d => { if (seen.has(d.id)) return false; seen.add(d.id); return true; })
+        .map(d => ({ id: d.id, ...d.data() } as DailyCounterEntry))
+        // Only vendor purchase bills go through this workflow — cash expenses
+        // are settled the same day at the counter, not batched at month-end.
+        .filter(e => e.type === 'purchase' && e.status === 'pending')
+        // Crew see their own outlet's bills, same as the main entries list;
+        // admins see the whole business.
+        .filter(e => !profile.assignedOutlet || e.outletId === profile.assignedOutlet);
+
+      setPendingBills(merged);
+    } catch (err) {
+      console.error('[CrewTerminal] fetchPendingBills failed:', err);
+    } finally {
+      setPendingBillsLoading(false);
+    }
+  };
+
+  const pendingBillGroups = useMemo(() => {
+    const groups: Record<string, { key: string; vendorName: string; bills: DailyCounterEntry[]; total: number }> = {};
+    pendingBills.forEach(b => {
+      const key = b.vendorId || '__no_vendor__';
+      if (!groups[key]) groups[key] = { key, vendorName: b.vendorName || 'No vendor recorded', bills: [], total: 0 };
+      groups[key].bills.push(b);
+      groups[key].total += b.amount;
+    });
+    Object.values(groups).forEach(g => g.bills.sort((a, b) => a.date.localeCompare(b.date)));
+    return Object.values(groups).sort((a, b) => b.total - a.total);
+  }, [pendingBills]);
+
+  const toggleBillSelected = (id: string) => {
+    setSelectedBillIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const selectedBillsTotal = useMemo(() =>
+    pendingBills.filter(b => b.id && selectedBillIds.has(b.id)).reduce((sum, b) => sum + b.amount, 0),
+    [pendingBills, selectedBillIds]
+  );
+
+  // One bank payment settles one vendor — switching which vendor group is
+  // expanded clears any selection so a stray checkbox from a different
+  // vendor can never ride along into the same batch.
+  const handleExpandVendor = (key: string) => {
+    setExpandedVendorKey(prev => {
+      if (prev === key) return null;
+      setSelectedBillIds(new Set());
+      return key;
+    });
+  };
+
+  const handleBulkMarkPaid = async () => {
+    const selected = pendingBills.filter(b => b.id && selectedBillIds.has(b.id));
+    if (selected.length === 0) return;
+    if (!confirm(
+      `Mark ${selected.length} bill${selected.length !== 1 ? 's' : ''} as paid — total ₹${selectedBillsTotal.toLocaleString('en-IN')}?\n\n` +
+      `This should match what was actually paid to the vendor.`
+    )) return;
+
+    setMarkingPaid(true);
+    try {
+      const ownerId = profile.ownerId || user.uid;
+      const liveBankSnap = await getDocs(query(collection(db, 'bank_accounts'), where('userId', '==', ownerId)));
+      const liveAccounts = liveBankSnap.docs.map(d => ({ id: d.id, ...d.data() } as BankAccount));
+      const now = Date.now();
+      let failures = 0;
+
+      for (const bill of selected) {
+        try {
+          await updateDoc(doc(db, 'crew_entries', bill.id!), { status: 'paid' });
+        } catch (err) {
+          console.error(`[CrewTerminal] Failed to mark ${bill.id} paid:`, err);
+          failures++;
+          continue; // don't move money for a status update that never saved
+        }
+
+        // Same bank movement a single edit-to-paid already does (purchases
+        // always hit the 'counter' digital account) — kept non-fatal per bill,
+        // matching how the single-entry flow already tolerates this failing.
+        try {
+          const acc = resolveTargetAccount(liveAccounts, bill.outletId, 'purchase', 'counter');
+          if (acc) {
+            await updateDoc(doc(db, 'bank_accounts', acc.id!), { balance: increment(-bill.amount), updatedAt: now });
+            await addDoc(collection(db, 'bank_transactions'), {
+              userId: user.uid,
+              ownerId,
+              bankAccountId: acc.id!,
+              date: bill.date,
+              description: `Digital Purchase (Batch settle): ${bill.category}${bill.description ? ` — ${bill.description}` : ''}`,
+              amount: bill.amount,
+              type: 'debit',
+              category: bill.category.toUpperCase(),
+              referenceNo: bill.billNumber || `AUTO-${bill.id}`,
+              isVerified: false,
+              isReconciled: false,
+              createdAt: now,
+            });
+            acc.balance = (acc.balance || 0) - bill.amount; // keep the local copy in sync across this loop
+          }
+        } catch (err) {
+          console.error(`[CrewTerminal] Bank movement failed for ${bill.id}:`, err);
+        }
+      }
+
+      const rebuiltMonths = new Set<string>();
+      for (const bill of selected) {
+        const monthKey = `${bill.outletId}|${bill.date.slice(0, 7)}`;
+        if (rebuiltMonths.has(monthKey)) continue;
+        rebuiltMonths.add(monthKey);
+        try { await rebuildExpenseSnapshot(bill.outletId, bill.date); } catch (err) { console.warn('Snapshot rebuild skipped:', err); }
+      }
+
+      setSelectedBillIds(new Set());
+      await fetchPendingBills();
+      if (failures > 0) {
+        alert(`${selected.length - failures} of ${selected.length} bills marked paid. ${failures} failed — check the console and retry those.`);
+      }
+    } finally {
+      setMarkingPaid(false);
+    }
+  };
+
   // Adds or renames a custom category and selects it in the form. New categories
   // start in the UNCATEGORIZED COGS bucket until the admin maps them in Category
   // Settings. Renames/deletes don't touch entries or products — they keep the old
@@ -1616,6 +1785,13 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
           {/* Shortcuts row */}
           <div className="flex flex-wrap items-center justify-center gap-3">
             <button
+              onClick={() => setActiveMode('pending-bills')}
+              className="flex items-center gap-3 px-6 py-4 bg-slate-800/60 border border-slate-700/50 rounded-2xl text-slate-400 text-[11px] font-black uppercase tracking-widest hover:text-white hover:border-amber-500/50 active:scale-95 transition-all"
+            >
+              <Clock3 size={16} className="text-amber-400" />
+              Settle Pending Bills
+            </button>
+            <button
               onClick={() => setShowVendorModal(true)}
               className="flex items-center gap-3 px-6 py-4 bg-slate-800/60 border border-slate-700/50 rounded-2xl text-slate-400 text-[11px] font-black uppercase tracking-widest hover:text-white hover:border-indigo-500/50 active:scale-95 transition-all"
             >
@@ -1632,6 +1808,125 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
               </button>
             )}
           </div>
+        </div>
+
+      /* ── SETTLE PENDING BILLS ──────────────────────────────────── */
+      ) : activeMode === 'pending-bills' ? (
+        <div className="space-y-4 px-1 pt-2 pb-28">
+          <div className="flex items-center gap-3 bg-white rounded-2xl ring-1 ring-slate-100 shadow-sm px-3 py-3">
+            <button
+              onClick={() => setActiveMode('landing')}
+              className="flex items-center gap-2 h-11 px-4 bg-slate-100 hover:bg-slate-200 active:scale-95 rounded-xl text-slate-600 transition-all text-sm font-semibold shrink-0"
+            >
+              <ArrowLeft size={18} /> Home
+            </button>
+            <h2 className="flex-1 text-center text-sm font-bold text-slate-800 truncate">Settle Pending Bills</h2>
+            <button onClick={fetchPendingBills} className="h-11 w-11 flex items-center justify-center text-slate-400 hover:text-indigo-600 transition-colors shrink-0">
+              <RefreshCw size={18} className={pendingBillsLoading ? 'animate-spin' : ''} />
+            </button>
+          </div>
+
+          <p className="text-[11px] font-medium text-slate-500 px-2 leading-relaxed">
+            Pick the vendor you paid, tick the bills that lump-sum payment covers, and mark them all paid together —
+            that way the incoming bank line can be matched to all of them at once.
+          </p>
+
+          {pendingBillsLoading ? (
+            <div className="py-24 text-center">
+              <Loader2 className="w-10 h-10 text-indigo-600 animate-spin mx-auto mb-4" />
+              <p className="text-slate-400 font-black uppercase tracking-widest text-[10px]">Loading pending bills…</p>
+            </div>
+          ) : pendingBillGroups.length === 0 ? (
+            <div className="py-24 text-center bg-white rounded-2xl ring-1 ring-slate-100">
+              <CheckCircle2 className="w-12 h-12 text-emerald-400 mx-auto mb-4" />
+              <p className="text-sm font-bold text-slate-700">Nothing pending</p>
+              <p className="text-xs text-slate-400 mt-1">Every vendor bill on record is already marked paid.</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {pendingBillGroups.map(group => {
+                const isExpanded = expandedVendorKey === group.key;
+                const allSelectedInGroup = group.bills.length > 0 && group.bills.every(b => b.id && selectedBillIds.has(b.id));
+                return (
+                  <div key={group.key} className={`bg-white rounded-2xl ring-1 shadow-sm overflow-hidden transition-all ${isExpanded ? 'ring-indigo-300' : 'ring-slate-100'}`}>
+                    <button
+                      onClick={() => handleExpandVendor(group.key)}
+                      className="w-full flex items-center justify-between gap-3 px-4 py-4 text-left active:scale-[0.99] transition-transform"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center shrink-0">
+                          <Store size={18} className="text-amber-500" />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-sm font-bold text-slate-800 truncate">{group.vendorName}</p>
+                          <p className="text-[11px] text-slate-400">{group.bills.length} bill{group.bills.length !== 1 ? 's' : ''} pending</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3 shrink-0">
+                        <span className="text-sm font-black text-slate-900 tabular-nums">₹{group.total.toLocaleString('en-IN')}</span>
+                        <ChevronDown size={16} className={`text-slate-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                      </div>
+                    </button>
+
+                    {isExpanded && (
+                      <div className="border-t border-slate-100 px-4 py-3 space-y-2">
+                        <button
+                          onClick={() => {
+                            const allIds = group.bills.map(b => b.id).filter((id): id is string => !!id);
+                            setSelectedBillIds(allSelectedInGroup ? new Set() : new Set(allIds));
+                          }}
+                          className="text-[10px] font-black uppercase tracking-widest text-indigo-600 pb-1"
+                        >
+                          {allSelectedInGroup ? 'Deselect all' : 'Select all'}
+                        </button>
+                        {group.bills.map(bill => {
+                          const checked = !!(bill.id && selectedBillIds.has(bill.id));
+                          return (
+                            <label
+                              key={bill.id}
+                              className={`flex items-center gap-3 p-3 rounded-xl border transition-all cursor-pointer ${checked ? 'bg-indigo-50 border-indigo-200' : 'bg-slate-50 border-slate-100'}`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => bill.id && toggleBillSelected(bill.id)}
+                                className="w-5 h-5 rounded accent-indigo-600 shrink-0"
+                              />
+                              <div className="min-w-0 flex-1">
+                                <p className="text-xs font-bold text-slate-800 truncate">{bill.description || bill.category}</p>
+                                <p className="text-[10px] text-slate-400">{new Date(bill.date).toLocaleDateString()} · {bill.billNumber || 'No bill #'}</p>
+                              </div>
+                              <span className="text-sm font-black text-slate-900 tabular-nums shrink-0">₹{bill.amount.toLocaleString('en-IN')}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {selectedBillIds.size > 0 && (
+            <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 shadow-2xl p-4 flex items-center gap-4 z-40">
+              <div className="flex-1 min-w-0">
+                <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">{selectedBillIds.size} bill{selectedBillIds.size !== 1 ? 's' : ''} selected</p>
+                <p className="text-lg font-black text-slate-900 tabular-nums">₹{selectedBillsTotal.toLocaleString('en-IN')}</p>
+              </div>
+              <button onClick={() => setSelectedBillIds(new Set())} className="px-4 py-3 text-xs font-bold text-slate-400 hover:text-slate-700 shrink-0">
+                Clear
+              </button>
+              <button
+                onClick={handleBulkMarkPaid}
+                disabled={markingPaid}
+                className="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-black uppercase text-xs tracking-widest flex items-center gap-2 disabled:opacity-50 transition-all shrink-0"
+              >
+                {markingPaid ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
+                {markingPaid ? 'Marking Paid…' : 'Mark Paid'}
+              </button>
+            </div>
+          )}
         </div>
 
       /* ── ENTRIES LIST ──────────────────────────────────────────── */

@@ -17,7 +17,8 @@ import {
   DEFAULT_COGS,
   DEFAULT_LABOUR,
   DEFAULT_OPS,
-  CategorySettings
+  CategorySettings,
+  ALWAYS_EXCLUDED_PURCHASE_CATEGORIES
 } from '../types';
 import { 
   Handshake, 
@@ -69,9 +70,10 @@ const PartnershipModel: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
   // Settings for Keyword mapping
   const [cogsKeywords, setCogsKeywords] = useState<string[]>(DEFAULT_COGS);
   const [labourKeywords, setLabourKeywords] = useState<string[]>(DEFAULT_LABOUR);
-  // Asset purchases (bulk buys into storage). Empty by default, so the guard
-  // below never fires until an owner configures one.
-  const [stockPurchaseCategories, setStockPurchaseCategories] = useState<string[]>([]);
+  // Asset purchases (bulk buys into storage). Starts with the always-excluded
+  // set (STORAGE) so that guard fires even before an owner configures anything;
+  // the fetch below adds whatever else the owner has configured.
+  const [stockPurchaseCategories, setStockPurchaseCategories] = useState<string[]>(ALWAYS_EXCLUDED_PURCHASE_CATEGORIES);
 
   // Simulation Parameters
   const [modelType, setModelType] = useState<ModelType>('ROYALTY');
@@ -109,7 +111,7 @@ const PartnershipModel: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
         const d = setSnap.data() as CategorySettings;
         if (d.cogsKeywords) setCogsKeywords(d.cogsKeywords.map(k => k.trim().toUpperCase()));
         if (d.labourKeywords) setLabourKeywords(d.labourKeywords.map(k => k.trim().toUpperCase()));
-        if (d.stockPurchaseCategories) setStockPurchaseCategories(d.stockPurchaseCategories.map(k => k.trim().toUpperCase()));
+        setStockPurchaseCategories(Array.from(new Set([...ALWAYS_EXCLUDED_PURCHASE_CATEGORIES, ...(d.stockPurchaseCategories || []).map(k => k.trim().toUpperCase())])));
       }
 
       setSalesSnaps(sSnap.docs.map(d => d.data() as SalesMonthlySnapshot));

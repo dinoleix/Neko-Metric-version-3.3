@@ -446,7 +446,22 @@ export const CREW_PURCHASE_CATEGORIES = [
   'INGREDIENTS FOR FOOD',
   'SERVING FOR DRINKS',
   'SERVING FOR FOOD',
+  // Bulk buys into central storage — stock sitting in inventory, not yet
+  // consumed. Unconditionally excluded from every P&L/expense/COGS total
+  // (see ALWAYS_EXCLUDED_PURCHASE_CATEGORIES) — it's tracked for visibility
+  // only, never counted as spend, so it can never inflate or double-count.
+  'STORAGE',
 ].sort();
+
+/**
+ * Purchase categories that must never appear in a P&L/expense/COGS total,
+ * regardless of the owner's own stockPurchaseCategories configuration
+ * (category_settings) — that setting is an admin-curated *addition* to this
+ * list, not a replacement for it. STORAGE is here unconditionally so a bulk
+ * stock buy is tracked for visibility (see the "Bought Into Storage" tile in
+ * Expense Radar) without the admin having to remember to configure anything.
+ */
+export const ALWAYS_EXCLUDED_PURCHASE_CATEGORIES = ['STORAGE'];
 
 export const CREW_EXPENSE_CATEGORIES = [
   'EMPLOYEE ADVANCE',

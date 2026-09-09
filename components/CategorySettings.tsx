@@ -997,7 +997,7 @@ ${allSourceStrings.join('\n')}`;
                      { label: 'Labour Keywords', icon: Users, color: 'text-indigo-500', list: labourKeywords, setFn: setLabourKeywords, input: newLabour, setInput: setNewLabour, hint: '' },
                      { label: 'Operations Keywords', icon: Settings, color: 'text-pink-500', list: opsKeywords, setFn: setOpsKeywords, input: newOps, setInput: setNewOps, hint: '' },
                      { label: 'Stock Purchases', icon: Box, color: 'text-sky-500', list: stockPurchaseCategories, setFn: setStockPurchaseCategories, input: newStock, setInput: setNewStock,
-                       hint: 'Bulk buys into storage. Counted as an asset, not an expense — these reach no P&L figure at all. They become COGS when the carry-out is recorded under a COGS category.' }
+                       hint: 'Bulk buys into storage. Counted as an asset, not an expense — these reach no P&L figure at all. They become COGS when the carry-out is recorded under a COGS category. The built-in STORAGE category is always treated this way automatically — add categories here only for anything else that should get the same treatment.' }
                    ].map((group) => (
                      <section key={group.label} className="bg-white rounded-[3rem] border border-slate-100 p-8 flex flex-col h-[500px]">
                         <div className="flex items-center gap-3 mb-2">

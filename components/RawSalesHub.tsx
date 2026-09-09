@@ -15,8 +15,9 @@ import {
   DEFAULT_COGS, 
   DEFAULT_LABOUR, 
   DEFAULT_OPS, 
-  YEAR_OPTIONS, 
-  MONTH_NAMES 
+  YEAR_OPTIONS,
+  MONTH_NAMES,
+  ALWAYS_EXCLUDED_PURCHASE_CATEGORIES
 } from '../types';
 import { 
   RefreshCw, 
@@ -140,8 +141,9 @@ const RawSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, data
     if (!upper) return true;
     // A stock purchase category is deliberately outside all three P&L lists — it
     // is an asset, not an expense — so it is mapped, not uncategorised. Without
-    // this it would be flagged as needing attention forever.
-    if ((settings.stockPurchaseCategories || []).includes(upper)) return false;
+    // this it would be flagged as needing attention forever. STORAGE is always
+    // treated this way, independent of the owner's own configured list.
+    if (ALWAYS_EXCLUDED_PURCHASE_CATEGORIES.includes(upper) || (settings.stockPurchaseCategories || []).includes(upper)) return false;
     return !settings.cogsKeywords.includes(upper) && !settings.labourKeywords.includes(upper) && !settings.opsKeywords.includes(upper);
   };
 
