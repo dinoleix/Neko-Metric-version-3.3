@@ -690,23 +690,23 @@ const PnLAnalytics: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
                       </div>
                    </div>
 
-                   <div className="overflow-x-auto">
-                      <table className="w-full text-left">
+                   <div className="w-full overflow-x-auto">
+                      <table className="w-full text-left table-fixed">
                          <thead className="bg-slate-50/80 border-b border-slate-100">
                             <tr>
-                               <th className="px-10 py-6 text-[10px] font-black text-slate-400 uppercase tracking-widest">Master SKU Detail</th>
-                               <th className="px-10 py-6 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Revenue (₹)</th>
-                               <th className="px-10 py-6 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Unit Sell (₹)</th>
+                               <th className={`pl-6 pr-2 py-4 text-[9px] font-black text-slate-400 uppercase tracking-wide ${channelMode === 'online' ? 'w-[18%]' : 'w-[22%]'}`}>Master SKU Detail</th>
+                               <th className={`px-2 py-4 text-[9px] font-black text-slate-400 uppercase tracking-wide text-right ${channelMode === 'online' ? 'w-[11%]' : 'w-[13%]'}`}>Revenue (₹)</th>
+                               <th className={`px-2 py-4 text-[9px] font-black text-slate-400 uppercase tracking-wide text-right ${channelMode === 'online' ? 'w-[9%]' : 'w-[12%]'}`}>Unit Sell (₹)</th>
                                {channelMode === 'online' && (
-                                 <th className="px-10 py-6 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right" title="Unit sell price less the aggregator's commission + GST on commission.">Net of Platform (₹)</th>
+                                 <th className="px-2 py-4 text-[9px] font-black text-slate-400 uppercase tracking-wide text-right w-[10%]" title="Unit sell price less the aggregator's commission + GST on commission.">Net of Platform (₹)</th>
                                )}
-                               <th className="px-10 py-6 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Unit Cost (₹)</th>
+                               <th className={`px-2 py-4 text-[9px] font-black text-slate-400 uppercase tracking-wide text-right ${channelMode === 'online' ? 'w-[9%]' : 'w-[12%]'}`}>Unit Cost (₹)</th>
                                {channelMode === 'online' && (
-                                 <th className="px-10 py-6 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right" title="Net of Platform less unit cost — actual profit per unit sold online, before ads and fixed costs.">True Profit/Unit (₹)</th>
+                                 <th className="px-2 py-4 text-[9px] font-black text-slate-400 uppercase tracking-wide text-right w-[10%]" title="Net of Platform less unit cost — actual profit per unit sold online, before ads and fixed costs.">True Profit/Unit (₹)</th>
                                )}
-                               <th className="px-10 py-6 text-[10px] font-black text-slate-400 uppercase text-center" title={channelMode === 'online' ? 'Profit as a share of revenue retained after the aggregator\'s cut — directly comparable to in-store margin.' : 'Profit as a share of unit sell price.'}>{channelMode === 'online' ? 'Unit Margin % (Net)' : 'Unit Margin %'}</th>
-                               <th className="px-10 py-6 text-[10px] font-black text-slate-400 uppercase text-right">Profit Amount (₹)</th>
-                               <th className="px-10 py-6 text-[10px] font-black text-slate-400 uppercase text-center">Audit</th>
+                               <th className={`px-2 py-4 text-[9px] font-black text-slate-400 uppercase text-center ${channelMode === 'online' ? 'w-[12%]' : 'w-[15%]'}`} title={channelMode === 'online' ? 'Profit as a share of revenue retained after the aggregator\'s cut — directly comparable to in-store margin.' : 'Profit as a share of unit sell price.'}>{channelMode === 'online' ? 'Unit Margin % (Net)' : 'Unit Margin %'}</th>
+                               <th className={`px-2 py-4 text-[9px] font-black text-slate-400 uppercase text-right ${channelMode === 'online' ? 'w-[13%]' : 'w-[16%]'}`}>Profit Amount (₹)</th>
+                               <th className={`pl-2 pr-6 py-4 text-[9px] font-black text-slate-400 uppercase text-center ${channelMode === 'online' ? 'w-[8%]' : 'w-[10%]'}`}>Audit</th>
                             </tr>
                          </thead>
                          <tbody className="divide-y divide-slate-50">
@@ -722,49 +722,49 @@ const PnLAnalytics: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
                               const shownGrade = isOnlineView ? item.netGrade : item.grade;
                               return (
                                <tr key={item.name} className="hover:bg-slate-50/50 transition-colors group">
-                                  <td className="px-10 py-6">
-                                     <div className="flex items-center gap-4">
-                                        <div className={`p-2 rounded-xl ${item.category === 'FOOD' ? 'bg-emerald-50 text-emerald-600' : 'bg-indigo-50 text-indigo-600'}`}>
-                                           {item.category === 'FOOD' ? <Utensils size={14}/> : <Coffee size={14}/>}
+                                  <td className="pl-6 pr-2 py-3">
+                                     <div className="flex items-center gap-2.5 min-w-0">
+                                        <div className={`p-1.5 rounded-lg shrink-0 ${item.category === 'FOOD' ? 'bg-emerald-50 text-emerald-600' : 'bg-indigo-50 text-indigo-600'}`}>
+                                           {item.category === 'FOOD' ? <Utensils size={12}/> : <Coffee size={12}/>}
                                         </div>
-                                        <div>
-                                           <p className="text-sm font-black text-slate-900 uppercase tracking-tight truncate max-w-[180px]">{item.name}</p>
-                                           <p className="text-[9px] font-bold text-slate-400 uppercase">{item.segment} • {item.quantity} units</p>
+                                        <div className="min-w-0">
+                                           <p className="text-[11px] font-black text-slate-900 uppercase tracking-tight truncate">{item.name}</p>
+                                           <p className="text-[8px] font-bold text-slate-400 uppercase truncate">{item.segment} • {item.quantity} units</p>
                                         </div>
                                      </div>
                                   </td>
-                                  <td className="px-10 py-6 text-right font-black text-slate-900">₹{item.revenue.toLocaleString()}</td>
-                                  <td className="px-10 py-6 text-right font-black text-slate-700">₹{item.price.toFixed(0)}</td>
+                                  <td className="px-2 py-3 text-right text-xs font-black text-slate-900">₹{item.revenue.toLocaleString()}</td>
+                                  <td className="px-2 py-3 text-right text-xs font-black text-slate-700">₹{item.price.toFixed(0)}</td>
                                   {channelMode === 'online' && (
-                                    <td className="px-10 py-6 text-right font-black text-amber-600">₹{item.netUnitRevenue.toFixed(0)}</td>
+                                    <td className="px-2 py-3 text-right text-xs font-black text-amber-600">₹{item.netUnitRevenue.toFixed(0)}</td>
                                   )}
-                                  <td className="px-10 py-6 text-right font-black text-rose-500">₹{item.cost.toFixed(1)}</td>
+                                  <td className="px-2 py-3 text-right text-xs font-black text-rose-500">₹{item.cost.toFixed(1)}</td>
                                   {channelMode === 'online' && (
-                                    <td className={`px-10 py-6 text-right font-black ${item.netUnitProfit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>₹{item.netUnitProfit.toFixed(0)}</td>
+                                    <td className={`px-2 py-3 text-right text-xs font-black ${item.netUnitProfit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>₹{item.netUnitProfit.toFixed(0)}</td>
                                   )}
-                                  <td className="px-10 py-6">
-                                     <div className="flex items-center justify-center gap-3">
+                                  <td className="px-2 py-3">
+                                     <div className="flex items-center justify-center gap-2">
                                         <GradeBadge grade={shownGrade} />
                                         <div className="flex flex-col items-center gap-1">
-                                           <span className={`text-[10px] font-black ${shownMarginPercent >= 65 ? 'text-emerald-600' : (shownMarginPercent < 50 ? 'text-rose-600' : 'text-amber-600')}`}>
+                                           <span className={`text-[9px] font-black ${shownMarginPercent >= 65 ? 'text-emerald-600' : (shownMarginPercent < 50 ? 'text-rose-600' : 'text-amber-600')}`}>
                                               {shownMarginPercent.toFixed(1)}%
                                            </span>
-                                           <div className="w-16 h-1 bg-slate-100 rounded-full overflow-hidden">
+                                           <div className="w-10 h-1 bg-slate-100 rounded-full overflow-hidden">
                                               <div className={`h-full rounded-full ${shownMarginPercent >= 65 ? 'bg-emerald-500' : (shownMarginPercent < 50 ? 'bg-rose-500' : 'bg-amber-500')}`} style={{ width: `${Math.min(100, Math.max(0, shownMarginPercent))}%` }} />
                                            </div>
                                         </div>
                                      </div>
                                   </td>
-                                  <td className="px-10 py-6 text-right">
-                                     <p className="text-md font-black text-slate-900 uppercase tracking-tighter">₹{Math.round(shownProfitAmount).toLocaleString()}</p>
-                                     <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest">{isOnlineView ? 'Net of Platform' : 'Total Contribution'}</p>
+                                  <td className="px-2 py-3 text-right">
+                                     <p className="text-xs font-black text-slate-900 uppercase tracking-tighter">₹{Math.round(shownProfitAmount).toLocaleString()}</p>
+                                     <p className="text-[7px] font-bold text-slate-400 uppercase tracking-widest truncate">{isOnlineView ? 'Net of Platform' : 'Total Contribution'}</p>
                                   </td>
-                                  <td className="px-10 py-6">
+                                  <td className="pl-2 pr-6 py-3">
                                      <div className="flex justify-center">
                                         {item.hasCost ? (
-                                           <div className="p-1.5 bg-emerald-50 text-emerald-600 rounded-lg shadow-inner"><CheckCircle2 size={14}/></div>
+                                           <div className="p-1.5 bg-emerald-50 text-emerald-600 rounded-lg shadow-inner"><CheckCircle2 size={13}/></div>
                                         ) : (
-                                           <div className="p-1.5 bg-rose-50 text-rose-500 rounded-lg shadow-inner animate-pulse"><AlertTriangle size={14}/></div>
+                                           <div className="p-1.5 bg-rose-50 text-rose-500 rounded-lg shadow-inner animate-pulse"><AlertTriangle size={13}/></div>
                                         )}
                                      </div>
                                   </td>

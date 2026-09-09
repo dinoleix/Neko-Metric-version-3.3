@@ -698,18 +698,20 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
                         <h3 className="text-2xl font-black text-slate-900 tracking-tight">Channel Margin Comparison</h3>
                         <p className="text-slate-400 text-sm font-medium mt-1">Online shown net of the aggregator's cut — worst gaps first. Both channels use the same cost basis.</p>
                       </div>
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-left">
+                      <div className="w-full overflow-x-auto">
+                        <table className="w-full text-left table-fixed">
                           <thead className="bg-slate-50/80 border-b border-slate-100">
                             <tr>
-                              <th className="px-8 py-5 text-[10px] font-black text-slate-400 uppercase tracking-widest">Master SKU</th>
-                              <th className="px-8 py-5 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">In-Store ₹</th>
-                              <th className="px-8 py-5 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Online ₹</th>
-                              <th className="px-8 py-5 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right" title="Actual markup applied to the online list price versus the in-store price.">Markup</th>
-                              <th className="px-8 py-5 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right" title="Online list price less the aggregator's commission + GST on commission.">Online Net ₹</th>
-                              <th className="px-8 py-5 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">In-Store %</th>
-                              <th className="px-8 py-5 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Online % (Net)</th>
-                              <th className="px-8 py-5 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Gap</th>
+                              <th className="pl-6 pr-2 py-4 text-[9px] font-black text-slate-400 uppercase tracking-wide w-[17%]">Master SKU</th>
+                              <th className="px-2 py-4 text-[9px] font-black text-slate-400 uppercase tracking-wide text-right w-[9%]" title="Ingredient cost + tier-appropriate packaging — same figure used for both channels.">Cost ₹</th>
+                              <th className="px-2 py-4 text-[9px] font-black text-slate-400 uppercase tracking-wide text-right w-[9%]">In-Store ₹</th>
+                              <th className="px-2 py-4 text-[9px] font-black text-slate-400 uppercase tracking-wide text-right w-[9%]">Online ₹</th>
+                              <th className="px-2 py-4 text-[9px] font-black text-slate-400 uppercase tracking-wide text-right w-[8%]" title="Actual markup applied to the online list price versus the in-store price.">Markup</th>
+                              <th className="px-2 py-4 text-[9px] font-black text-slate-400 uppercase tracking-wide text-right w-[10%]" title="Online list price less the aggregator's commission + GST on commission.">Online Net ₹</th>
+                              <th className="px-2 py-4 text-[9px] font-black text-slate-400 uppercase tracking-wide text-center w-[8%]">In-Store %</th>
+                              <th className="px-2 py-4 text-[9px] font-black text-slate-400 uppercase tracking-wide text-right w-[10%]" title="In-store price minus cost, in rupees per unit.">In-Store Profit ₹</th>
+                              <th className="px-2 py-4 text-[9px] font-black text-slate-400 uppercase tracking-wide text-center w-[10%]">Online % (Net)</th>
+                              <th className="pl-2 pr-6 py-4 text-[9px] font-black text-slate-400 uppercase tracking-wide text-center w-[10%]">Gap</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-50">
@@ -718,22 +720,24 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
                               const markupShort = r.markupPct < r.requiredMarkupPct - 1;
                               return (
                                 <tr key={r.name} className="hover:bg-slate-50/50 transition-colors">
-                                  <td className="px-8 py-5">
-                                    <p className="text-xs font-black text-slate-800 uppercase tracking-tight truncate max-w-[220px]">{r.name}</p>
-                                    <p className="text-[9px] font-bold text-slate-400 uppercase">
-                                      {r.posQty} in-store · {r.onlineQty} online{!r.hasCost && ' · no cost mapped'}
+                                  <td className="pl-6 pr-2 py-3">
+                                    <p className="text-[11px] font-black text-slate-800 uppercase tracking-tight truncate">{r.name}</p>
+                                    <p className="text-[8px] font-bold text-slate-400 uppercase truncate">
+                                      {r.posQty} in-store · {r.onlineQty} online{!r.hasCost && ' · no cost'}
                                     </p>
                                   </td>
-                                  <td className="px-8 py-5 text-right font-black text-slate-700">₹{r.posPrice.toFixed(0)}</td>
-                                  <td className="px-8 py-5 text-right font-black text-slate-700">₹{r.onlinePrice.toFixed(0)}</td>
-                                  <td className={`px-8 py-5 text-right font-black ${markupShort ? 'text-amber-600' : 'text-slate-500'}`} title={markupShort ? `Below the ${r.requiredMarkupPct.toFixed(1)}% needed for parity` : undefined}>
+                                  <td className="px-2 py-3 text-right text-xs font-black text-slate-500">₹{r.unitCost.toFixed(0)}</td>
+                                  <td className="px-2 py-3 text-right text-xs font-black text-slate-700">₹{r.posPrice.toFixed(0)}</td>
+                                  <td className="px-2 py-3 text-right text-xs font-black text-slate-700">₹{r.onlinePrice.toFixed(0)}</td>
+                                  <td className={`px-2 py-3 text-right text-xs font-black ${markupShort ? 'text-amber-600' : 'text-slate-500'}`} title={markupShort ? `Below the ${r.requiredMarkupPct.toFixed(1)}% needed for parity` : undefined}>
                                     {r.markupPct.toFixed(0)}%
                                   </td>
-                                  <td className="px-8 py-5 text-right font-black text-amber-600">₹{r.onlineNet.toFixed(0)}</td>
-                                  <td className="px-8 py-5 text-center font-black text-slate-700">{r.posMarginPct.toFixed(1)}%</td>
-                                  <td className="px-8 py-5 text-center font-black text-slate-700">{r.onlineMarginPct.toFixed(1)}%</td>
-                                  <td className="px-8 py-5 text-center">
-                                    <span className={`inline-block px-3 py-1.5 rounded-full text-[10px] font-black tracking-tight ${atParity ? 'bg-emerald-50 text-emerald-600' : (r.gapPct < 0 ? 'bg-rose-50 text-rose-600' : 'bg-indigo-50 text-indigo-600')}`}>
+                                  <td className="px-2 py-3 text-right text-xs font-black text-amber-600">₹{r.onlineNet.toFixed(0)}</td>
+                                  <td className="px-2 py-3 text-center text-xs font-black text-slate-700">{r.posMarginPct.toFixed(1)}%</td>
+                                  <td className={`px-2 py-3 text-right text-xs font-black ${(r.posPrice - r.unitCost) < 0 ? 'text-rose-600' : 'text-emerald-600'}`}>₹{(r.posPrice - r.unitCost).toFixed(0)}</td>
+                                  <td className="px-2 py-3 text-center text-xs font-black text-slate-700">{r.onlineMarginPct.toFixed(1)}%</td>
+                                  <td className="pl-2 pr-6 py-3 text-center">
+                                    <span className={`inline-block px-2 py-1 rounded-full text-[9px] font-black tracking-tight whitespace-nowrap ${atParity ? 'bg-emerald-50 text-emerald-600' : (r.gapPct < 0 ? 'bg-rose-50 text-rose-600' : 'bg-indigo-50 text-indigo-600')}`}>
                                       {r.gapPct > 0 ? '+' : ''}{r.gapPct.toFixed(1)} pts
                                     </span>
                                   </td>
