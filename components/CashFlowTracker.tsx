@@ -283,7 +283,10 @@ const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
       // Transaction History (same pattern as CrewTerminal purchases).
       const txnRef = await addDoc(collection(db, 'bank_transactions'), {
         userId: user.uid,
-        ownerId: user.uid,
+        // dataOwnerId, not user.uid: a delegated admin's own uid is not the
+        // tenant — stamping it here made this transaction invisible to the
+        // real owner's queries. Same bug class fixed in UserManagement.tsx.
+        ownerId: dataOwnerId,
         bankAccountId: cashBankId,
         date: cashDate,
         description: `Cash Loan Payment: ${profile.name}${cashNote.trim() ? ` — ${cashNote.trim()}` : ''}`,

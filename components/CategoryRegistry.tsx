@@ -16,8 +16,14 @@ import { Tag, Trash2, Pencil, AlertTriangle, ArrowRightLeft, Loader2, Zap } from
  * and nothing displayed it, so a typo like OPERATONS became permanent the moment
  * it touched one transaction and quietly split spend across two names.
  *
- * Counts here are all-time: bank_statement_imports is fetched without a date
- * filter, unlike the period-scoped views elsewhere on this screen.
+ * The category LIST itself stays all-time (`transactions`) so a name used only
+ * in an earlier month doesn't disappear from the picker just because this
+ * month never touched it. The displayed COUNT is scoped to the page's own
+ * selected month (`periodTransactions`) — showing an all-time number here,
+ * right after clearing out a month's statement, previously read as "did my
+ * delete even work?" when what was left was just other months' activity.
+ * Rename/Delete still act on the all-time set: a typo fix has to apply
+ * everywhere the name was used, not just the currently selected month.
  */
 
 type Source = 'built-in' | 'rule' | 'ad-hoc';
@@ -25,6 +31,9 @@ type Source = 'built-in' | 'rule' | 'ad-hoc';
 interface Row {
   name: string;
   count: number;
+  /** All-time count, independent of the selected period — Rename/Delete act on
+   * this, so their availability must not depend on the period filter. */
+  allTimeCount: number;
   source: Source;
   rule?: CategorizationRule;
   isTransfer: boolean;
@@ -32,17 +41,31 @@ interface Row {
 
 const CategoryRegistry: React.FC<{
   transactions: BankTransaction[];
+  periodTransactions: BankTransaction[];
+  periodLabel: string;
   rules: CategorizationRule[];
   onChanged: () => void;
-}> = ({ transactions, rules, onChanged }) => {
+}> = ({ transactions, periodTransactions, periodLabel, rules, onChanged }) => {
   const [busy, setBusy] = useState<string | null>(null);
 
   const rows: Row[] = useMemo(() => {
+    // Displayed count: this period only.
     const counts = new Map<string, number>();
-    transactions.forEach(t => {
+    periodTransactions.forEach(t => {
       const c = (t.category || '').trim().toUpperCase();
       if (!c) return;
       counts.set(c, (counts.get(c) || 0) + 1);
+    });
+
+    // All-time: which names exist at all (so a category used only in an
+    // earlier month still appears, with a 0 for this period, instead of
+    // vanishing just because this month never touched it), and how many
+    // transactions Rename/Delete would actually affect.
+    const allTimeCounts = new Map<string, number>();
+    transactions.forEach(t => {
+      const c = (t.category || '').trim().toUpperCase();
+      if (!c) return;
+      allTimeCounts.set(c, (allTimeCounts.get(c) || 0) + 1);
     });
 
     const ruleFor = new Map<string, CategorizationRule>();
@@ -50,25 +73,28 @@ const CategoryRegistry: React.FC<{
 
     const names = new Set<string>([
       ...RECONCILIATION_CATEGORIES.map(c => c.toUpperCase()),
-      ...counts.keys(),
+      ...allTimeCounts.keys(),
       ...ruleFor.keys(),
     ]);
 
     return Array.from(names).map(name => ({
       name,
       count: counts.get(name) || 0,
+      allTimeCount: allTimeCounts.get(name) || 0,
       source: RECONCILIATION_CATEGORIES.map(c => c.toUpperCase()).includes(name)
         ? 'built-in' as const
         : ruleFor.has(name) ? 'rule' as const : 'ad-hoc' as const,
       rule: ruleFor.get(name),
       isTransfer: isInternalTransfer(name),
     })).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
-  }, [transactions, rules]);
+  }, [transactions, periodTransactions, rules]);
 
   // Rare, not built-in, and not a transfer: the shape a misspelling takes. Not an
   // error — a genuinely occasional category looks the same — so it is flagged for
   // a human to read, never acted on automatically.
-  const suspects = rows.filter(r => r.source === 'ad-hoc' && r.count > 0 && r.count <= 2);
+  // All-time, not the period count: a typo is usually a one-off in whichever
+  // month it happened, so this must not depend on which month is selected.
+  const suspects = rows.filter(r => r.source === 'ad-hoc' && r.allTimeCount > 0 && r.allTimeCount <= 2);
 
   /**
    * Renames a category across every transaction carrying it, plus any rule that
@@ -77,7 +103,7 @@ const CategoryRegistry: React.FC<{
    */
   const handleRename = async (row: Row) => {
     const next = window.prompt(
-      `Rename "${row.name}" across ${row.count} transaction${row.count === 1 ? '' : 's'}.\n\n` +
+      `Rename "${row.name}" across ${row.allTimeCount} transaction${row.allTimeCount === 1 ? '' : 's'}, in any month.\n\n` +
       `Type the correct name — usually an existing category you meant to pick.`,
       row.name,
     );
@@ -200,8 +226,10 @@ const CategoryRegistry: React.FC<{
           <div>
             <h3 className="text-xl font-black text-slate-900 tracking-tight">Categories &amp; Rules</h3>
             <p className="text-slate-500 text-sm font-medium mt-0.5 max-w-2xl">
-              Every category the categoriser offers, with how often it is actually used.
-              Counts cover all imported statements, not just the selected month.
+              Every category the categoriser offers. Transaction counts are for{' '}
+              <span className="font-black text-slate-700">{periodLabel}</span> — the same period selected
+              above — though a category stays listed even if it was only used in an earlier month.
+              Rename and Delete still act across every month, not just this one.
             </p>
           </div>
         </div>
@@ -252,7 +280,7 @@ const CategoryRegistry: React.FC<{
                     <span className={`text-sm font-black tabular-nums ${row.count === 0 ? 'text-slate-300' : 'text-slate-700'}`}>
                       {row.count}
                     </span>
-                    {row.count === 0 && <span className="block text-[9px] font-bold text-slate-400 uppercase">never used</span>}
+                    {row.count === 0 && <span className="block text-[9px] font-bold text-slate-400 uppercase">not used this period</span>}
                   </td>
                   <td className="px-8 py-5">
                     {row.rule ? (
@@ -272,8 +300,8 @@ const CategoryRegistry: React.FC<{
                         <>
                           <button
                             onClick={() => handleRename(row)}
-                            disabled={row.count === 0}
-                            title={row.count === 0 ? 'Nothing to rename — no transactions use this' : 'Rename across every transaction using it'}
+                            disabled={row.allTimeCount === 0}
+                            title={row.allTimeCount === 0 ? 'Nothing to rename — no transactions use this, in any month' : 'Rename across every transaction using it, in any month'}
                             className="p-2 rounded-xl border border-slate-200 text-slate-400 hover:text-indigo-600 hover:border-indigo-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                           >
                             <Pencil size={13} />
