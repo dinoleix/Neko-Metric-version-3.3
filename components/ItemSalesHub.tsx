@@ -31,6 +31,7 @@ import {
   X,
   Plus,
   Box,
+  Search,
   SearchX,
   Package,
   Layers,
@@ -72,8 +73,8 @@ import {
 } from 'lucide-react';
 import { getItemChannelValues, CHANNEL_MODE_OPTIONS, ItemChannelMode } from '../itemChannels';
 
-type InsightTab = 'matrix' | 'channels' | 'ranking' | 'profit' | 'velocity' | 'trends' | 'combos' | 'ledger';
-type AnalysisPeriod = 'custom' | '3m' | '6m' | '9m' | '12m' | '24m';
+type InsightTab = 'matrix' | 'channels' | 'ranking' | 'profit' | 'velocity' | 'trends' | 'item-history' | 'combos' | 'ledger';
+type AnalysisPeriod = 'custom' | '2m' | '3m' | '4m' | '6m' | '9m' | '12m' | '24m';
 
 interface AggregatedItem {
   name: string;
@@ -86,6 +87,7 @@ interface AggregatedItem {
   marginPercent: number;
   velocity: number;
   history: number[];
+  revenueHistory: number[];
   trendStatus: 'rising' | 'declining' | 'flat';
   trendPercent: number;
   segment?: string;
@@ -119,6 +121,8 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
   const [rankingMode, setRankingMode] = useState<'top' | 'bottom'>('top');
   const [rankingLimit, setRankingLimit] = useState(10);
   const [activeTab, setActiveTab] = useState<InsightTab>('matrix');
+  const [itemSearchQuery, setItemSearchQuery] = useState('');
+  const [selectedItemName, setSelectedItemName] = useState<string | null>(null);
   
   const [hoveredBubble, setHoveredBubble] = useState<{ x: number, y: number, item: AggregatedItem } | null>(null);
   const [isMatrixFullscreen, setIsMatrixFullscreen] = useState(false);
@@ -227,37 +231,51 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
       historyLength = parseInt(analysisPeriod);
     }
 
-    const itemMap: Record<string, { quantity: number; revenue: number; dailyTrend: number[]; outletQty: Record<string, number> }> = {};
+    const itemMap: Record<string, { quantity: number; revenue: number; dailyTrend: number[]; revenueTrend: number[]; outletQty: Record<string, number> }> = {};
 
     // Map snapshots to history slots
     const now = new Date();
     const getSlotIndex = (snap: ItemMonthlySnapshot) => {
       if (isSingleMonth) return -1; // Handled separately
       if (analysisPeriod === 'custom') return MONTH_NAMES.indexOf(snap.month);
-      
+
       const snapDate = new Date(parseInt(snap.year), MONTH_NAMES.indexOf(snap.month), 1);
       if (isNaN(snapDate.getTime())) return -1;
-      
+
       const diffMonths = (now.getFullYear() - snapDate.getFullYear()) * 12 + (now.getMonth() - snapDate.getMonth());
       const slot = historyLength - 1 - diffMonths;
       return (slot >= 0 && slot < historyLength) ? slot : -1;
     };
 
+    // One label per slot, aligned to the same indexing getSlotIndex uses, so
+    // the Item History tab's chart axis names the real calendar month behind
+    // each bar rather than a bare index.
+    const monthLabels: string[] = isSingleMonth
+      ? Array.from({ length: historyLength }, (_, i) => String(i + 1))
+      : analysisPeriod === 'custom'
+        ? MONTH_NAMES.map(m => m.slice(0, 3))
+        : Array.from({ length: historyLength }, (_, slot) => {
+            const diffMonths = historyLength - 1 - slot;
+            const d = new Date(now.getFullYear(), now.getMonth() - diffMonths, 1);
+            return `${MONTH_NAMES[d.getMonth()].slice(0, 3)} '${String(d.getFullYear()).slice(2)}`;
+          });
+
     sortedSnaps.forEach(snap => {
       const slotIdx = getSlotIndex(snap);
-      
+
       Object.entries(snap.items).forEach(([name, data]: [string, any]) => {
         const masterName = (normalizationMap[name.trim().toUpperCase()] || name).trim().toUpperCase();
-        if (!itemMap[masterName]) itemMap[masterName] = { quantity: 0, revenue: 0, dailyTrend: new Array(historyLength).fill(0), outletQty: {} };
+        if (!itemMap[masterName]) itemMap[masterName] = { quantity: 0, revenue: 0, dailyTrend: new Array(historyLength).fill(0), revenueTrend: new Array(historyLength).fill(0), outletQty: {} };
 
         const { qty: chQty, revenue: chRevenue } = getItemChannelValues(data, channelMode);
         itemMap[masterName].quantity += chQty;
         itemMap[masterName].revenue += chRevenue;
         itemMap[masterName].outletQty[snap.outletId] = (itemMap[masterName].outletQty[snap.outletId] || 0) + chQty;
 
-        // dailyTrend has no per-channel breakdown in the schema — it always reflects
-        // combined POS + online, regardless of channelMode. Trend/velocity charts
-        // carry a note about this; quantity/revenue/margin figures above do not.
+        // dailyTrend/revenueTrend have no per-channel breakdown in the schema —
+        // they always reflect combined POS + online, regardless of channelMode.
+        // Trend/velocity/history charts carry a note about this; quantity/
+        // revenue/margin figures above do not.
         const dTrend = Array.isArray(data.dailyTrend) ? data.dailyTrend : [];
         if (isSingleMonth) {
           dTrend.forEach((v: number, i: number) => {
@@ -265,6 +283,7 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
           });
         } else if (slotIdx !== -1) {
           itemMap[masterName].dailyTrend[slotIdx] += data.quantity;
+          itemMap[masterName].revenueTrend[slotIdx] += Number(data.revenue || 0);
         }
       });
     });
@@ -299,7 +318,7 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
         name, quantity: data.quantity, revenue: data.revenue, avgPrice: price, 
         cost: costRecord?.costPerUnit || 0, servingsCost: avgServingsCost, margin, 
         marginPercent: price > 0 ? (margin/price)*100 : 0, 
-        velocity: data.quantity/totalDays, history, trendStatus: status, 
+        velocity: data.quantity/totalDays, history, revenueHistory: data.revenueTrend, trendStatus: status,
         trendPercent: avgPrev > 0 ? ((avgRecent - avgPrev) / avgPrev) * 100 : 0,
         segment: mapping?.segment
       };
@@ -339,11 +358,12 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
       .sort((a, b) => b.count - a.count)
       .slice(0, 10);
 
-    return { 
-      items: finalItems.map((i): AggregatedItem => ({ 
-        ...i, 
-        quadrant: (i.quantity >= medianQty ? (i.margin >= medianMargin ? 'star' : 'reprice') : (i.margin >= medianMargin ? 'promote' : 'dog')) as 'star' | 'promote' | 'reprice' | 'dog' 
+    return {
+      items: finalItems.map((i): AggregatedItem => ({
+        ...i,
+        quadrant: (i.quantity >= medianQty ? (i.margin >= medianMargin ? 'star' : 'reprice') : (i.margin >= medianMargin ? 'promote' : 'dog')) as 'star' | 'promote' | 'reprice' | 'dog'
       })),
+      monthLabels, isSingleMonth,
       rankedByVolume: [...finalItems].sort((a, b) => b.quantity - a.quantity).slice(0, rankingLimit),
       rankedByRevenue: [...finalItems].sort((a, b) => b.revenue - a.revenue).slice(0, rankingLimit),
       leastByVolume: [...finalItems].sort((a, b) => a.quantity - b.quantity).slice(0, rankingLimit),
@@ -534,7 +554,9 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
               className="bg-transparent font-bold text-xs outline-none uppercase tracking-tight"
             >
               <option value="custom">Custom Range</option>
+              <option value="2m">Last 2 Months</option>
               <option value="3m">Last 3 Months</option>
+              <option value="4m">Last 4 Months</option>
               <option value="6m">Last 6 Months</option>
               <option value="9m">Last 9 Months</option>
               <option value="12m">Last 1 Year</option>
@@ -630,7 +652,7 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
         <div className="py-32 bg-white rounded-[3rem] border-2 border-dashed border-slate-200 text-center"><SearchX size={48} className="mx-auto text-slate-200 mb-4" /><h3 className="text-xl font-black text-slate-900">No Snapshot Data</h3></div>
       ) : (
         <>
-          <div className="flex items-center gap-2 bg-slate-200/40 p-1.5 rounded-[2rem] w-fit border border-slate-100 shadow-inner">{(['matrix', 'channels', 'ranking', 'profit', 'velocity', 'trends', 'combos', 'ledger'] as InsightTab[]).map((tab) => (<button key={tab} onClick={() => { setActiveTab(tab); setHoveredBubble(null); }} className={`px-6 py-2.5 rounded-[1.5rem] text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === tab ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-600'}`}>{tab}</button>))}</div>
+          <div className="flex items-center gap-2 bg-slate-200/40 p-1.5 rounded-[2rem] w-fit border border-slate-100 shadow-inner flex-wrap">{(['matrix', 'channels', 'ranking', 'profit', 'velocity', 'trends', 'item-history', 'combos', 'ledger'] as InsightTab[]).map((tab) => (<button key={tab} onClick={() => { setActiveTab(tab); setHoveredBubble(null); }} className={`px-6 py-2.5 rounded-[1.5rem] text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === tab ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-600'}`}>{tab === 'item-history' ? 'Item History' : tab}</button>))}</div>
           
           <div className="mt-8">
             {activeTab === 'matrix' && (
@@ -968,6 +990,136 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
                 </div>
               </div>
             )}
+
+            {activeTab === 'item-history' && (() => {
+              const searchQuery = itemSearchQuery.trim().toUpperCase();
+              const matches = searchQuery
+                ? [...intelligence.items].filter(i => i.name.includes(searchQuery)).sort((a, b) => a.name.localeCompare(b.name)).slice(0, 8)
+                : [];
+              const selected = selectedItemName ? intelligence.items.find(i => i.name === selectedItemName) : null;
+
+              const renderBarChart = (values: number[], color: string, formatValue: (v: number) => string) => {
+                const max = Math.max(...values, 1);
+                const W = 1000, H = 280, PAD_L = 60, PAD_B = 40, PAD_T = 20;
+                const plotW = W - PAD_L - 20, plotH = H - PAD_T - PAD_B;
+                const barWidth = (plotW / values.length) * 0.6;
+                return (
+                  <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto overflow-visible">
+                    {[0, 0.5, 1].map(p => (
+                      <g key={p}>
+                        <line x1={PAD_L} y1={PAD_T + (1 - p) * plotH} x2={W - 20} y2={PAD_T + (1 - p) * plotH} stroke="#f1f5f9" strokeWidth="1" strokeDasharray={p === 0 ? '0' : '4 4'} />
+                        <text x={PAD_L - 10} y={PAD_T + (1 - p) * plotH + 4} textAnchor="end" className="fill-slate-400 text-[10px] font-black">{formatValue(max * p)}</text>
+                      </g>
+                    ))}
+                    {values.map((v, i) => {
+                      const x = PAD_L + (i / values.length) * plotW + ((plotW / values.length) - barWidth) / 2;
+                      const h = (v / max) * plotH;
+                      return (
+                        <g key={i}>
+                          <rect x={x} y={PAD_T + plotH - h} width={barWidth} height={h} fill={color} rx="4" className="transition-all hover:opacity-80">
+                            <title>{`${intelligence.monthLabels[i]}: ${formatValue(v)}`}</title>
+                          </rect>
+                          <text x={x + barWidth / 2} y={H - PAD_B + 16} textAnchor="middle" className="fill-slate-500 text-[10px] font-black uppercase">
+                            {intelligence.monthLabels[i]}
+                          </text>
+                        </g>
+                      );
+                    })}
+                  </svg>
+                );
+              };
+
+              return (
+                <div className="space-y-8 animate-in slide-in-from-bottom-4 duration-500">
+                  <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm">
+                    <div className="flex items-center gap-3 mb-4">
+                      <div className="p-3 bg-indigo-50 text-indigo-600 rounded-2xl"><History size={20} /></div>
+                      <div>
+                        <h3 className="text-lg font-black text-slate-900 uppercase tracking-tight">Look up one dish</h3>
+                        <p className="text-slate-400 text-xs font-medium">Search a Master SKU to see its month-by-month trend over the period selected above.</p>
+                      </div>
+                    </div>
+                    <div className="relative max-w-md">
+                      <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                      <input
+                        type="text"
+                        value={itemSearchQuery}
+                        onChange={e => { setItemSearchQuery(e.target.value); setSelectedItemName(null); }}
+                        placeholder="e.g. Chicken Ramen"
+                        className="w-full h-12 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white focus:ring-4 focus:ring-indigo-500/10 outline-none pl-11 pr-4 rounded-2xl text-sm font-bold text-slate-700 uppercase transition-all"
+                      />
+                      {matches.length > 0 && !selected && (
+                        <div className="absolute z-10 mt-2 w-full bg-white border border-slate-100 rounded-2xl shadow-xl overflow-hidden">
+                          {matches.map(m => (
+                            <button
+                              key={m.name}
+                              onClick={() => { setSelectedItemName(m.name); setItemSearchQuery(m.name); }}
+                              className="w-full text-left px-5 py-3 text-xs font-black uppercase text-slate-700 hover:bg-indigo-50 hover:text-indigo-600 transition-colors border-b border-slate-50 last:border-0"
+                            >
+                              {m.name}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      {searchQuery && matches.length === 0 && !selected && (
+                        <p className="mt-2 text-[10px] font-bold text-slate-400 uppercase px-1">No item sold in this period matches "{itemSearchQuery}".</p>
+                      )}
+                    </div>
+                  </div>
+
+                  {intelligence.isSingleMonth ? (
+                    <div className="py-24 bg-white rounded-[3rem] border-2 border-dashed border-slate-200 text-center">
+                      <History size={48} className="mx-auto text-slate-200 mb-4" />
+                      <h3 className="text-lg font-black text-slate-900">Pick a wider period</h3>
+                      <p className="text-slate-400 text-sm mt-2 max-w-md mx-auto">
+                        Month-by-month trend needs more than one month. Use the period selector above (e.g. "Last 6 Months")
+                        instead of a single custom month.
+                      </p>
+                    </div>
+                  ) : !selected ? (
+                    <div className="py-24 bg-white rounded-[3rem] border-2 border-dashed border-slate-200 text-center">
+                      <SearchX size={48} className="mx-auto text-slate-200 mb-4" />
+                      <h3 className="text-lg font-black text-slate-900">Search for a dish above</h3>
+                      <p className="text-slate-400 text-sm mt-2">Its sales will plot here, one bar per month, for the period selected above.</p>
+                    </div>
+                  ) : (
+                    <>
+                      <section className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                        <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm md:col-span-2">
+                          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">{selected.name}</p>
+                          <h4 className="text-3xl font-black text-slate-900 tracking-tighter">{selected.quantity.toLocaleString()} units</h4>
+                          <p className="text-slate-400 text-xs font-bold uppercase mt-1">₹{Math.round(selected.revenue).toLocaleString()} total revenue, this period</p>
+                        </div>
+                        <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm flex flex-col justify-center">
+                          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Trend</p>
+                          <div className={`flex items-center gap-2 text-2xl font-black ${selected.trendStatus === 'rising' ? 'text-emerald-500' : (selected.trendStatus === 'declining' ? 'text-rose-500' : 'text-slate-400')}`}>
+                            {selected.trendStatus === 'rising' ? <TrendingUpIcon size={22} /> : (selected.trendStatus === 'declining' ? <TrendingDownIcon size={22} /> : <Minus size={22} />)}
+                            {selected.trendStatus === 'rising' ? '+' : ''}{selected.trendPercent.toFixed(0)}%
+                          </div>
+                          <p className="text-slate-400 text-[10px] font-bold uppercase mt-1">Recent vs earlier in this period</p>
+                        </div>
+                        <div className="bg-slate-900 p-8 rounded-[2.5rem] text-white shadow-xl flex flex-col justify-center">
+                          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Avg Price</p>
+                          <h4 className="text-2xl font-black tracking-tighter">₹{selected.avgPrice.toFixed(0)}</h4>
+                        </div>
+                      </section>
+
+                      <section className="bg-white rounded-[3rem] border border-slate-100 shadow-sm p-10">
+                        <h4 className="text-sm font-black text-slate-900 uppercase tracking-widest mb-6 flex items-center gap-2"><ShoppingCart size={16} className="text-indigo-500" /> Units Sold by Month</h4>
+                        {renderBarChart(selected.history, '#6366f1', v => Math.round(v).toLocaleString())}
+                      </section>
+
+                      <section className="bg-white rounded-[3rem] border border-slate-100 shadow-sm p-10">
+                        <h4 className="text-sm font-black text-slate-900 uppercase tracking-widest mb-6 flex items-center gap-2"><Target size={16} className="text-emerald-500" /> Revenue by Month</h4>
+                        {renderBarChart(selected.revenueHistory, '#10b981', v => `₹${Math.round(v).toLocaleString()}`)}
+                      </section>
+
+                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5"><Info size={12} /> Reflects combined POS + online sales, regardless of the channel filter above.</p>
+                    </>
+                  )}
+                </div>
+              );
+            })()}
 
             {activeTab === 'combos' && (
               <div className="space-y-10 animate-in zoom-in-95">
