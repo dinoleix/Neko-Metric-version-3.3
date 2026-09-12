@@ -1000,7 +1000,10 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
 
               const renderBarChart = (values: number[], color: string, formatValue: (v: number) => string) => {
                 const max = Math.max(...values, 1);
-                const W = 1000, H = 280, PAD_L = 60, PAD_B = 40, PAD_T = 20;
+                // Extra top padding over the earlier version: every bar now carries its
+                // own value label above it, and the tallest bar's label needs headroom
+                // that doesn't clip against the chart's top edge.
+                const W = 1000, H = 300, PAD_L = 60, PAD_B = 40, PAD_T = 40;
                 const plotW = W - PAD_L - 20, plotH = H - PAD_T - PAD_B;
                 const barWidth = (plotW / values.length) * 0.6;
                 return (
@@ -1014,9 +1017,13 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
                     {values.map((v, i) => {
                       const x = PAD_L + (i / values.length) * plotW + ((plotW / values.length) - barWidth) / 2;
                       const h = (v / max) * plotH;
+                      const barTop = PAD_T + plotH - h;
                       return (
                         <g key={i}>
-                          <rect x={x} y={PAD_T + plotH - h} width={barWidth} height={h} fill={color} rx="4" className="transition-all hover:opacity-80">
+                          <text x={x + barWidth / 2} y={Math.max(14, barTop - 8)} textAnchor="middle" className="fill-slate-700 text-[11px] font-black">
+                            {v > 0 ? formatValue(v) : ''}
+                          </text>
+                          <rect x={x} y={barTop} width={barWidth} height={h} fill={color} rx="4" className="transition-all hover:opacity-80">
                             <title>{`${intelligence.monthLabels[i]}: ${formatValue(v)}`}</title>
                           </rect>
                           <text x={x + barWidth / 2} y={H - PAD_B + 16} textAnchor="middle" className="fill-slate-500 text-[10px] font-black uppercase">
