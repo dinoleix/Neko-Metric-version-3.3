@@ -121,7 +121,7 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
   const [rankingMode, setRankingMode] = useState<'top' | 'bottom'>('top');
   const [rankingLimit, setRankingLimit] = useState(10);
   const [activeTab, setActiveTab] = useState<InsightTab>('matrix');
-  const [itemSearchQuery, setItemSearchQuery] = useState('');
+  const [historyCategory, setHistoryCategory] = useState<string>('all');
   const [selectedItemName, setSelectedItemName] = useState<string | null>(null);
   
   const [hoveredBubble, setHoveredBubble] = useState<{ x: number, y: number, item: AggregatedItem } | null>(null);
@@ -992,10 +992,10 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
             )}
 
             {activeTab === 'item-history' && (() => {
-              const searchQuery = itemSearchQuery.trim().toUpperCase();
-              const matches = searchQuery
-                ? [...intelligence.items].filter(i => i.name.includes(searchQuery)).sort((a, b) => a.name.localeCompare(b.name)).slice(0, 8)
-                : [];
+              const itemsForCategory = historyCategory === 'all'
+                ? intelligence.items
+                : intelligence.items.filter(i => i.segment === historyCategory);
+              const sortedItemOptions = [...itemsForCategory].sort((a, b) => a.name.localeCompare(b.name));
               const selected = selectedItemName ? intelligence.items.find(i => i.name === selectedItemName) : null;
 
               const renderBarChart = (values: number[], color: string, formatValue: (v: number) => string) => {
@@ -1032,38 +1032,45 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
               return (
                 <div className="space-y-8 animate-in slide-in-from-bottom-4 duration-500">
                   <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm">
-                    <div className="flex items-center gap-3 mb-4">
+                    <div className="flex items-center gap-3 mb-6">
                       <div className="p-3 bg-indigo-50 text-indigo-600 rounded-2xl"><History size={20} /></div>
                       <div>
                         <h3 className="text-lg font-black text-slate-900 uppercase tracking-tight">Look up one dish</h3>
-                        <p className="text-slate-400 text-xs font-medium">Search a Master SKU to see its month-by-month trend over the period selected above.</p>
+                        <p className="text-slate-400 text-xs font-medium">Pick a category to narrow the list, then pick the dish, to see its month-by-month trend over the period selected above.</p>
                       </div>
                     </div>
-                    <div className="relative max-w-md">
-                      <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-                      <input
-                        type="text"
-                        value={itemSearchQuery}
-                        onChange={e => { setItemSearchQuery(e.target.value); setSelectedItemName(null); }}
-                        placeholder="e.g. Chicken Ramen"
-                        className="w-full h-12 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white focus:ring-4 focus:ring-indigo-500/10 outline-none pl-11 pr-4 rounded-2xl text-sm font-bold text-slate-700 uppercase transition-all"
-                      />
-                      {matches.length > 0 && !selected && (
-                        <div className="absolute z-10 mt-2 w-full bg-white border border-slate-100 rounded-2xl shadow-xl overflow-hidden">
-                          {matches.map(m => (
-                            <button
-                              key={m.name}
-                              onClick={() => { setSelectedItemName(m.name); setItemSearchQuery(m.name); }}
-                              className="w-full text-left px-5 py-3 text-xs font-black uppercase text-slate-700 hover:bg-indigo-50 hover:text-indigo-600 transition-colors border-b border-slate-50 last:border-0"
-                            >
-                              {m.name}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                      {searchQuery && matches.length === 0 && !selected && (
-                        <p className="mt-2 text-[10px] font-bold text-slate-400 uppercase px-1">No item sold in this period matches "{itemSearchQuery}".</p>
-                      )}
+                    <div className="flex flex-wrap gap-4">
+                      <div className="bg-slate-50 px-4 py-2.5 rounded-2xl border border-slate-100 flex items-center gap-2 min-w-[220px]">
+                        <Layers size={14} className="text-indigo-500 shrink-0" />
+                        <select
+                          value={historyCategory}
+                          onChange={e => {
+                            setHistoryCategory(e.target.value);
+                            // Drop the selection if it no longer belongs to the newly chosen category
+                            if (selectedItemName && e.target.value !== 'all') {
+                              const stillMatches = intelligence.items.find(i => i.name === selectedItemName)?.segment === e.target.value;
+                              if (!stillMatches) setSelectedItemName(null);
+                            }
+                          }}
+                          className="w-full bg-transparent font-bold text-xs outline-none uppercase"
+                        >
+                          <option value="all">All Categories</option>
+                          {intelligence.availableSegments.map(seg => <option key={seg} value={seg}>{seg}</option>)}
+                        </select>
+                      </div>
+                      <div className="bg-slate-50 px-4 py-2.5 rounded-2xl border border-slate-100 flex items-center gap-2 min-w-[260px] flex-1">
+                        <Search size={14} className="text-indigo-500 shrink-0" />
+                        <select
+                          value={selectedItemName || ''}
+                          onChange={e => setSelectedItemName(e.target.value || null)}
+                          className="w-full bg-transparent font-bold text-xs outline-none uppercase"
+                        >
+                          <option value="">
+                            {sortedItemOptions.length === 0 ? 'No items in this category, this period' : 'Select a dish…'}
+                          </option>
+                          {sortedItemOptions.map(i => <option key={i.name} value={i.name}>{i.name}</option>)}
+                        </select>
+                      </div>
                     </div>
                   </div>
 
@@ -1079,7 +1086,7 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
                   ) : !selected ? (
                     <div className="py-24 bg-white rounded-[3rem] border-2 border-dashed border-slate-200 text-center">
                       <SearchX size={48} className="mx-auto text-slate-200 mb-4" />
-                      <h3 className="text-lg font-black text-slate-900">Search for a dish above</h3>
+                      <h3 className="text-lg font-black text-slate-900">Pick a dish above</h3>
                       <p className="text-slate-400 text-sm mt-2">Its sales will plot here, one bar per month, for the period selected above.</p>
                     </div>
                   ) : (
