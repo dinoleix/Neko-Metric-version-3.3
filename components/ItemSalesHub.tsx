@@ -998,7 +998,36 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
               const sortedItemOptions = [...itemsForCategory].sort((a, b) => a.name.localeCompare(b.name));
               const selected = selectedItemName ? intelligence.items.find(i => i.name === selectedItemName) : null;
 
-              const renderBarChart = (values: number[], color: string, formatValue: (v: number) => string) => {
+              // The current calendar month's item_snapshots doesn't exist until the
+              // CSV is uploaded at month-end, so a rolling "Last N Months" window
+              // always ends on an empty bar mid-month — which the trend comparison
+              // (recent vs earlier) misreads as a decline. Only rolling windows end
+              // at "now"; 'custom' is a fixed calendar year and isn't affected.
+              let displayHistory = selected?.history ?? [];
+              let displayRevenueHistory = selected?.revenueHistory ?? [];
+              let displayLabels = intelligence.monthLabels;
+              let displayTrendStatus = selected?.trendStatus;
+              let displayTrendPercent = selected?.trendPercent ?? 0;
+              let excludedMonthLabel: string | null = null;
+
+              if (selected && analysisPeriod !== 'custom') {
+                const lastIdx = displayHistory.length - 1;
+                const currentMonthEmpty = lastIdx > 0 && displayHistory[lastIdx] === 0 && displayRevenueHistory[lastIdx] === 0;
+                if (currentMonthEmpty) {
+                  excludedMonthLabel = intelligence.monthLabels[lastIdx];
+                  displayHistory = displayHistory.slice(0, -1);
+                  displayRevenueHistory = displayRevenueHistory.slice(0, -1);
+                  displayLabels = intelligence.monthLabels.slice(0, -1);
+
+                  const splitIdx = Math.max(1, Math.floor(displayHistory.length * 0.8));
+                  const avgRecent = displayHistory.slice(splitIdx).reduce((a, b) => a + b, 0) / (displayHistory.length - splitIdx || 1);
+                  const avgPrev = displayHistory.slice(0, splitIdx).reduce((a, b) => a + b, 0) / (splitIdx || 1);
+                  displayTrendStatus = avgRecent > avgPrev * 1.1 ? 'rising' : (avgRecent < avgPrev * 0.9 ? 'declining' : 'flat');
+                  displayTrendPercent = avgPrev > 0 ? ((avgRecent - avgPrev) / avgPrev) * 100 : 0;
+                }
+              }
+
+              const renderBarChart = (values: number[], labels: string[], color: string, formatValue: (v: number) => string) => {
                 const max = Math.max(...values, 1);
                 // Extra top padding over the earlier version: every bar now carries its
                 // own value label above it, and the tallest bar's label needs headroom
@@ -1024,10 +1053,10 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
                             {v > 0 ? formatValue(v) : ''}
                           </text>
                           <rect x={x} y={barTop} width={barWidth} height={h} fill={color} rx="4" className="transition-all hover:opacity-80">
-                            <title>{`${intelligence.monthLabels[i]}: ${formatValue(v)}`}</title>
+                            <title>{`${labels[i]}: ${formatValue(v)}`}</title>
                           </rect>
                           <text x={x + barWidth / 2} y={H - PAD_B + 16} textAnchor="middle" className="fill-slate-500 text-[10px] font-black uppercase">
-                            {intelligence.monthLabels[i]}
+                            {labels[i]}
                           </text>
                         </g>
                       );
@@ -1106,11 +1135,11 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
                         </div>
                         <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm flex flex-col justify-center">
                           <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Trend</p>
-                          <div className={`flex items-center gap-2 text-2xl font-black ${selected.trendStatus === 'rising' ? 'text-emerald-500' : (selected.trendStatus === 'declining' ? 'text-rose-500' : 'text-slate-400')}`}>
-                            {selected.trendStatus === 'rising' ? <TrendingUpIcon size={22} /> : (selected.trendStatus === 'declining' ? <TrendingDownIcon size={22} /> : <Minus size={22} />)}
-                            {selected.trendStatus === 'rising' ? '+' : ''}{selected.trendPercent.toFixed(0)}%
+                          <div className={`flex items-center gap-2 text-2xl font-black ${displayTrendStatus === 'rising' ? 'text-emerald-500' : (displayTrendStatus === 'declining' ? 'text-rose-500' : 'text-slate-400')}`}>
+                            {displayTrendStatus === 'rising' ? <TrendingUpIcon size={22} /> : (displayTrendStatus === 'declining' ? <TrendingDownIcon size={22} /> : <Minus size={22} />)}
+                            {displayTrendStatus === 'rising' ? '+' : ''}{displayTrendPercent.toFixed(0)}%
                           </div>
-                          <p className="text-slate-400 text-[10px] font-bold uppercase mt-1">Recent vs earlier in this period</p>
+                          <p className="text-slate-400 text-[10px] font-bold uppercase mt-1">Recent vs earlier{excludedMonthLabel ? ', excluding ' + excludedMonthLabel : ' in this period'}</p>
                         </div>
                         <div className="bg-slate-900 p-8 rounded-[2.5rem] text-white shadow-xl flex flex-col justify-center">
                           <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Avg Price</p>
@@ -1118,14 +1147,27 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
                         </div>
                       </section>
 
+                      {excludedMonthLabel && (
+                        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-5 flex items-start gap-4">
+                          <div className="p-2.5 bg-amber-500/15 rounded-xl shrink-0"><Info className="text-amber-600" size={20} /></div>
+                          <div>
+                            <p className="text-[10px] font-black uppercase tracking-widest text-amber-700">{excludedMonthLabel} not shown</p>
+                            <p className="text-sm font-bold text-amber-900 mt-1">
+                              No sales data has been uploaded for {excludedMonthLabel} yet — it's excluded from the chart and the
+                              trend above so an empty, still-in-progress month doesn't read as a decline.
+                            </p>
+                          </div>
+                        </div>
+                      )}
+
                       <section className="bg-white rounded-[3rem] border border-slate-100 shadow-sm p-10">
                         <h4 className="text-sm font-black text-slate-900 uppercase tracking-widest mb-6 flex items-center gap-2"><ShoppingCart size={16} className="text-indigo-500" /> Units Sold by Month</h4>
-                        {renderBarChart(selected.history, '#6366f1', v => Math.round(v).toLocaleString())}
+                        {renderBarChart(displayHistory, displayLabels, '#6366f1', v => Math.round(v).toLocaleString())}
                       </section>
 
                       <section className="bg-white rounded-[3rem] border border-slate-100 shadow-sm p-10">
                         <h4 className="text-sm font-black text-slate-900 uppercase tracking-widest mb-6 flex items-center gap-2"><Target size={16} className="text-emerald-500" /> Revenue by Month</h4>
-                        {renderBarChart(selected.revenueHistory, '#10b981', v => `₹${Math.round(v).toLocaleString()}`)}
+                        {renderBarChart(displayRevenueHistory, displayLabels, '#10b981', v => `₹${Math.round(v).toLocaleString()}`)}
                       </section>
 
                       <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5"><Info size={12} /> Reflects combined POS + online sales, regardless of the channel filter above.</p>
