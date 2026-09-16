@@ -1,0 +1,5 @@
+node_modules/
+# Service account keys grant full admin access to Firestore and bypass every
+# security rule. Never commit one.
+*.json
+!package.json

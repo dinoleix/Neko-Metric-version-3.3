@@ -1,0 +1,11 @@
+{
+  "name": "neko-mcp",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Read-only MCP server exposing Neko Metrics Firestore data to Claude.",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "firebase-admin": "^13.0.0"
+  }
+}
