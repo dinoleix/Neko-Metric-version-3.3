@@ -34,3 +34,5 @@ dist-ssr
 # Data files & archives (not source; may contain PII)
 *.csv
 *.zip
+.vercel
+.env*

@@ -68,7 +68,7 @@ const HolidayRegistry: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
         date: newDate,
         type: newType,
         region: newRegion || undefined,
-        userId: user.uid,
+        userId: dataOwnerId,
         createdAt: Date.now()
       };
       await addDoc(collection(db, 'holidays'), holiday);
@@ -135,7 +135,7 @@ const HolidayRegistry: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
           const newHolidayRef = doc(collection(db, 'holidays'));
           batch.set(newHolidayRef, {
             ...h,
-            userId: user.uid,
+            userId: dataOwnerId,
             createdAt: Date.now()
           });
         }

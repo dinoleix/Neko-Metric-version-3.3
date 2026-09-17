@@ -20,6 +20,7 @@ import {
   BankAccount,
   MASTER_OUTLETS,
   MONTH_NAMES,
+  ALWAYS_EXCLUDED_PURCHASE_CATEGORIES,
   getOutletName,
   istNow,
   istDateString,
@@ -449,7 +450,11 @@ const CrewReports: React.FC<{ user: User; profile: UserProfile; onBack?: () => v
   // Cancelled entries are excluded from the options for the same reason the
   // totals exclude them — a cancelled bill is not spend.
   const entryCategoryOptions = useMemo(() => {
-    const set = new Set<string>();
+    // Storage is a real crew purchase category but its purchases are inventory
+    // assets, deliberately excluded from P&L totals. Keep it selectable even
+    // when no Storage entry falls inside the current report range, so the
+    // report and the Crew Terminal category vocabulary stay aligned.
+    const set = new Set<string>(ALWAYS_EXCLUDED_PURCHASE_CATEGORIES);
     entriesByStoreAndType.forEach(e => {
       if (e.status !== 'cancelled') set.add(e.category || 'UNCATEGORIZED');
     });
@@ -542,7 +547,10 @@ const CrewReports: React.FC<{ user: User; profile: UserProfile; onBack?: () => v
   }, [entryTotals]);
 
   const categoryOptions = useMemo(() =>
-    (Object.entries(entryTotals.byCategory) as [string, number][]).sort((a, b) => b[1] - a[1]).map(([c]) => c),
+    Array.from(new Set([
+      ...ALWAYS_EXCLUDED_PURCHASE_CATEGORIES,
+      ...(Object.entries(entryTotals.byCategory) as [string, number][]).map(([category]) => category),
+    ])).sort(),
   [entryTotals]);
 
   // Daily spend for the selected category (or everything), zero-filled

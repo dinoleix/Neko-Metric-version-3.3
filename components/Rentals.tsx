@@ -98,7 +98,7 @@ const Rentals: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwne
         ...(newLat ? { latitude: parseFloat(newLat) } : {}),
         ...(newLng ? { longitude: parseFloat(newLng) } : {}),
         history: [{ date: newStartDate, amount: rent, reason: 'Initial Agreement' }],
-        userId: user.uid
+        userId: dataOwnerId
       };
       await addDoc(collection(db, 'rentals'), rental);
       invalidateCached('rentals', dataOwnerId);

@@ -1,7 +1,7 @@
 
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { type User } from 'firebase/auth';
-import { collection, addDoc, writeBatch, doc, setDoc, getDoc, increment, getDocs, query, where, arrayUnion, limit } from 'firebase/firestore';
+import { collection, addDoc, writeBatch, doc, setDoc, getDoc, increment, getDocs, query, where, arrayUnion, limit, runTransaction } from 'firebase/firestore';
 import { ref, uploadBytes } from 'firebase/storage';
 import { db, storage } from '../firebase';
 import { getCachedCollection } from '../referenceCache';
@@ -84,6 +84,25 @@ const parseIndianTime = (timeStr: string): number => {
   return hour % 24;
 };
 
+// Stable, fast client-side fingerprint for an exact mapped import. It is not a
+// security primitive; it prevents a user retrying the same CSV from adding the
+// same source rows and monthly snapshot totals a second time.
+const importFingerprint = (rows: any[], fields: { id: string }[], mapping: Record<string, string>, context: string): string => {
+  let hash = 0x811c9dc5;
+  const add = (value: string) => {
+    for (let i = 0; i < value.length; i++) {
+      hash ^= value.charCodeAt(i);
+      hash = Math.imul(hash, 0x01000193);
+    }
+  };
+  add(context);
+  rows.forEach(row => {
+    fields.forEach(field => add(`${field.id}=${String(row[mapping[field.id]] ?? '').trim()}\u001f`));
+    add('\u001e');
+  });
+  return (hash >>> 0).toString(36);
+};
+
 const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => void }> = ({ user, dataOwnerId, onSuccess }) => {
   const [mode, setMode] = useState<UploadMode>('csv');
   const [step, setStep] = useState<1 | 2 | 3>(1);
@@ -154,7 +173,7 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
       }
       setIsCheckingExisting(true);
       try {
-        const docId = `MANUAL_${user.uid}_${manualOutletId}_${onlinePlatform}_${year}_${month}`;
+        const docId = `MANUAL_${dataOwnerId}_${manualOutletId}_${onlinePlatform}_${year}_${month}`;
         const docRef = doc(db, 'sales_summary', docId);
         const snap = await getDoc(docRef);
         if (snap.exists()) {
@@ -178,7 +197,7 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
       }
     };
     checkExisting();
-  }, [mode, manualOutletId, onlinePlatform, month, year, user.uid]);
+  }, [mode, manualOutletId, onlinePlatform, month, year, dataOwnerId]);
 
   useEffect(() => {
     if (step === 2 && headers.length > 0) {
@@ -547,7 +566,7 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
       const ads = parseFloat(adSpend) || 0;
       const payout = expectedPayout;
 
-      const docId = `MANUAL_${user.uid}_${manualOutletId}_${onlinePlatform}_${year}_${month}`;
+      const docId = `MANUAL_${dataOwnerId}_${manualOutletId}_${onlinePlatform}_${year}_${month}`;
       const recordRef = doc(db, 'sales_summary', docId);
       const existingManualSnap = await getDoc(recordRef);
       
@@ -576,10 +595,10 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
         outletName: getOutletName(manualOutletId), outletId: manualOutletId,
         orderStatus: "SETTLED", totalTax: tax, paymentMode: "ONLINE", paymentStatus: "PAID",
         revenue: rev, onlinePlatform: onlinePlatform, commission: comm, adCharges: ads,
-        netPayout: payout, userId: user.uid, _fileId: "manual_online_entry"
+        netPayout: payout, userId: dataOwnerId, createdBy: user.uid, _fileId: "manual_online_entry"
       });
 
-      const snapshotId = `${user.uid}_${manualOutletId}_${year}_${month}`;
+      const snapshotId = `${dataOwnerId}_${manualOutletId}_${year}_${month}`;
       const snapRef = doc(db, 'sales_snapshots', snapshotId);
       const snapshotDoc = await getDoc(snapRef);
 
@@ -601,7 +620,7 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
         const initialTrend = new Array(31).fill(0);
         initialTrend[0] = rev;
         await setDoc(snapRef, {
-          userId: user.uid, outletId: manualOutletId, month, year,
+          userId: dataOwnerId, createdBy: user.uid, outletId: manualOutletId, month, year,
           posTotalGross: 0, posGoodGross: 0, posGoodNet: 0, posGoodTax: 0,
           onlineGoodGross: rev, onlineGoodNet: payout, onlineGoodTax: tax,
           onlineGoodComm: comm, onlineGoodAds: ads, eventRevenue: 0,
@@ -627,18 +646,18 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
       const safeEventDateStr = `${eYear}-${String(eventDateObj.getMonth() + 1).padStart(2, '0')}-${String(eventDateObj.getDate()).padStart(2, '0')}`;
 
       await addDoc(collection(db, 'events'), {
-        userId: user.uid, outletId: manualOutletId, month: eMonth, year: eYear,
+        userId: dataOwnerId, createdBy: user.uid, outletId: manualOutletId, month: eMonth, year: eYear,
         date: safeEventDateStr, eventName, revenue: rev, costs, description: eventDesc, createdAt: Date.now()
       });
 
-      const snapRef = doc(db, 'sales_snapshots', `${user.uid}_${manualOutletId}_${eYear}_${eMonth}`);
+      const snapRef = doc(db, 'sales_snapshots', `${dataOwnerId}_${manualOutletId}_${eYear}_${eMonth}`);
       const snapDoc = await getDoc(snapRef);
 
       if (snapDoc.exists()) {
         await setDoc(snapRef, { eventRevenue: increment(rev), lastUpdated: Date.now() }, { merge: true });
       } else {
         await setDoc(snapRef, {
-          userId: user.uid, outletId: manualOutletId, month: eMonth, year: eYear,
+          userId: dataOwnerId, createdBy: user.uid, outletId: manualOutletId, month: eMonth, year: eYear,
           posTotalGross: 0, posGoodGross: 0, posGoodNet: 0, posGoodTax: 0,
           onlineGoodGross: 0, onlineGoodNet: 0, onlineGoodTax: 0, onlineGoodComm: 0, onlineGoodAds: 0,
           eventRevenue: rev, settledOrderCount: 0, totalOrderCount: 0, cancelledOrderCount: 0,
@@ -652,21 +671,55 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
   const handleSaveCSV = async () => {
     if (!selectedFile) return;
     setIsSaving(true);
+    let importManifestRef: any = null;
+    let writesStarted = false;
     try {
       await saveMappingPreference();
       const timestamp = Date.now();
       const storagePath = `users/${user.uid}/files/${timestamp}_${selectedFile.name}`;
-      await uploadBytes(ref(storage, storagePath), selectedFile);
-
+      const fingerprint = importFingerprint(
+        csvData,
+        targetFields,
+        mapping,
+        `${dataOwnerId}|${fileType}|${month}|${year}|${manualOutletId}|${mode === 'platform' ? onlinePlatform : 'NONE'}`
+      );
+      // A deterministic manifest is acquired first. A concurrent browser sees
+      // the reservation and cannot begin another import of the same source.
+      const fileId = `import-${fileType}-${month}-${year}-${fingerprint}`;
+      const fileRefFirestore = doc(db, 'files', fileId);
       const fileMetadata = {
         name: fileName, type: fileType, month, year, uploadedAt: timestamp,
-        recordCount: csvData.length, userId: user.uid, storagePath,
+        recordCount: csvData.length, userId: dataOwnerId, uploadedBy: user.uid, storagePath,
         bankAccountId: fileType === 'bank_statement' ? selectedBankAccountId : null,
         platform: mode === 'platform' ? onlinePlatform : 'NONE',
-        outletId: (fileType === 'item' || fileType === 'sales') ? 'GLOBAL' : manualOutletId
+        outletId: (fileType === 'item' || fileType === 'sales') ? 'GLOBAL' : manualOutletId,
+        contentFingerprint: fingerprint,
+        importStatus: 'processing'
       };
-      const fileRefFirestore = await addDoc(collection(db, 'files'), fileMetadata);
-      const fileId = fileRefFirestore.id;
+      await runTransaction(db, async transaction => {
+        const existing = await transaction.get(fileRefFirestore);
+        if (existing.exists()) {
+          const status = existing.data().importStatus || 'completed';
+          if (status === 'failed_before_write') {
+            transaction.set(fileRefFirestore, fileMetadata);
+            return;
+          }
+          throw new Error(status === 'processing'
+            ? 'This exact CSV is already being imported. Wait for it to finish before trying again.'
+            : status === 'needs_review'
+              ? 'A previous attempt of this CSV did not finish safely. Review its raw records before importing again.'
+            : 'This exact CSV has already been imported. Re-uploading it would duplicate your reporting totals.');
+        }
+        transaction.set(fileRefFirestore, fileMetadata);
+      });
+      importManifestRef = fileRefFirestore;
+
+      try {
+        await uploadBytes(ref(storage, storagePath), selectedFile);
+      } catch (uploadErr) {
+        await setDoc(fileRefFirestore, { importStatus: 'failed_before_write', failedAt: Date.now() }, { merge: true });
+        throw uploadErr;
+      }
 
       const collectionNameMap: Record<FileType, string> = {
         'sales': 'sales_summary',
@@ -682,10 +735,12 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
 
       let batchRecords = writeBatch(db);
       let count = 0;
+      writesStarted = true;
       for (const row of csvData) {
         const recordRef = doc(collection(db, targetColl));
-        const recordData: any = { 
-          userId: user.uid, 
+        const recordData: any = {
+          userId: dataOwnerId,
+          uploadedBy: user.uid,
           _fileId: fileId, 
           createdAt: timestamp,
           bankAccountId: fileType === 'bank_statement' ? selectedBankAccountId : null
@@ -837,7 +892,7 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
         });
 
         for (const oId in outletAggs) {
-          const snapRef = doc(db, 'sales_snapshots', `${user.uid}_${oId}_${year}_${month}`);
+          const snapRef = doc(db, 'sales_snapshots', `${dataOwnerId}_${oId}_${year}_${month}`);
           const agg = outletAggs[oId];
           const existingSnap = await getDoc(snapRef);
 
@@ -885,7 +940,7 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
               lastUpdated: Date.now()
             }, { merge: true });
           } else {
-            await setDoc(snapRef, { userId: user.uid, outletId: oId, month, year, eventRevenue: 0, ...agg, lastUpdated: Date.now() });
+            await setDoc(snapRef, { userId: dataOwnerId, createdBy: user.uid, outletId: oId, month, year, eventRevenue: 0, ...agg, lastUpdated: Date.now() });
           }
         }
       } else if (fileType === 'online_order') {
@@ -987,7 +1042,7 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
         });
 
         for (const oId in outletAggs) {
-          const snapRef = doc(db, 'sales_snapshots', `${user.uid}_${oId}_${year}_${month}`);
+          const snapRef = doc(db, 'sales_snapshots', `${dataOwnerId}_${oId}_${year}_${month}`);
           const agg = outletAggs[oId];
           const existingSnap = await getDoc(snapRef);
 
@@ -1025,7 +1080,7 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
               lastUpdated: Date.now()
             }, { merge: true });
           } else {
-            await setDoc(snapRef, { userId: user.uid, outletId: oId, month, year, eventRevenue: 0, ...agg, lastUpdated: Date.now() });
+            await setDoc(snapRef, { userId: dataOwnerId, createdBy: user.uid, outletId: oId, month, year, eventRevenue: 0, ...agg, lastUpdated: Date.now() });
           }
         }
 
@@ -1033,9 +1088,9 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
         const customerBatch = writeBatch(db);
         let cCount = 0;
         for (const [cId, data] of Object.entries(customerAggs)) {
-          const cRef = doc(db, 'online_customers', `${user.uid}_${cId}`);
+          const cRef = doc(db, 'online_customers', `${dataOwnerId}_${cId}`);
           customerBatch.set(cRef, {
-            userId: user.uid,
+            userId: dataOwnerId,
             customerId: cId,
             totalOrders: increment(data.totalOrders),
             totalSpent: increment(data.totalSpent),
@@ -1088,7 +1143,7 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
         });
 
         for (const oId in outletAggs) {
-          const snapRef = doc(db, 'expense_snapshots', `${user.uid}_${oId}_${year}_${month}`);
+          const snapRef = doc(db, 'expense_snapshots', `${dataOwnerId}_${oId}_${year}_${month}`);
           const agg = outletAggs[oId];
           const existingSnap = await getDoc(snapRef);
           // Guard: warn if crew terminal has already contributed data for this period
@@ -1124,7 +1179,7 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
               lastUpdated: Date.now()
             }, { merge: true });
           } else {
-            await setDoc(snapRef, { userId: user.uid, outletId: oId, month, year, ...agg, lastUpdated: Date.now() });
+            await setDoc(snapRef, { userId: dataOwnerId, createdBy: user.uid, outletId: oId, month, year, ...agg, lastUpdated: Date.now() });
           }
         }
       } else if (fileType === 'item' || fileType === 'platform_item') {
@@ -1196,7 +1251,7 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
         });
 
         for (const oId in outletAggs) {
-          const snapRef = doc(db, 'item_snapshots', `${user.uid}_${oId}_${year}_${month}`);
+          const snapRef = doc(db, 'item_snapshots', `${dataOwnerId}_${oId}_${year}_${month}`);
           const agg = outletAggs[oId];
           const existingSnap = await getDoc(snapRef);
           if (existingSnap.exists()) {
@@ -1226,7 +1281,7 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
             });
             await setDoc(snapRef, { items: nextItems, lastUpdated: Date.now() }, { merge: true });
           } else {
-            await setDoc(snapRef, { userId: user.uid, outletId: oId, month, year, items: agg.items, lastUpdated: Date.now() });
+            await setDoc(snapRef, { userId: dataOwnerId, createdBy: user.uid, outletId: oId, month, year, items: agg.items, lastUpdated: Date.now() });
           }
         }
       } else if (fileType === 'customer_mapping') {
@@ -1249,8 +1304,8 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
           if (!snap.empty) {
             const customerId = snap.docs[0].data().customerId;
             if (customerId) {
-              const cRef = doc(db, 'online_customers', `${user.uid}_${customerId}`);
-              batch.set(cRef, { name: customerName, lastUpdated: Date.now() }, { merge: true });
+              const cRef = doc(db, 'online_customers', `${dataOwnerId}_${customerId}`);
+              batch.set(cRef, { userId: dataOwnerId, name: customerName, lastUpdated: Date.now() }, { merge: true });
               count++;
             }
           }
@@ -1261,9 +1316,18 @@ const Uploader: React.FC<{ user: User; dataOwnerId: string; onSuccess: () => voi
         }
         if (count > 0) await batch.commit();
       }
+      await setDoc(fileRefFirestore, { importStatus: 'completed', completedAt: Date.now() }, { merge: true });
       onSuccess();
     } catch (err: any) { 
       console.error("Save failure:", err);
+      if (importManifestRef) {
+        try {
+          await setDoc(importManifestRef, {
+            importStatus: writesStarted ? 'needs_review' : 'failed_before_write',
+            failedAt: Date.now(),
+          }, { merge: true });
+        } catch (manifestErr) { console.error('Could not record import failure:', manifestErr); }
+      }
       setError(err.message); 
     } finally { setIsSaving(false); }
   };

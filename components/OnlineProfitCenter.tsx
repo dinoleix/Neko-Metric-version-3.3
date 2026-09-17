@@ -229,7 +229,17 @@ const OnlineProfitCenter: React.FC<{ user: User; dataOwnerId: string }> = ({ use
 
   useEffect(() => { fetchData(); }, [user, selectedYear, selectedMonth]);
 
-  const activeOutletOptions = useMemo(() => rentals.map(r => ({ id: r.outletId, name: r.storeName })), [rentals]);
+  // Current online analytics should only offer and aggregate operational stores.
+  // Closed outlets remain available in source history, outside the live scope.
+  const activeOutletOptions = useMemo(
+    () => rentals.filter(r => r.status === 'active').map(r => ({ id: r.outletId, name: r.storeName })),
+    [rentals]
+  );
+  const activeOutletIds = useMemo(() => new Set(activeOutletOptions.map(o => o.id)), [activeOutletOptions]);
+
+  useEffect(() => {
+    if (storeFilter !== 'all' && !activeOutletIds.has(storeFilter)) setStoreFilter('all');
+  }, [storeFilter, activeOutletIds]);
 
   const availablePlatforms = useMemo(() => {
     const plats = new Set<string>();
@@ -246,8 +256,8 @@ const OnlineProfitCenter: React.FC<{ user: User; dataOwnerId: string }> = ({ use
   }, [allSalesSnaps, selectedYear, selectedMonth]);
 
   const analytics = useMemo(() => {
-    const filteredSales = salesSnaps.filter(s => storeFilter === 'all' || s.outletId === storeFilter);
-    const filteredItems = itemSnaps.filter(s => storeFilter === 'all' || s.outletId === storeFilter);
+    const filteredSales = salesSnaps.filter(s => storeFilter === 'all' ? activeOutletIds.has(s.outletId) : s.outletId === storeFilter);
+    const filteredItems = itemSnaps.filter(s => storeFilter === 'all' ? activeOutletIds.has(s.outletId) : s.outletId === storeFilter);
 
     const platformFilteredSales = platformFilter === 'all' 
       ? filteredSales 
@@ -420,7 +430,7 @@ const OnlineProfitCenter: React.FC<{ user: User; dataOwnerId: string }> = ({ use
       weekdayData,
       filteredHourlyData
     };
-  }, [salesSnaps, itemSnaps, storeFilter, platformFilter, normalizationMap, itemCosts, startHour, endHour]);
+  }, [salesSnaps, itemSnaps, storeFilter, platformFilter, normalizationMap, itemCosts, startHour, endHour, activeOutletIds]);
 
   const velocityAnalytics = useMemo(() => {
     if (allSalesSnaps.length === 0) return null;
@@ -450,7 +460,7 @@ const OnlineProfitCenter: React.FC<{ user: User; dataOwnerId: string }> = ({ use
     }
 
     const filteredSnaps = allSalesSnaps.filter(s => {
-      const isOutletMatch = storeFilter === 'all' || s.outletId === storeFilter;
+      const isOutletMatch = storeFilter === 'all' ? activeOutletIds.has(s.outletId) : s.outletId === storeFilter;
       const snapSortKey = parseInt(s.year) * 100 + MONTH_NAMES.indexOf(s.month);
       const isInRange = monthsInRange.some(m => m.sortKey === snapSortKey);
       return isOutletMatch && isInRange;
@@ -481,7 +491,7 @@ const OnlineProfitCenter: React.FC<{ user: User; dataOwnerId: string }> = ({ use
     return {
       trendData
     };
-  }, [allSalesSnaps, velocityRange, customStartMonth, customStartYear, customEndMonth, customEndYear, storeFilter, platformFilter]);
+  }, [allSalesSnaps, velocityRange, customStartMonth, customStartYear, customEndMonth, customEndYear, storeFilter, platformFilter, activeOutletIds]);
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500 pb-20">
@@ -506,7 +516,7 @@ const OnlineProfitCenter: React.FC<{ user: User; dataOwnerId: string }> = ({ use
                 onChange={e => setStoreFilter(e.target.value)} 
                 className="bg-transparent font-bold text-xs outline-none uppercase cursor-pointer"
               >
-                <option value="all">All Units</option>
+                <option value="all">All Active Outlets</option>
                 {activeOutletOptions.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
               </select>
             </div>

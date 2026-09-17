@@ -172,6 +172,7 @@ export const MODULES: AppModule[] = [
     id: 'cash-flow', label: 'Cash Reality', icon: <Banknote size={18} />,
     section: 'Intelligence', Component: CashFlowTracker,
     defaultRoles: ['admin', 'manager', 'viewer'],
+    render: ctx => <CashFlowTracker user={ctx.user} dataOwnerId={ctx.dataOwnerId} readOnly={ctx.isReadOnly} />,
   },
   {
     id: 'pnl-insights', label: 'Margin Intelligence', icon: <Sparkles size={18} />,

@@ -240,11 +240,12 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
     try {
       const batch = writeBatch(db);
       for (const outletId in editingStock) {
-        const adjId = `${user.uid}_${outletId}_${selectedYear}_${selectedMonth}`;
+        const adjId = `${dataOwnerId}_${outletId}_${selectedYear}_${selectedMonth}`;
         const adjRef = doc(db, 'cogs_adjustments', adjId);
         const { food, drinks, foodIngredients, drinkIngredients, foodIngredientsOpening, drinkIngredientsOpening, foodServingsOpening, drinkServingsOpening } = editingStock[outletId];
         batch.set(adjRef, {
-          userId: user.uid,
+          userId: dataOwnerId,
+          updatedBy: user.uid,
           outletId,
           year: selectedYear,
           month: selectedMonth,
@@ -442,6 +443,15 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
     });
 
     const denominator = grossGoodRevenue || 1;
+    // This P&L intentionally waits for the month-end sales import. During the
+    // open month, zero imported revenue means "not loaded yet", not a real
+    // zero-sales performance result. Historical zero-sales periods keep their
+    // normal behaviour so legitimate closures are not relabelled.
+    const now = new Date();
+    const awaitingCurrentMonthImport =
+      selectedYearNum === now.getFullYear() &&
+      monthIdx === now.getMonth() &&
+      grossGoodRevenue === 0;
 
     const isMonthFullyLocked = currentFilterOutlets.every(oId => existingPnLSnaps.some(s => s.outletId === oId && s.isLocked));
 
@@ -452,7 +462,7 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
       openingIngredients, foodIngredientsOpening, drinkIngredientsOpening,
       openingServings, foodServingsOpening, drinkServingsOpening, openingStock,
       mappedOps, csvVariableLabour, fixedPayroll, totalPayroll, totalRent, unmappedExp, operatingBurn,
-      netProfit, payrollValidated, isMonthFullyLocked, stockDataSuspect, breakEven,
+      netProfit, payrollValidated, isMonthFullyLocked, stockDataSuspect, breakEven, awaitingCurrentMonthImport,
       margins: {
         contributionPercent: (contributionMargin / denominator) * 100,
         netProfitMargin: (netProfit / denominator) * 100,
@@ -514,13 +524,13 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
           const den = gross || 1;
 
           const snapData: PnLMonthlySnapshot = {
-            userId: user.uid, outletId: oId, month: selectedMonth, year: selectedYear,
+            userId: dataOwnerId, outletId: oId, month: selectedMonth, year: selectedYear,
             grossRevenue: gross, netRevenue: inflow, cogsAmount: c, labourAmount: labour, opsAmount: rawO + rawU, rentAmount: rent, netProfit: profit,
             cogsRatio: (c / den) * 100, labourRatio: (labour / den) * 100, opsRatio: ((rawO + rawU) / den) * 100, rentRatio: (rent / den) * 100, netMargin: (profit / den) * 100,
             isLocked: true, lastUpdated: Date.now()
           };
 
-          batch.set(doc(db, 'pnl_snapshots', `${user.uid}_${oId}_${selectedYear}_${selectedMonth}`), snapData);
+          batch.set(doc(db, 'pnl_snapshots', `${dataOwnerId}_${oId}_${selectedYear}_${selectedMonth}`), snapData);
       }
 
       await batch.commit();
@@ -625,6 +635,15 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
         <div className="py-48 text-center"><Loader2 className="w-12 h-12 text-indigo-600 animate-spin mx-auto mb-6" /><p className="text-slate-400 font-black uppercase tracking-widest text-[10px]">Assembling Multi-Dimensional Audit...</p></div>
       ) : (
         <div className="space-y-12 animate-in fade-in duration-700">
+          {pnlData.awaitingCurrentMonthImport && (
+            <div className="rounded-3xl border border-amber-200 bg-amber-50 px-6 py-5 flex items-start gap-4 text-amber-950">
+              <AlertTriangle size={22} className="text-amber-600 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-black uppercase tracking-wide">Month-end sales import pending</p>
+                <p className="mt-1 text-xs font-medium leading-relaxed">This CSV P&L has no settled sales loaded for {selectedMonth}. Costs shown below are real, but profit and margin are unavailable until the month-end sales CSV is imported. Use P&L Command (Crew) for the live daily view.</p>
+              </div>
+            </div>
+          )}
           
           <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
             <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm flex flex-col justify-between">
@@ -669,7 +688,7 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
             <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm flex flex-col justify-between">
                <div>
                   <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Gross Margin</p>
-                  <h4 className="text-3xl font-black text-slate-900 tracking-tighter">{pnlData.margins.contributionPercent.toFixed(1)}%</h4>
+                  <h4 className="text-3xl font-black text-slate-900 tracking-tighter">{pnlData.awaitingCurrentMonthImport ? '—' : `${pnlData.margins.contributionPercent.toFixed(1)}%`}</h4>
                </div>
                <div className="mt-6 flex items-center gap-2 text-emerald-500 text-[10px] font-black uppercase"><TrendingUp size={12}/> CP Efficiency</div>
             </div>
@@ -685,19 +704,19 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
             <div className="bg-indigo-900 p-8 rounded-[2.5rem] text-white shadow-2xl flex flex-col justify-between">
                <div>
                   <p className="text-[10px] font-black text-indigo-300 uppercase tracking-widest mb-1">Net Margin</p>
-                  <h4 className="text-3xl font-black tracking-tighter">{pnlData.margins.netProfitMargin.toFixed(1)}%</h4>
+                  <h4 className="text-3xl font-black tracking-tighter">{pnlData.awaitingCurrentMonthImport ? '—' : `${pnlData.margins.netProfitMargin.toFixed(1)}%`}</h4>
                </div>
                <div className="mt-6 flex items-center gap-2 text-indigo-300 text-[10px] font-black uppercase"><Zap size={12}/> Profit Signal</div>
             </div>
 
-            <div className={`p-8 rounded-[2.5rem] text-white shadow-xl flex flex-col justify-between transition-colors duration-500 ${pnlData.netProfit >= 0 ? 'bg-emerald-600 shadow-emerald-900/40' : 'bg-rose-600 shadow-rose-900/40'}`}>
+            <div className={`p-8 rounded-[2.5rem] text-white shadow-xl flex flex-col justify-between transition-colors duration-500 ${pnlData.awaitingCurrentMonthImport ? 'bg-amber-600 shadow-amber-900/40' : (pnlData.netProfit >= 0 ? 'bg-emerald-600 shadow-emerald-900/40' : 'bg-rose-600 shadow-rose-900/40')}`}>
                <div>
-                  <p className="text-[10px] font-black uppercase tracking-widest opacity-70">Net Monthly Profit</p>
-                  <h4 className="text-3xl font-black tracking-tighter">₹{pnlData.netProfit.toLocaleString(undefined, { minimumFractionDigits: 2 })}</h4>
+                  <p className="text-[10px] font-black uppercase tracking-widest opacity-70">{pnlData.awaitingCurrentMonthImport ? 'Profit status' : 'Net Monthly Profit'}</p>
+                  <h4 className="text-3xl font-black tracking-tighter">{pnlData.awaitingCurrentMonthImport ? 'Awaiting import' : `₹${pnlData.netProfit.toLocaleString(undefined, { minimumFractionDigits: 2 })}`}</h4>
                </div>
                <div className="mt-6 flex items-center gap-2 text-[10px] font-black uppercase">
-                 {pnlData.netProfit >= 0 ? <ArrowUpRight size={14}/> : <ArrowDownRight size={14}/>}
-                 {pnlData.netProfit >= 0 ? 'Surplus' : 'Deficit'} Detected
+                 {pnlData.awaitingCurrentMonthImport ? <AlertTriangle size={14}/> : (pnlData.netProfit >= 0 ? <ArrowUpRight size={14}/> : <ArrowDownRight size={14}/>)}
+                 {pnlData.awaitingCurrentMonthImport ? 'CSV sales required' : (pnlData.netProfit >= 0 ? 'Surplus' : 'Deficit')}
                </div>
             </div>
           </section>
@@ -789,15 +808,15 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
                             </div>
                          </div>
 
-                         <div className={`py-8 rounded-[3rem] px-10 flex justify-between items-center text-white shadow-2xl transition-all duration-1000 ${pnlData.netProfit >= 0 ? 'bg-emerald-600 shadow-emerald-900/40' : 'bg-rose-600 shadow-rose-900/40'}`}>
+                         <div className={`py-8 rounded-[3rem] px-10 flex justify-between items-center text-white shadow-2xl transition-all duration-1000 ${pnlData.awaitingCurrentMonthImport ? 'bg-amber-600 shadow-amber-900/40' : (pnlData.netProfit >= 0 ? 'bg-emerald-600 shadow-emerald-900/40' : 'bg-rose-600 shadow-rose-900/40')}`}>
                             <div className="flex items-center gap-6">
                                <div className="p-4 bg-white/10 rounded-2xl shadow-inner"><Target size={32} /></div>
                                <div>
-                                  <p className="text-[10px] font-black uppercase tracking-widest opacity-70">Bottom Line Result</p>
-                                  <span className="text-3xl font-black tracking-tight uppercase">Net Monthly Profit</span>
+                                  <p className="text-[10px] font-black uppercase tracking-widest opacity-70">{pnlData.awaitingCurrentMonthImport ? 'Month-end status' : 'Bottom Line Result'}</p>
+                                  <span className="text-3xl font-black tracking-tight uppercase">{pnlData.awaitingCurrentMonthImport ? 'Sales import pending' : 'Net Monthly Profit'}</span>
                                 </div>
                             </div>
-                            <span className="text-5xl font-black tracking-tighter">₹{pnlData.netProfit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                            <span className="text-5xl font-black tracking-tighter">{pnlData.awaitingCurrentMonthImport ? '—' : `₹${pnlData.netProfit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}</span>
                          </div>
                       </div>
                    </div>
@@ -816,10 +835,10 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
                               <div key={g.label}>
                                  <div className="flex justify-between items-center mb-3">
                                     <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-2">{g.icon} {g.label}</span>
-                                    <span className="text-xs font-black">{g.val.toFixed(1)}%</span>
+                                    <span className="text-xs font-black">{pnlData.awaitingCurrentMonthImport ? '—' : `${g.val.toFixed(1)}%`}</span>
                                  </div>
                                  <div className="h-1.5 bg-white/5 rounded-full overflow-hidden shadow-inner">
-                                    <div className={`h-full ${g.color} transition-all duration-1000 ease-out`} style={{ width: `${Math.min(100, g.val)}%` }} />
+                                    <div className={`h-full ${g.color} transition-all duration-1000 ease-out`} style={{ width: pnlData.awaitingCurrentMonthImport ? '0%' : `${Math.min(100, g.val)}%` }} />
                                  </div>
                               </div>
                             ))}
@@ -1003,11 +1022,13 @@ const PnLHub: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> 
                          <div className="p-4 bg-emerald-500 rounded-2xl shadow-lg"><Scale size={32}/></div>
                          <div>
                             <p className="text-[10px] font-black text-emerald-400 uppercase tracking-widest mb-1">Final Reconciled Bottom Line</p>
-                            <h4 className="text-4xl font-black tracking-tighter">₹{pnlData.netProfit.toLocaleString(undefined, { minimumFractionDigits: 2 })}</h4>
+                            <h4 className="text-4xl font-black tracking-tighter">{pnlData.awaitingCurrentMonthImport ? '—' : `₹${pnlData.netProfit.toLocaleString(undefined, { minimumFractionDigits: 2 })}`}</h4>
                          </div>
                       </div>
                       <div className="text-right text-slate-400 text-[10px] font-medium max-w-sm leading-relaxed uppercase tracking-wide">
-                        Validation: ₹{pnlData.contributionMargin.toLocaleString()} (Contrib) - ₹{pnlData.totalPayroll.toLocaleString()} (Labour) - ₹{pnlData.totalRent.toLocaleString()} (Rent) - ₹{pnlData.mappedOps.toLocaleString()} (Ops) - ₹{pnlData.unmappedExp.toLocaleString()} (Unmapped) = ₹{pnlData.netProfit.toLocaleString(undefined, {minimumFractionDigits: 2})}.
+                        {pnlData.awaitingCurrentMonthImport
+                          ? 'Profit validation resumes after the month-end sales CSV is imported.'
+                          : `Validation: ₹${pnlData.contributionMargin.toLocaleString()} (Contrib) - ₹${pnlData.totalPayroll.toLocaleString()} (Labour) - ₹${pnlData.totalRent.toLocaleString()} (Rent) - ₹${pnlData.mappedOps.toLocaleString()} (Ops) - ₹${pnlData.unmappedExp.toLocaleString()} (Unmapped) = ₹${pnlData.netProfit.toLocaleString(undefined, { minimumFractionDigits: 2 })}.`}
                       </div>
                    </div>
                 </div>

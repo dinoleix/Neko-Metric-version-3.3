@@ -35,7 +35,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
-const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
+const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> = ({ user, dataOwnerId, readOnly = false }) => {
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear().toString());
   const [selectedMonth, setSelectedMonth] = useState(MONTH_NAMES[new Date().getMonth()]);
   const [pnlSnaps, setPnlSnaps] = useState<PnLMonthlySnapshot[]>([]);
@@ -210,6 +210,7 @@ const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
   }, [loanProfiles, totalObligationsBreakdown.byProfile]);
 
   const handleSaveSnapshot = async () => {
+    if (readOnly) return;
     try {
       const snapId = `${dataOwnerId}_${selectedYear}_${selectedMonth}`;
       const snapRef = doc(db, 'cash_flow_snapshots', snapId);
@@ -237,10 +238,11 @@ const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
   };
 
   const handleAddProfile = async () => {
+    if (readOnly) return;
     if (!newProfileName) return;
     try {
       const profile: LoanProfile = {
-        userId: user.uid,
+        userId: dataOwnerId,
         name: newProfileName,
         category: newProfileCategory,
         isActive: true,
@@ -256,6 +258,7 @@ const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
   };
 
   const handleDeleteProfile = async (id: string) => {
+    if (readOnly) return;
     if (!confirm("Are you sure? This will unmap any associated transactions.")) return;
     try {
       await deleteDoc(doc(db, 'loan_profiles', id));
@@ -266,6 +269,7 @@ const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
   };
 
   const handleAddCashPayment = async () => {
+    if (readOnly) return;
     const amount = parseFloat(cashAmount) || 0;
     if (!cashLoanProfileId) { alert("Select which lender you paid."); return; }
     if (!cashBankId) { alert("Select the source 10k access bank."); return; }
@@ -333,6 +337,7 @@ const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
   };
 
   const handleDeleteCashPayment = async (ob: CashObligation) => {
+    if (readOnly) return;
     if (!confirm("Delete this cash payment? The amount will be added back to the source 10k bank balance.")) return;
     try {
       await deleteDoc(doc(db, 'cash_obligations', ob.id!));
@@ -355,6 +360,7 @@ const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
   };
 
   const updateMapping = async (txId: string, profileId: string) => {
+    if (readOnly) return;
     const newMappings = { ...mappings, [txId]: profileId };
     setMappings(newMappings);
     // Auto-save immediately so the user doesn't need to click "Update Reality Snap"
@@ -633,12 +639,15 @@ const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
                   <div className="w-10 h-10 bg-indigo-50 rounded-xl flex items-center justify-center text-indigo-600"><Layers size={20} /></div>
                   <h3 className="text-lg font-black text-slate-900 uppercase tracking-tight">Loan Library</h3>
                 </div>
-                <button 
-                  onClick={() => setIsAddingProfile(!isAddingProfile)}
-                  className="p-2 bg-slate-900 text-white rounded-xl hover:scale-105 transition-all"
-                >
-                  <Plus size={18} />
-                </button>
+                {!readOnly && (
+                  <button
+                    onClick={() => setIsAddingProfile(!isAddingProfile)}
+                    className="p-2 bg-slate-900 text-white rounded-xl hover:scale-105 transition-all"
+                    aria-label="Add loan profile"
+                  >
+                    <Plus size={18} />
+                  </button>
+                )}
               </div>
 
               <AnimatePresence>
@@ -687,7 +696,7 @@ const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
 
               <div className="space-y-3">
                 {loanProfiles.length === 0 && !isAddingProfile && (
-                   <p className="text-center py-8 text-[11px] font-bold text-slate-300 uppercase italic">No profiles defined. Use the + button.</p>
+                   <p className="text-center py-8 text-[11px] font-bold text-slate-300 uppercase italic">No profiles defined.</p>
                 )}
                 {loanProfiles.map(lp => (
                   <div key={lp.id} className="flex items-center justify-between p-4 bg-slate-50/50 rounded-2xl border border-slate-100/50 hover:border-indigo-100 transition-all group">
@@ -695,12 +704,15 @@ const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
                         <h4 className="text-[11px] font-black text-slate-900 uppercase tracking-tight">{lp.name}</h4>
                         <span className="text-[8px] font-black text-indigo-400 uppercase tracking-widest mt-1 block">{lp.category.replace('_', ' ')}</span>
                      </div>
-                     <button 
-                       onClick={() => handleDeleteProfile(lp.id!)}
-                       className="p-2 text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-all"
-                     >
-                       <Trash2 size={14} />
-                     </button>
+                     {!readOnly && (
+                       <button
+                         onClick={() => handleDeleteProfile(lp.id!)}
+                         className="p-2 text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-all"
+                         aria-label={`Delete ${lp.name}`}
+                       >
+                         <Trash2 size={14} />
+                       </button>
+                     )}
                   </div>
                 ))}
               </div>
@@ -716,12 +728,15 @@ const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
                     <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mt-0.5">Lender repayments paid in cash</p>
                   </div>
                 </div>
-                <button
-                  onClick={() => { const next = !isAddingCash; setIsAddingCash(next); if (next && !cashDate) setCashDate(new Date().toISOString().slice(0, 10)); }}
-                  className="p-2 bg-slate-900 text-white rounded-xl hover:scale-105 transition-all"
-                >
-                  <Plus size={18} />
-                </button>
+                {!readOnly && (
+                  <button
+                    onClick={() => { const next = !isAddingCash; setIsAddingCash(next); if (next && !cashDate) setCashDate(new Date().toISOString().slice(0, 10)); }}
+                    className="p-2 bg-slate-900 text-white rounded-xl hover:scale-105 transition-all"
+                    aria-label="Add cash payment"
+                  >
+                    <Plus size={18} />
+                  </button>
+                )}
               </div>
 
               <AnimatePresence>
@@ -827,12 +842,15 @@ const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
                        </div>
                        <div className="flex items-center gap-2 flex-shrink-0">
                           <span className="text-[11px] font-black text-emerald-700">₹{ob.amount.toLocaleString()}</span>
-                          <button
-                            onClick={() => handleDeleteCashPayment(ob)}
-                            className="p-2 text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-all"
-                          >
-                            <Trash2 size={14} />
-                          </button>
+                          {!readOnly && (
+                            <button
+                              onClick={() => handleDeleteCashPayment(ob)}
+                              className="p-2 text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-all"
+                              aria-label={`Delete cash payment to ${lender?.name || 'lender'}`}
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          )}
                        </div>
                     </div>
                   );
@@ -852,12 +870,14 @@ const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
                       <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">{selectedMonth} {selectedYear} Transactions</p>
                     </div>
                  </div>
-                 <button 
-                   onClick={handleSaveSnapshot}
-                   className="px-8 py-3 bg-slate-900 text-white rounded-2xl font-black uppercase text-[10px] tracking-widest shadow-xl flex items-center gap-2 hover:scale-[1.02] transition-all"
-                 >
-                    <Save size={16} /> Update Reality Snap
-                 </button>
+                 {!readOnly && (
+                   <button
+                     onClick={handleSaveSnapshot}
+                     className="px-8 py-3 bg-slate-900 text-white rounded-2xl font-black uppercase text-[10px] tracking-widest shadow-xl flex items-center gap-2 hover:scale-[1.02] transition-all"
+                   >
+                      <Save size={16} /> Update Reality Snap
+                   </button>
+                 )}
               </div>
 
               {periodBTs.length === 0 ? (
@@ -887,7 +907,8 @@ const CashFlowTracker: React.FC<{ user: User; dataOwnerId: string }> = ({ user, 
                           <select
                             value={mappings[tx.id!] || ''}
                             onChange={e => updateMapping(tx.id!, e.target.value)}
-                            className="flex-1 bg-slate-50 border border-slate-100 px-4 py-2 rounded-xl font-bold text-xs outline-none focus:border-slate-900 transition-all appearance-none cursor-pointer"
+                            disabled={readOnly}
+                            className={`flex-1 bg-slate-50 border border-slate-100 px-4 py-2 rounded-xl font-bold text-xs outline-none transition-all appearance-none ${readOnly ? 'cursor-not-allowed text-slate-500' : 'focus:border-slate-900 cursor-pointer'}`}
                           >
                              <option value="">-- Select Loan --</option>
                              {loanProfiles.map(p => (

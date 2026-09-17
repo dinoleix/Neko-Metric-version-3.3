@@ -93,7 +93,9 @@ const BankManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
         balance: parseFloat(balance) || 0,
         outletId: outletId || null,
         accountType,
-        userId: user.uid,
+        // Bank accounts belong to the business data owner. A delegated admin or
+        // manager must update the same records the rest of the app queries.
+        userId: dataOwnerId,
         updatedAt: Date.now()
       };
 

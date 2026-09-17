@@ -124,10 +124,10 @@ const Team: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId
       const newLogs: MonthlyPayroll[] = [];
 
       for (const outletId in editingPayroll) {
-        const payId = `${user.uid}_${outletId}_${payrollTargetYear}_${payrollTargetMonth}`;
+        const payId = `${dataOwnerId}_${outletId}_${payrollTargetYear}_${payrollTargetMonth}`;
         const payRef = doc(db, 'monthly_payrolls', payId);
         const log: MonthlyPayroll = {
-          userId: user.uid,
+          userId: dataOwnerId,
           outletId,
           month: payrollTargetMonth,
           year: payrollTargetYear,
@@ -140,7 +140,7 @@ const Team: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId
       }
 
       await batch.commit();
-      invalidateCached('monthly_payrolls', user.uid);
+      invalidateCached('monthly_payrolls', dataOwnerId);
 
       setMonthlyPayrolls(prev => {
         const filtered = prev.filter(p => !(p.month === payrollTargetMonth && p.year === payrollTargetYear));
@@ -177,10 +177,10 @@ const Team: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId
         name: newName, outletId: newOutlet, joiningDate: newDate,
         baseSalary: salary, currentSalary: salary,
         history: [{ date: newDate, amount: salary, reason: 'Joining Salary' }],
-        userId: user.uid
+        userId: dataOwnerId
       };
       await addDoc(collection(db, 'employees'), employee);
-      invalidateCached('employees', user.uid);
+      invalidateCached('employees', dataOwnerId);
       setIsAdding(false);
       setNewName(''); setNewSalary(''); setNewOutlet('');
       fetchData();
@@ -194,7 +194,7 @@ const Team: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId
       const newHistory: SalaryHistory = { date: incDate, amount: amount, reason: incReason };
       const employeeRef = doc(db, 'employees', selectedEmployee.id);
       await updateDoc(employeeRef, { currentSalary: amount, history: arrayUnion(newHistory) });
-      invalidateCached('employees', user.uid);
+      invalidateCached('employees', dataOwnerId);
       setIncAmount(''); setIncReason('');
       fetchData();
       setSelectedEmployee({ ...selectedEmployee, currentSalary: amount, history: [...selectedEmployee.history, newHistory] });
@@ -205,7 +205,7 @@ const Team: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId
     if (!confirm("Remove this employee record?")) return;
     try {
       await deleteDoc(doc(db, 'employees', id));
-      invalidateCached('employees', user.uid);
+      invalidateCached('employees', dataOwnerId);
       setSelectedEmployee(null);
       fetchData();
     } catch (err) { console.error(err); }

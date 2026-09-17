@@ -164,7 +164,11 @@ const App: React.FC = () => {
     const ownerId = userProfile.ownerId || user?.uid;
     if (!ownerId) return;
     const unsubscribe = onSnapshot(
-      query(collection(db, 'bank_accounts'), where('userId', '==', ownerId)),
+      query(
+        collection(db, 'bank_accounts'),
+        where('userId', '==', ownerId),
+        where('outletId', '==', userProfile.assignedOutlet),
+      ),
       (snap) => {
         const accounts = snap.docs.map(d => ({ id: d.id, ...d.data() } as BankAccount));
         setPrimaryCashAccount(

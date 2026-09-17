@@ -235,10 +235,14 @@ const ExecDashboard: React.FC<{ user: User; dataOwnerId: string }> = ({ user, da
     return () => { cancelled = true; };
   }, [dataOwnerId, anchorMonth, anchorYear, nonce]);
 
-  const outletIds = useMemo(() => Array.from(new Set(
-    [...salesLeg.data, ...expenseLeg.data].map(s => s.outletId)
-      .filter(o => o && o !== 'GLOBAL' && o !== 'Unassigned')
-  )).sort(), [salesLeg.data, expenseLeg.data]);
+  // The executive view is operational: closed outlets belong in historical
+  // records, not the current selector or league table. Rentals is the source
+  // of truth for an outlet's operational status.
+  const outletIds = useMemo(() => rentalsLeg.data
+    .filter(r => r.status === 'active' && !!r.outletId)
+    .map(r => r.outletId)
+    .filter((id, index, all) => all.indexOf(id) === index)
+    .sort(), [rentalsLeg.data]);
 
   const inScope = (oId: string) =>
     outlet === 'all' ? (oId !== 'GLOBAL' && oId !== 'Unassigned') : oId === outlet;
@@ -312,6 +316,7 @@ const ExecDashboard: React.FC<{ user: User; dataOwnerId: string }> = ({ user, da
 
   const anchorFig = useMemo(() => periodFigures(anchorMonth, anchorYear), [periodFigures, anchorMonth, anchorYear]);
   const prevFig = useMemo(() => periodFigures(prev.month, prev.year), [periodFigures, prev.month, prev.year]);
+  const awaitingSalesImport = isLive && !salesLeg.failed && anchorFig.gross === 0;
 
   /* ── Block A: till-vs-till cumulative pace ─────────────────────────────── */
   const pace = useMemo(() => {
@@ -442,6 +447,7 @@ const ExecDashboard: React.FC<{ user: User; dataOwnerId: string }> = ({ user, da
     if (keywordsFellBack) out.push({ tone: 'warning', text: 'Using built-in category keywords — your Category Settings could not be read, so this cost split may not match Expense Hub.' });
     if (tillState === 'failed') out.push({ tone: 'critical', text: 'Till log could not be read — the pace chart is empty because of a read failure.' });
     if (tillState === 'partial') out.push({ tone: 'warning', text: 'Till log partially read — one source was unavailable, so the pace curve may be incomplete.' });
+    if (awaitingSalesImport) out.push({ tone: 'info', text: `Month-end sales CSV is pending for ${anchorMonth}. Counter sales below are live crew-till data; CSV revenue, margins, and profit are unavailable until import.` });
     if (anchorFig.stockSuspect) out.push({ tone: 'critical', text: `Closing stock exceeds opening + purchases for ${anchorMonth} — a data-entry error. COGS is clamped at zero.` });
     if (anchorFig.payrollEstimated && (!isLive || D >= 25)) out.push({ tone: 'warning', text: 'Payroll estimated from employee records — no validated monthly payroll for this period.' });
     if (isLive && pace.missingDays.length > 0) out.push({ tone: 'warning', text: `No till entry for day${pace.missingDays.length > 1 ? 's' : ''} ${pace.missingDays.slice(0, 5).join(', ')}${pace.missingDays.length > 5 ? '…' : ''} — the curve is flat there, not zero sales.` });
@@ -465,7 +471,7 @@ const ExecDashboard: React.FC<{ user: User; dataOwnerId: string }> = ({ user, da
     });
     if (future.length > 0) out.push({ tone: 'warning', text: `${future.length} snapshot(s) exist for future months — check Data Catalog.` });
     return out;
-  }, [salesLeg, expenseLeg, cogsLeg, rentalsLeg, keywordsFellBack, tillState, anchorFig, isLive, D, pace, windowKeys, periodFigures, curMonth, curYear, anchorMonth]);
+  }, [salesLeg, expenseLeg, cogsLeg, rentalsLeg, keywordsFellBack, tillState, anchorFig, isLive, D, pace, windowKeys, periodFigures, curMonth, curYear, anchorMonth, awaitingSalesImport]);
 
   const refresh = () => { setRefreshing(true); setNonce(n => n + 1); };
 
@@ -559,9 +565,10 @@ const ExecDashboard: React.FC<{ user: User; dataOwnerId: string }> = ({ user, da
               value={pace.projLow !== null ? `${inrCompact(pace.projLow)}–${inrCompact(pace.projHigh as number)}` : '—'}
               sub={pace.projReason || (pace.projLow !== null ? 'run-rate & last-month shape' : 'actual, month complete')} />
             <Tile label="Net profit"
-              value={cogsLeg.failed || expenseLeg.failed || rentalsLeg.failed ? '—' : inr(anchorFig.netProfit)}
-              tone={anchorFig.netProfit >= 0 ? 'text-emerald-600' : 'text-rose-600'}
-              sub={cogsLeg.failed || expenseLeg.failed || rentalsLeg.failed ? 'suppressed — data unavailable' : `margin ${pct(anchorFig.margin)}`} />
+              value={cogsLeg.failed || expenseLeg.failed || rentalsLeg.failed || awaitingSalesImport ? '—' : inr(anchorFig.netProfit)}
+              tone={awaitingSalesImport ? 'text-amber-600' : (anchorFig.netProfit >= 0 ? 'text-emerald-600' : 'text-rose-600')}
+              sub={awaitingSalesImport ? 'month-end CSV pending — use Crew P&L for live profit'
+                : (cogsLeg.failed || expenseLeg.failed || rentalsLeg.failed ? 'suppressed — data unavailable' : `margin ${pct(anchorFig.margin)}`)} />
           </div>
 
           <Card title="Counter sales pace" sub="Counter sales only, from the crew till count. Delivery-app revenue appears when the monthly CSV is imported, so it is not on this curve. Compared calendar day to calendar day — weekends fall on different dates in different months.">
@@ -646,7 +653,9 @@ const ExecDashboard: React.FC<{ user: User; dataOwnerId: string }> = ({ user, da
 
           {/* ── Block C: outlet league ──────────────────────────────────── */}
           <Card title="Outlet league"
-            sub={`Ranked by net profit for ${anchorMonth}. Fixed costs are prorated for outlets closed mid-month.`}>
+            sub={awaitingSalesImport
+              ? `Month-end sales CSV pending for ${anchorMonth}; profit ranking is unavailable. Counter sales remain visible above.`
+              : `Ranked by net profit for ${anchorMonth}. Fixed costs are prorated for outlets closed mid-month.`}>
             {expenseLeg.failed ? <Unavailable what="Cost data could not be loaded" why="Revenue is shown; profit and margin are suppressed rather than shown as revenue." /> : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -684,13 +693,13 @@ const ExecDashboard: React.FC<{ user: User; dataOwnerId: string }> = ({ user, da
                             <div className="mt-0.5"><DeltaChip pct={r.revGrowth} /></div>
                           </td>
                           <td className="px-4 py-3 text-right tabular-nums">
-                            {r.costless
+                            {awaitingSalesImport || r.costless
                               ? <span className="text-slate-400">—</span>
                               : <><span className={`font-bold ${r.cur.netProfit >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{inr(r.cur.netProfit)}</span>
                                   <div className="mt-0.5"><DeltaChip pct={r.profitGrowth} /></div></>}
                           </td>
                           <td className="px-4 py-3 text-right tabular-nums">
-                            {r.costless ? <span className="text-slate-400">—</span> : (
+                            {awaitingSalesImport || r.costless ? <span className="text-slate-400">—</span> : (
                               <><span className="font-bold text-slate-700">{pct(r.cur.margin)}</span>
                                 {r.marginPp !== null && <p className="text-[9px] font-bold text-slate-400">{r.marginPp >= 0 ? '+' : ''}{r.marginPp.toFixed(1)} pp</p>}</>
                             )}

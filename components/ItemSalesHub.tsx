@@ -205,10 +205,20 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
 
   useEffect(() => { fetchData(); }, [user, selectedYear, selectedMonth, analysisPeriod]);
 
-  const activeOutletOptions = useMemo(() => rentals.map(r => ({ id: r.outletId, name: r.storeName })), [rentals]);
+  // Rentals are the source of truth for operational outlets. Closed stores stay
+  // in their historical records but must not appear in current analytics scope.
+  const activeOutletOptions = useMemo(
+    () => rentals.filter(r => r.status === 'active').map(r => ({ id: r.outletId, name: r.storeName })),
+    [rentals]
+  );
+  const activeOutletIds = useMemo(() => new Set(activeOutletOptions.map(o => o.id)), [activeOutletOptions]);
+
+  useEffect(() => {
+    if (storeFilter !== 'all' && !activeOutletIds.has(storeFilter)) setStoreFilter('all');
+  }, [storeFilter, activeOutletIds]);
 
   const intelligence = useMemo(() => {
-    const filteredSnaps = snapshots.filter(s => storeFilter === 'all' || s.outletId === storeFilter);
+    const filteredSnaps = snapshots.filter(s => storeFilter === 'all' ? activeOutletIds.has(s.outletId) : s.outletId === storeFilter);
     if (filteredSnaps.length === 0) return null;
 
     // Sort snapshots by date
@@ -378,15 +388,15 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
       totalTheoreticalCost: finalItems.reduce((sum, i) => sum + ((i.cost + (i.servingsCost || 0)) * i.quantity), 0),
       totalRev: finalItems.reduce((sum, i) => sum + i.revenue, 0)
     };
-  }, [snapshots, storeFilter, channelMode, selectedMonth, itemCosts, normalizationMap, skuMappings, rentals, selectedSegments, rankingLimit]);
+  }, [snapshots, storeFilter, channelMode, selectedMonth, itemCosts, normalizationMap, skuMappings, rentals, selectedSegments, rankingLimit, activeOutletIds]);
 
   // Per-item in-store vs online comparison. Online list prices are marked up to
   // absorb commission, so comparing raw prices is meaningless — the online side is
   // shown net of the aggregator's cut, which is the only basis on which the two
   // channels answer the same question.
   const channelComparison = useMemo(() => {
-    const filteredSnaps = snapshots.filter(s => storeFilter === 'all' || s.outletId === storeFilter);
-    const filteredSales = salesSnaps.filter(s => storeFilter === 'all' || s.outletId === storeFilter);
+    const filteredSnaps = snapshots.filter(s => storeFilter === 'all' ? activeOutletIds.has(s.outletId) : s.outletId === storeFilter);
+    const filteredSales = salesSnaps.filter(s => storeFilter === 'all' ? activeOutletIds.has(s.outletId) : s.outletId === storeFilter);
     if (filteredSnaps.length === 0) return null;
 
     // Same definition as Margin Intelligence: commission + GST on commission over
@@ -451,7 +461,7 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
     ).sort((a, b) => a.gapPct - b.gapPct);
 
     return { rows, takePercent, requiredMarkupPct: takePercent < 100 ? (takePercent / (100 - takePercent)) * 100 : 0 };
-  }, [snapshots, salesSnaps, storeFilter, itemCosts, normalizationMap, rentals, skuMappings, selectedSegments]);
+  }, [snapshots, salesSnaps, storeFilter, itemCosts, normalizationMap, rentals, skuMappings, selectedSegments, activeOutletIds]);
 
   // Plain function rather than a component so the fullscreen and inline copies don't
   // remount (and lose hover state) on every parent render. labelCount rises in
@@ -571,7 +581,7 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
             </>
           )}
           
-          <div className="bg-white px-4 py-2.5 rounded-xl border border-slate-100 shadow-sm flex items-center gap-2"><MapPin size={14} className="text-emerald-500" /><select value={storeFilter} onChange={e => setStoreFilter(e.target.value)} className="bg-transparent font-bold text-xs outline-none uppercase tracking-tight"><option value="all">All Units</option>{activeOutletOptions.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}</select></div>
+          <div className="bg-white px-4 py-2.5 rounded-xl border border-slate-100 shadow-sm flex items-center gap-2"><MapPin size={14} className="text-emerald-500" /><select value={storeFilter} onChange={e => setStoreFilter(e.target.value)} className="bg-transparent font-bold text-xs outline-none uppercase tracking-tight"><option value="all">All Active Outlets</option>{activeOutletOptions.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}</select></div>
 
           <div className="bg-white px-4 py-2.5 rounded-xl border border-slate-100 shadow-sm flex items-center gap-2" title="Quantity, revenue and margin respect this filter. Trend history, velocity, and combos have no per-channel breakdown in the data and always reflect combined POS + online."><Smartphone size={14} className="text-emerald-500" /><select value={channelMode} onChange={e => setChannelMode(e.target.value as ItemChannelMode)} className="bg-transparent font-bold text-xs outline-none uppercase tracking-tight">{CHANNEL_MODE_OPTIONS.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}</select></div>
 

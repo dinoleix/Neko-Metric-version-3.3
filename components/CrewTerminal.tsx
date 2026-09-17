@@ -243,6 +243,16 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
   const [saving, setSaving] = useState(false);
   const [success, setSuccess] = useState(false);
 
+  // Firestore rules enforce the same outlet boundary. Including the outlet in
+  // crew queries lets Firestore prove the query cannot return another store.
+  const bankAccountsQuery = (ownerId: string) => profile.role === 'crew' && profile.assignedOutlet
+    ? query(
+        collection(db, 'bank_accounts'),
+        where('userId', '==', ownerId),
+        where('outletId', '==', profile.assignedOutlet),
+      )
+    : query(collection(db, 'bank_accounts'), where('userId', '==', ownerId));
+
   // --- Filtering State ---
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<'all' | EntryStatus>('all');
@@ -423,7 +433,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
       const ownerId = profile.ownerId || user.uid;
 
       // Fetch only this business's bank accounts (rules deny broader reads)
-      const bankSnap = await getDocs(query(collection(db, 'bank_accounts'), where('userId', '==', ownerId)));
+      const bankSnap = await getDocs(bankAccountsQuery(ownerId));
       const fetchedAllAccounts = bankSnap.docs
         .map(d => ({ id: d.id, ...d.data() } as BankAccount));
       setAllBankAccounts(fetchedAllAccounts);
@@ -711,7 +721,13 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     const seqNum = await runTransaction(db, async (txn) => {
       const counterSnap = await txn.get(counterRef);
       const next = (counterSnap.exists() ? (counterSnap.data().seq || 0) : 0) + 1;
-      txn.set(counterRef, { userId: ownerId, seq: next, updatedAt: Date.now() }, { merge: true });
+      txn.set(counterRef, {
+        userId: ownerId,
+        ownerId,
+        outletId: entryOutletId,
+        seq: next,
+        updatedAt: Date.now(),
+      }, { merge: true });
       return next;
     });
     const seq = seqNum.toString().padStart(3, '0');
@@ -816,7 +832,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
         const entrySource: 'counter' | '10k' = entryType === 'expense' ? paidFrom : 'counter';
 
         // Re-fetch live bank accounts to avoid stale React state
-        const liveBankSnap = await getDocs(query(collection(db, 'bank_accounts'), where('userId', '==', ownerId)));
+        const liveBankSnap = await getDocs(bankAccountsQuery(ownerId));
         const liveBankAccounts = liveBankSnap.docs
           .map(d => ({ id: d.id, ...d.data() } as BankAccount));
 
@@ -852,6 +868,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
           await addDoc(collection(db, 'bank_transactions'), {
             userId: user.uid,
             ownerId,
+            outletId: acc.outletId,
             bankAccountId: acc.id!,
             date,
             description: `${sourceLabel}: ${category}${description ? ` — ${description}` : ''}`,
@@ -1011,7 +1028,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
 
         // Apply balance deltas to primary bank accounts
         try {
-          const bankQ = query(collection(db, 'bank_accounts'), where('userId', '==', ownerId));
+          const bankQ = bankAccountsQuery(ownerId);
           const bankSnap = await getDocs(bankQ);
           const primaryAccounts = bankSnap.docs
             .map(d => ({ id: d.id, ...d.data() } as BankAccount))
@@ -1070,10 +1087,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
         // Wrapped in its own try-catch: a permissions failure here must not
         // block the crew member's submission.
         try {
-          const bankQ = query(
-            collection(db, 'bank_accounts'),
-            where('userId', '==', ownerId)
-          );
+          const bankQ = bankAccountsQuery(ownerId);
           const bankSnap = await getDocs(bankQ);
           const primaryAccounts = bankSnap.docs
             .map(d => ({ id: d.id, ...d.data() } as BankAccount))
@@ -1304,50 +1318,66 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     setMarkingPaid(true);
     try {
       const ownerId = profile.ownerId || user.uid;
-      const liveBankSnap = await getDocs(query(collection(db, 'bank_accounts'), where('userId', '==', ownerId)));
+      const liveBankSnap = await getDocs(bankAccountsQuery(ownerId));
       const liveAccounts = liveBankSnap.docs.map(d => ({ id: d.id, ...d.data() } as BankAccount));
       const now = Date.now();
       let failures = 0;
+      const failureMessages: string[] = [];
+      const settledBills: DailyCounterEntry[] = [];
 
       for (const bill of selected) {
         try {
-          await updateDoc(doc(db, 'crew_entries', bill.id!), { status: 'paid' });
-        } catch (err) {
-          console.error(`[CrewTerminal] Failed to mark ${bill.id} paid:`, err);
-          failures++;
-          continue; // don't move money for a status update that never saved
-        }
-
-        // Same bank movement a single edit-to-paid already does (purchases
-        // always hit the 'counter' digital account) — kept non-fatal per bill,
-        // matching how the single-entry flow already tolerates this failing.
-        try {
           const acc = resolveTargetAccount(liveAccounts, bill.outletId, 'purchase', 'counter');
-          if (acc) {
-            await updateDoc(doc(db, 'bank_accounts', acc.id!), { balance: increment(-bill.amount), updatedAt: now });
-            await addDoc(collection(db, 'bank_transactions'), {
+          if (!acc?.id) throw new Error(`No bank account is configured for ${getOutletName(bill.outletId)}.`);
+
+          const entryRef = doc(db, 'crew_entries', bill.id!);
+          const accountRef = doc(db, 'bank_accounts', acc.id);
+          // The deterministic movement ID prevents a retry or another browser
+          // from recording a second debit for this exact crew bill.
+          const movementRef = doc(db, 'bank_transactions', `crew-settlement-${bill.id}`);
+          await runTransaction(db, async (transaction) => {
+            const [entrySnap, accountSnap, movementSnap] = await Promise.all([
+              transaction.get(entryRef), transaction.get(accountRef), transaction.get(movementRef),
+            ]);
+            if (!entrySnap.exists()) throw new Error('This bill no longer exists. Refresh the pending list.');
+            const liveBill = entrySnap.data() as DailyCounterEntry;
+            if (liveBill.status !== 'pending') throw new Error('This bill has already been settled or changed. Refresh the pending list.');
+            if (liveBill.type !== 'purchase' || liveBill.outletId !== bill.outletId || Number(liveBill.amount) !== Number(bill.amount)) {
+              throw new Error('This bill changed while it was open. Refresh the pending list before settling it.');
+            }
+            if (!accountSnap.exists()) throw new Error('The selected bank account no longer exists.');
+            if (movementSnap.exists()) throw new Error('A settlement movement already exists for this bill. Refresh the pending list.');
+
+            const amountToSettle = Number(liveBill.amount || 0);
+            if (!(amountToSettle > 0)) throw new Error('This bill has an invalid amount.');
+            transaction.update(entryRef, { status: 'paid', settledAt: now, settledBy: user.uid });
+            transaction.update(accountRef, { balance: Number(accountSnap.data().balance || 0) - amountToSettle, updatedAt: now });
+            transaction.set(movementRef, {
               userId: user.uid,
               ownerId,
-              bankAccountId: acc.id!,
-              date: bill.date,
-              description: `Digital Purchase (Batch settle): ${bill.category}${bill.description ? ` — ${bill.description}` : ''}`,
-              amount: bill.amount,
+              outletId: liveBill.outletId,
+              bankAccountId: acc.id,
+              date: liveBill.date,
+              description: `Digital Purchase (Batch settle): ${liveBill.category}${liveBill.description ? ` — ${liveBill.description}` : ''}`,
+              amount: amountToSettle,
               type: 'debit',
-              category: bill.category.toUpperCase(),
-              referenceNo: bill.billNumber || `AUTO-${bill.id}`,
+              category: (liveBill.category || 'UNCATEGORIZED').toUpperCase(),
+              referenceNo: liveBill.billNumber || `AUTO-${bill.id}`,
               isVerified: false,
               isReconciled: false,
               createdAt: now,
             });
-            acc.balance = (acc.balance || 0) - bill.amount; // keep the local copy in sync across this loop
-          }
-        } catch (err) {
-          console.error(`[CrewTerminal] Bank movement failed for ${bill.id}:`, err);
+          });
+          settledBills.push(bill);
+        } catch (err: any) {
+          console.error(`[CrewTerminal] Failed to settle ${bill.id}:`, err);
+          failures++;
+          failureMessages.push(`${bill.billNumber || bill.id}: ${err?.message || 'unknown error'}`);
         }
       }
 
       const rebuiltMonths = new Set<string>();
-      for (const bill of selected) {
+      for (const bill of settledBills) {
         const monthKey = `${bill.outletId}|${bill.date.slice(0, 7)}`;
         if (rebuiltMonths.has(monthKey)) continue;
         rebuiltMonths.add(monthKey);
@@ -1357,7 +1387,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
       setSelectedBillIds(new Set());
       await fetchPendingBills();
       if (failures > 0) {
-        alert(`${selected.length - failures} of ${selected.length} bills marked paid. ${failures} failed — check the console and retry those.`);
+        alert(`${selected.length - failures} of ${selected.length} bills marked paid. ${failures} failed and were left unchanged.\n\n${failureMessages.join('\n')}`);
       }
     } finally {
       setMarkingPaid(false);
@@ -1553,7 +1583,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
       // Reverse the bank deduction if the entry was paid
       if (entry && entry.status === 'paid') {
         const ownerId = profile.ownerId || user.uid;
-        const liveBankSnap = await getDocs(query(collection(db, 'bank_accounts'), where('userId', '==', ownerId)));
+        const liveBankSnap = await getDocs(bankAccountsQuery(ownerId));
         const liveAccounts = liveBankSnap.docs.map(d => ({ id: d.id, ...d.data() } as BankAccount));
         const targetAcc = resolveTargetAccount(liveAccounts, entry.outletId, entry.type, entry.paidFrom || 'counter');
         if (targetAcc) {
@@ -1566,6 +1596,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
           await addDoc(collection(db, 'bank_transactions'), {
             userId: user.uid,
             ownerId,
+            outletId: entry.outletId,
             bankAccountId: targetAcc.id!,
             date: entry.date,
             description: `Reversal: ${entry.type === 'expense' ? (entry.paidFrom === '10k' ? '10K Cash Expense' : 'Cash Expense') : 'Digital Purchase'} deleted — ${entry.category}${entry.description ? ` — ${entry.description}` : ''}`,
@@ -1682,12 +1713,14 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
         }),
         addDoc(collection(db, 'bank_transactions'), {
           userId: user.uid, ownerId, bankAccountId: primaryCashAccount.id!,
+          outletId: primaryCashAccount.outletId,
           date: today, description: `10K Transfer — moved to safe`,
           amount: amt, type: 'debit', referenceNo: ref,
           category: 'TRANSFER', isVerified: false, isReconciled: false, createdAt: now,
         }),
         addDoc(collection(db, 'bank_transactions'), {
           userId: user.uid, ownerId, bankAccountId: tenKAccount.id!,
+          outletId: tenKAccount.outletId,
           date: today, description: `10K Transfer — received from counter`,
           amount: amt, type: 'credit', referenceNo: ref,
           category: 'TRANSFER', isVerified: false, isReconciled: false, createdAt: now,
