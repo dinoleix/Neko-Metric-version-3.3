@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { before, after, beforeEach, test } from 'node:test';
 import { initializeTestEnvironment, assertSucceeds, assertFails } from '@firebase/rules-unit-testing';
-import { doc, setDoc, updateDoc, deleteDoc, getDoc, getDocs, collection, query, where, writeBatch } from 'firebase/firestore';
+import { doc, setDoc, updateDoc, deleteDoc, getDoc, getDocs, collection, query, where, writeBatch, serverTimestamp } from 'firebase/firestore';
 
 // Never fall back to the configured production project or a remote endpoint.
 const projectId = 'demo-neko-rules';
@@ -30,6 +30,7 @@ beforeEach(async () => {
       profile('other-owner', 'admin'),
       profile('admin', 'admin', { ownerId: 'owner' }),
       profile('manager', 'manager', { ownerId: 'owner' }),
+      profile('manager-store', 'manager', { ownerId: 'owner', assignedOutlet: 'outlet-a' }),
       profile('viewer', 'viewer', { ownerId: 'owner' }),
       profile('crew', 'crew', { ownerId: 'owner', assignedOutlet: 'outlet-a' }),
       profile('crew-mate', 'crew', { ownerId: 'owner', assignedOutlet: 'outlet-a' }),
@@ -45,12 +46,16 @@ beforeEach(async () => {
     batch.set(doc(db, 'user_groups', 'finance'), group());
     batch.set(doc(db, 'user_groups', 'foreign'), group('other-owner'));
     batch.set(doc(db, 'sales_snapshots', 'sales'), { userId: 'owner', total: 100 });
+    batch.set(doc(db, 'sales_snapshots', 'sales-a'), { userId: 'owner', outletId: 'outlet-a', total: 100 });
+    batch.set(doc(db, 'sales_snapshots', 'sales-b'), { userId: 'owner', outletId: 'outlet-b', total: 200 });
     batch.set(doc(db, 'crew_entries', 'entry'), { userId: 'crew', ownerId: 'owner', outletId: 'outlet-a', amount: 20, status: 'pending' });
     batch.set(doc(db, 'crew_entries', 'delete-by-crew'), { userId: 'crew', ownerId: 'owner', outletId: 'outlet-a', amount: 10, status: 'pending' });
     batch.set(doc(db, 'crew_entries', 'delete-by-manager'), { userId: 'crew', ownerId: 'owner', outletId: 'outlet-a', amount: 10, status: 'pending' });
     batch.set(doc(db, 'waste_entries', 'waste'), { userId: 'crew', ownerId: 'owner', outletId: 'outlet-a', totalCost: 8, date: '2026-09-16' });
     batch.set(doc(db, 'waste_entries', 'delete-waste-by-crew'), { userId: 'crew', ownerId: 'owner', outletId: 'outlet-a', totalCost: 5, date: '2026-09-16' });
     batch.set(doc(db, 'waste_entries', 'delete-waste-by-manager'), { userId: 'crew', ownerId: 'owner', outletId: 'outlet-a', totalCost: 5, date: '2026-09-16' });
+    batch.set(doc(db, 'daily_sales_logs', 'sales-a'), { userId: 'crew', ownerId: 'owner', outletId: 'outlet-a', date: '2026-09-16', totalNet: 100 });
+    batch.set(doc(db, 'daily_sales_logs', 'sales-b'), { userId: 'crew-b', ownerId: 'owner', outletId: 'outlet-b', date: '2026-09-16', totalNet: 200 });
     batch.set(doc(db, 'bank_accounts', 'outlet-a'), { userId: 'owner', outletId: 'outlet-a', name: 'A cash', balance: 100, updatedAt: 1 });
     batch.set(doc(db, 'bank_accounts', 'outlet-b'), { userId: 'owner', outletId: 'outlet-b', name: 'B cash', balance: 100, updatedAt: 1 });
     batch.set(doc(db, 'expense_snapshots', 'outlet-a'), {
@@ -103,6 +108,37 @@ for (const uid of ['viewer', 'crew', 'manager', 'admin', 'legacy-viewer']) {
 
 test('cannot prepare a two-step escalation by adding userId to a profile', async () => {
   await assertFails(updateDoc(doc(dbFor('viewer'), 'users', 'viewer'), { userId: 'viewer' }));
+});
+
+test('users can record only their own truthful login activity', async () => {
+  const valid = {
+    userId: 'crew', ownerId: 'owner', email: 'crew@example.test', role: 'crew',
+    assignedOutlet: 'outlet-a', loggedInAt: serverTimestamp(), locationStatus: 'denied',
+  };
+  await assertSucceeds(setDoc(doc(dbFor('crew'), 'login_activity', 'crew-login'), valid));
+  await assertFails(setDoc(doc(dbFor('crew'), 'login_activity', 'forged-user'), { ...valid, userId: 'crew-mate' }));
+  await assertFails(setDoc(doc(dbFor('crew'), 'login_activity', 'forged-tenant'), { ...valid, ownerId: 'other-owner' }));
+  await assertFails(setDoc(doc(dbFor('crew'), 'login_activity', 'forged-role'), { ...valid, role: 'admin' }));
+  await assertFails(updateDoc(doc(dbFor('crew'), 'login_activity', 'crew-login'), { locationStatus: 'available' }));
+  await assertFails(deleteDoc(doc(dbFor('crew'), 'login_activity', 'crew-login')));
+});
+
+test('login activity is visible only to administrators in the same tenant', async () => {
+  await env.withSecurityRulesDisabled(async ctx => {
+    await setDoc(doc(ctx.firestore(), 'login_activity', 'seed-login'), {
+      userId: 'crew', ownerId: 'owner', email: 'crew@example.test', role: 'crew',
+      assignedOutlet: 'outlet-a', loggedInAt: new Date(), locationStatus: 'available',
+      latitude: 28.57, longitude: 77.20, accuracyMeters: 25,
+    });
+  });
+  for (const uid of ['owner', 'admin']) {
+    await assertSucceeds(getDocs(query(collection(dbFor(uid), 'login_activity'), where('ownerId', '==', 'owner'))));
+  }
+  for (const uid of ['manager', 'viewer', 'crew', 'other-admin']) {
+    await assertFails(getDoc(doc(dbFor(uid), 'login_activity', 'seed-login')));
+    await assertFails(deleteDoc(doc(dbFor(uid), 'login_activity', 'seed-login')));
+  }
+  await assertSucceeds(deleteDoc(doc(dbFor('admin'), 'login_activity', 'seed-login')));
 });
 
 test('unlinked viewer cannot create or adopt another account as tenant owner', async () => {
@@ -160,6 +196,27 @@ test('unrelated working financial reads/writes and crew entry updates remain sup
   await assertSucceeds(getDoc(doc(dbFor('viewer'), 'sales_snapshots', 'sales')));
   await assertFails(updateDoc(doc(dbFor('viewer'), 'sales_snapshots', 'sales'), { total: 0 }));
   await assertSucceeds(updateDoc(doc(dbFor('crew'), 'crew_entries', 'entry'), { status: 'paid' }));
+});
+
+test('store manager is restricted to the assigned outlet while HQ manager keeps all stores', async () => {
+  const scoped = dbFor('manager-store');
+  await assertSucceeds(getDoc(doc(scoped, 'sales_snapshots', 'sales-a')));
+  await assertFails(getDoc(doc(scoped, 'sales_snapshots', 'sales-b')));
+  await assertSucceeds(getDocs(query(
+    collection(scoped, 'sales_snapshots'),
+    where('userId', '==', 'owner'),
+    where('outletId', '==', 'outlet-a'),
+  )));
+  await assertFails(getDocs(query(collection(scoped, 'sales_snapshots'), where('userId', '==', 'owner'))));
+  await assertSucceeds(updateDoc(doc(scoped, 'sales_snapshots', 'sales-a'), { total: 125 }));
+  await assertFails(updateDoc(doc(scoped, 'sales_snapshots', 'sales-b'), { total: 225 }));
+  await assertFails(setDoc(doc(scoped, 'crew_entries', 'manager-wrong-store'), {
+    userId: 'manager-store', ownerId: 'owner', outletId: 'outlet-b', amount: 20, status: 'pending',
+  }));
+
+  const hq = dbFor('manager');
+  await assertSucceeds(getDoc(doc(hq, 'sales_snapshots', 'sales-a')));
+  await assertSucceeds(getDoc(doc(hq, 'sales_snapshots', 'sales-b')));
 });
 
 test('crew creation is pinned to the caller, tenant, and assigned outlet', async () => {
@@ -299,6 +356,33 @@ test('crew terminal records stay writable only for the assigned outlet', async (
   await assertFails(setDoc(doc(db, 'bill_counters', 'foreign-counter'), {
     userId: 'owner', ownerId: 'owner', outletId: 'outlet-b', seq: 1, updatedAt: 1,
   }));
+});
+
+test('crew daily-sales queries must stay inside their tenant and assigned outlet', async () => {
+  const db = dbFor('crew');
+  await assertSucceeds(getDocs(query(
+    collection(db, 'daily_sales_logs'),
+    where('userId', '==', 'crew'),
+    where('ownerId', '==', 'owner'),
+    where('outletId', '==', 'outlet-a'),
+  )));
+  await assertFails(getDocs(query(
+    collection(db, 'daily_sales_logs'),
+    where('userId', '==', 'crew'),
+  )));
+});
+
+test('crew purchase and expense queries stay inside the assigned outlet', async () => {
+  const db = dbFor('crew');
+  await assertSucceeds(getDocs(query(
+    collection(db, 'crew_entries'),
+    where('ownerId', '==', 'owner'),
+    where('outletId', '==', 'outlet-a'),
+  )));
+  await assertFails(getDocs(query(
+    collection(db, 'crew_entries'),
+    where('userId', '==', 'crew'),
+  )));
 });
 
 test('crew retains terminal catalog writes but recipe costing stays staff-only', async () => {

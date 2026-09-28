@@ -16,7 +16,7 @@ const firebaseConfig = {
   appId: "1:330123207916:web:fb2f2a21e66229fe73f1c9"
 };
 
-import { UserProfile, UserRole, UserGroup, MASTER_OUTLETS, getOutletName } from '../types';
+import { UserProfile, UserRole, UserGroup, StoreRental, getOutletName } from '../types';
 import AccessGroups from './AccessGroups';
 import {
   ShieldCheck,
@@ -44,6 +44,7 @@ const ROLE_COLORS: Record<UserRole, string> = {
 const UserManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
   const [profiles, setProfiles] = useState<UserProfile[]>([]);
   const [groups, setGroups] = useState<UserGroup[]>([]);
+  const [rentals, setRentals] = useState<StoreRental[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [isAdding, setIsAdding] = useState(false);
@@ -82,13 +83,15 @@ const UserManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
   const fetchUsers = async () => {
     setLoading(true);
     try {
-      const [snap, groupSnap] = await Promise.all([
+      const [snap, groupSnap, rentalSnap] = await Promise.all([
         getDocs(collection(db, 'users')),
         // Sorted client-side: an orderBy here would need a composite index.
         getDocs(query(collection(db, 'user_groups'), where('ownerId', '==', dataOwnerId))),
+        getDocs(query(collection(db, 'rentals'), where('userId', '==', dataOwnerId))),
       ]);
       setProfiles(snap.docs.map(d => ({ ...d.data(), uid: d.id } as UserProfile)));
       setGroups(groupSnap.docs.map(d => ({ id: d.id, ...d.data() } as UserGroup)));
+      setRentals(rentalSnap.docs.map(d => ({ id: d.id, ...d.data() } as StoreRental)));
     } catch (err) {
       console.error("Error fetching users:", err);
     } finally {
@@ -110,7 +113,7 @@ const UserManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
       // delegated admin instead of the real business owner, making every
       // entry that account later submits invisible to the owner's queries.
       const updates: Partial<UserProfile> = { role, ownerId: dataOwnerId };
-      if (role === 'crew' && outletId) updates.assignedOutlet = outletId;
+      if ((role === 'crew' || role === 'manager') && outletId) updates.assignedOutlet = outletId;
       else updates.assignedOutlet = '';
 
       await setDoc(userRef, updates, { merge: true });
@@ -164,7 +167,7 @@ const UserManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
           // '' not undefined: Firestore rejects undefined field values outright,
           // so this write failed for every non-crew role. Matches handleUpdateRole,
           // which already clears the outlet with an empty string.
-          assignedOutlet: newRole === 'crew' ? newOutlet : '',
+          assignedOutlet: newRole === 'crew' || newRole === 'manager' ? newOutlet : '',
           ownerId: dataOwnerId,
         });
         setIsAdding(false);
@@ -189,7 +192,7 @@ const UserManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
         role: newRole,
         createdAt: Date.now(),
         // See the note above: undefined is not a writable Firestore value.
-        assignedOutlet: newRole === 'crew' ? newOutlet : '',
+        assignedOutlet: newRole === 'crew' || newRole === 'manager' ? newOutlet : '',
         ownerId: dataOwnerId,
       };
       await setDoc(doc(db, 'users', realUid), profile);
@@ -222,6 +225,10 @@ const UserManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
   };
 
   const filtered = profiles.filter(p => (p.email || '').toLowerCase().includes((searchTerm || '').toLowerCase()));
+  const activeOutletOptions = rentals
+    .filter(r => r.status === 'active')
+    .map(r => ({ id: r.outletId, name: r.storeName }));
+  const outletOptions = activeOutletOptions;
 
   return (
     <div className="space-y-10 animate-in fade-in duration-700 pb-20">
@@ -263,7 +270,7 @@ const UserManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
                 <th className="px-8 py-5 text-[10px] font-black text-slate-400 uppercase tracking-widest">Identity / Email</th>
                 <th className="px-8 py-5 text-[10px] font-black text-slate-400 uppercase tracking-widest">Current Role</th>
                 <th className="px-8 py-5 text-[10px] font-black text-slate-400 uppercase tracking-widest">Access Group</th>
-                <th className="px-8 py-5 text-[10px] font-black text-slate-400 uppercase tracking-widest">Assigned Outlet</th>
+                <th className="px-8 py-5 text-[10px] font-black text-slate-400 uppercase tracking-widest">Store Access</th>
                 <th className="px-8 py-5 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Actions</th>
               </tr>
             </thead>
@@ -311,15 +318,15 @@ const UserManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
                     </select>
                   </td>
                   <td className="px-8 py-6">
-                    {p.role === 'crew' ? (
+                    {p.role === 'crew' || p.role === 'manager' ? (
                       <div className="relative">
                         <select
                           value={p.assignedOutlet || ''}
-                          onChange={e => handleUpdateRole(p.uid, 'crew', e.target.value)}
+                          onChange={e => handleUpdateRole(p.uid, p.role, e.target.value)}
                           className="w-full px-3 py-1.5 rounded-lg border border-indigo-300 bg-white text-[10px] font-bold uppercase outline-none focus:border-indigo-500 cursor-pointer hover:border-indigo-400 transition-colors"
                         >
-                          <option value="">-- No Outlet --</option>
-                          {MASTER_OUTLETS.filter(o => o.id !== 'GLOBAL').map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+                          <option value="">{p.role === 'manager' ? 'HQ Access — All Stores' : '-- No Outlet --'}</option>
+                          {outletOptions.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
                         </select>
                       </div>
                     ) : (
@@ -439,11 +446,12 @@ const UserManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
                         className="w-full px-4 py-4 bg-slate-50 border border-slate-100 rounded-2xl font-bold text-slate-700 outline-none uppercase text-xs"
                       >
                          <option value="viewer">Viewer</option>
+                         <option value="manager">Manager</option>
                          <option value="crew">Crew</option>
                          <option value="admin">Admin</option>
                       </select>
                    </div>
-                   {newRole === 'crew' && (
+                   {(newRole === 'crew' || newRole === 'manager') && (
                      <div className="animate-in slide-in-from-left-2 duration-200">
                         <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2 px-1">Default Store</label>
                         <select 
@@ -452,8 +460,8 @@ const UserManagement: React.FC<{ user: User; dataOwnerId: string }> = ({ user, d
                           onChange={e => setNewOutlet(e.target.value)}
                           className="w-full px-4 py-4 bg-slate-50 border border-slate-100 rounded-2xl font-bold text-slate-700 outline-none uppercase text-xs"
                         >
-                           <option value="">Select Store</option>
-                           {MASTER_OUTLETS.filter(o => o.id !== 'GLOBAL').map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+                           <option value="">{newRole === 'manager' ? 'HQ Access — All Stores' : 'Select Store'}</option>
+                           {outletOptions.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
                         </select>
                      </div>
                    )}

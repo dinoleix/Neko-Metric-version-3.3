@@ -26,6 +26,20 @@ export interface UserProfile {
   groupId?: string;
 }
 
+export interface LoginActivityRecord {
+  id?: string;
+  userId: string;
+  ownerId: string;
+  email: string;
+  role: UserRole;
+  assignedOutlet?: string;
+  loggedInAt: unknown;
+  latitude?: number;
+  longitude?: number;
+  accuracyMeters?: number;
+  locationStatus: 'available' | 'denied' | 'unavailable' | 'unsupported';
+}
+
 /**
  * A named set of modules an admin can hand to people — Finance, Procurement.
  *
@@ -235,22 +249,6 @@ export interface ExpenseMonthlySnapshot {
   crewQtyMetaByCategory?: Record<string, CrewQtyMeta>;
   crewLastUpdated?: number;
   lastUpdated: number;
-}
-
-/**
- * A consumable tracked by unit count rather than only by spend, so consumption
- * can be compared against business activity month over month (gas cylinders,
- * cooking oil, packaging). Configured per owner in category_settings.
- */
-export interface TrackedConsumable {
-  id: string;                   // stable slug, e.g. 'gas-cylinder'
-  category: string;             // must match DailyCounterEntry.category
-  label: string;                // 'Gas cylinders'
-  unitLabel: string;            // singular; UI pluralizes — 'cylinder'
-  unitsPerPurchase?: number;    // multiplier when one entry = several units (default 1)
-  estimatedUnitCost?: number;   // enables reconstructing history from ₹ where quantity is missing
-  alertThresholdPct?: number;   // deviation from baseline that counts as an alert (default 15)
-  active?: boolean;
 }
 
 // Capture coverage for crewQtyByCategory. Without this a reader cannot tell a
@@ -503,7 +501,6 @@ export interface CategorySettings {
   menuSegments?: string[];
   cogsBucketMapping?: Record<string, CogsBucket>;
   productCatalogEnabled?: boolean;
-  trackedConsumables?: TrackedConsumable[];
 }
 
 export interface Product {
@@ -665,6 +662,55 @@ export interface CogsAdjustment {
   foodServingsOpening?: number;
   drinkServingsOpening?: number;
   lastUpdated: number;
+}
+
+/**
+ * A physical item the team counts at month-end. This is deliberately separate
+ * from purchases: a purchase is a financial document, while an inventory item
+ * has one stable unit, cost and COGS bucket.
+ */
+export type InventoryBucket = 'FOOD' | 'DRINKS' | 'FOOD SERVINGS' | 'DRINKS SERVINGS';
+
+export interface InventoryItem {
+  id?: string;
+  userId: string;
+  ownerId: string;
+  name: string;
+  bucket: InventoryBucket;
+  unit: MeasureUnit;
+  /** Original count-sheet label where the unit is a pack or otherwise non-standard. */
+  sourceUnit?: string;
+  unitCost: number;
+  recipeIngredientId?: string;
+  active: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface InventoryCountLine {
+  inventoryItemId: string;
+  name: string;
+  bucket: InventoryBucket;
+  unit: MeasureUnit;
+  sourceUnit?: string;
+  quantity: number;
+  unitCost: number;
+  total: number;
+}
+
+/** A draft or reviewed detailed count. It does not alter the P&L adjustment. */
+export interface InventoryCount {
+  id?: string;
+  userId: string;
+  ownerId: string;
+  outletId: string;
+  month: string;
+  year: string;
+  status: 'draft' | 'reviewed';
+  lines: InventoryCountLine[];
+  totals: Record<InventoryBucket, number>;
+  countedAt: number;
+  updatedAt: number;
 }
 
 export interface SalesSummaryRecord {

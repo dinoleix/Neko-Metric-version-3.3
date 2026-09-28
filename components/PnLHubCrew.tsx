@@ -25,8 +25,10 @@ import {
   YEAR_OPTIONS,
   MONTH_NAMES,
   MASTER_OUTLETS,
-  ALWAYS_EXCLUDED_PURCHASE_CATEGORIES
+  ALWAYS_EXCLUDED_PURCHASE_CATEGORIES,
+  UserProfile
 } from '../types';
+import { managerOutlet, outletConstraint, rowsInManagerScope } from '../outletScope';
 import { 
   PieChart, 
   RefreshCw, 
@@ -82,7 +84,8 @@ import PnLPerformanceTrends from './PnLPerformanceTrends';
 
 type DetailTab = 'statement' | 'waterfall' | 'pnl-waterfall' | 'performance-trends' | 'audit-log';
 
-const PnLHubCrew: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean }> = ({ user, dataOwnerId, readOnly = false }) => {
+const PnLHubCrew: React.FC<{ user: User; userProfile?: UserProfile; dataOwnerId: string; readOnly?: boolean }> = ({ user, userProfile, dataOwnerId, readOnly = false }) => {
+  const scopedOutlet = managerOutlet(userProfile);
   const [salesSnaps, setSalesSnaps] = useState<SalesMonthlySnapshot[]>([]);
   const [expenseSnaps, setExpenseSnaps] = useState<ExpenseMonthlySnapshot[]>([]);
   const [dailySalesLogs, setDailySalesLogs] = useState<DailySalesLog[]>([]);
@@ -104,7 +107,7 @@ const PnLHubCrew: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean
 
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear().toString());
   const [selectedMonth, setSelectedMonth] = useState(MONTH_NAMES[new Date().getMonth()]);
-  const [selectedOutlets, setSelectedOutlets] = useState<string[]>(['all']);
+  const [selectedOutlets, setSelectedOutlets] = useState<string[]>(scopedOutlet ? [scopedOutlet] : ['all']);
   const [isOutletDropdownOpen, setIsOutletDropdownOpen] = useState(false);
   /**
    * Accrual view. Off = cash basis (settled spend only), which is what every
@@ -137,6 +140,7 @@ const PnLHubCrew: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean
     try {
       const periodConstraints = [
         where('userId', '==', dataOwnerId),
+        ...outletConstraint(userProfile),
         where('year', '==', selectedYear),
         where('month', '==', selectedMonth)
       ];
@@ -156,7 +160,7 @@ const PnLHubCrew: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean
       const fetchDailySalesLeg = async (field: 'ownerId' | 'userId') => {
         try {
           const snap = await getDocs(query(collection(db, 'daily_sales_logs'),
-            where(field, '==', dataOwnerId), where('date', '>=', rangeStart), where('date', '<=', rangeEnd)));
+            where(field, '==', dataOwnerId), ...outletConstraint(userProfile), where('date', '>=', rangeStart), where('date', '<=', rangeEnd)));
           return snap.docs;
         } catch (err) {
           console.warn(`[PnLHubCrew] daily_sales_logs ${field} query failed:`, err);
@@ -167,8 +171,8 @@ const PnLHubCrew: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean
       const [sSnaps, eSnaps, emp, rent, adj, pay, setSnap, dsByOwner, dsByUser] = await Promise.all([
         getDocs(query(collection(db, 'sales_snapshots'), ...periodConstraints)),
         getDocs(query(collection(db, 'expense_snapshots'), ...periodConstraints)),
-        getCachedCollection<Employee>('employees', dataOwnerId),
-        getCachedCollection<StoreRental>('rentals', dataOwnerId),
+        getCachedCollection<Employee>('employees', dataOwnerId, 'userId', scopedOutlet),
+        getCachedCollection<StoreRental>('rentals', dataOwnerId, 'userId', scopedOutlet),
         getDocs(query(collection(db, 'cogs_adjustments'), ...periodConstraints)),
         getDocs(query(collection(db, 'monthly_payrolls'), ...periodConstraints)),
         getDoc(settingsRef),
@@ -198,10 +202,10 @@ const PnLHubCrew: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean
       
       setSalesSnaps(sSnaps.docs.map(d => d.data() as SalesMonthlySnapshot));
       setExpenseSnaps(eSnaps.docs.map(d => d.data() as ExpenseMonthlySnapshot));
-      setEmployees(emp);
-      setRentals(rent);
+      setEmployees(rowsInManagerScope(emp, userProfile));
+      setRentals(rowsInManagerScope(rent, userProfile));
       setAdjustments(adj.docs.map(d => d.data() as CogsAdjustment));
-      setMonthlyPayrolls(pay.docs.map(d => d.data() as MonthlyPayroll));
+      setMonthlyPayrolls(rowsInManagerScope(pay.docs.map(d => d.data() as MonthlyPayroll), userProfile));
     } catch (err) {
       console.error(err);
     } finally {
@@ -209,7 +213,7 @@ const PnLHubCrew: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean
     }
   };
 
-  useEffect(() => { fetchData(); }, [user, selectedYear, selectedMonth]);
+  useEffect(() => { fetchData(); }, [user, selectedYear, selectedMonth, scopedOutlet]);
 
   const availableOutlets = useMemo(() => {
     const monthIdx = MONTH_NAMES.indexOf(selectedMonth);
@@ -230,7 +234,7 @@ const PnLHubCrew: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean
     if (selectedOutlets.includes('all')) return;
     const availableIds = availableOutlets.map(o => o.id);
     const next = selectedOutlets.filter(id => availableIds.includes(id));
-    if (next.length === 0) setSelectedOutlets(['all']);
+    if (next.length === 0) setSelectedOutlets(scopedOutlet ? [scopedOutlet] : ['all']);
     else if (next.length !== selectedOutlets.length) setSelectedOutlets(next);
   }, [availableOutlets, selectedOutlets]);
 
@@ -612,10 +616,10 @@ const PnLHubCrew: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean
                 </button>
                 {isOutletDropdownOpen && (
                   <div className="absolute top-full right-0 mt-2 w-72 bg-white rounded-2xl shadow-2xl border border-slate-100 z-[100] p-2 animate-in zoom-in-95 duration-200">
-                    <button onClick={() => toggleOutlet('all')} className={`w-full flex items-center justify-between p-3 rounded-xl transition-all ${selectedOutlets.includes('all') ? 'bg-indigo-50 text-indigo-700' : 'hover:bg-slate-50'}`}>
+                    {!scopedOutlet && <button onClick={() => toggleOutlet('all')} className={`w-full flex items-center justify-between p-3 rounded-xl transition-all ${selectedOutlets.includes('all') ? 'bg-indigo-50 text-indigo-700' : 'hover:bg-slate-50'}`}>
                       <span className="text-[11px] font-black uppercase">All Active Units</span>
                       {selectedOutlets.includes('all') && <Check size={14} />}
-                    </button>
+                    </button>}
                     <div className="h-px bg-slate-50 my-2" />
                     {availableOutlets.map(o => (<button key={o.id} onClick={() => toggleOutlet(o.id)} className={`w-full flex items-center justify-between p-3 rounded-xl transition-all text-left ${selectedOutlets.includes(o.id) && !selectedOutlets.includes('all') ? 'bg-indigo-50 text-indigo-700' : 'hover:bg-slate-50'}`}><span className="text-[11px] font-bold uppercase">{o.name}</span>{selectedOutlets.includes(o.id) && !selectedOutlets.includes('all') && <Check size={14} />}</button>))}
                   </div>
@@ -1054,6 +1058,7 @@ const PnLHubCrew: React.FC<{ user: User; dataOwnerId: string; readOnly?: boolean
                   dataOwnerId={dataOwnerId}
                   selectedOutlets={selectedOutlets}
                   rentals={rentals}
+                  userProfile={userProfile}
                 />
              ) : activeDetailTab === 'waterfall' ? (
                 <div className="bg-white p-12 rounded-[3.5rem] border border-slate-100 shadow-sm space-y-12">

@@ -1,6 +1,8 @@
 import { MODULES, MODULE_BY_ID, ModuleId } from './moduleRegistry';
 import type { UserProfile, UserGroup } from './types';
 
+const LEGACY_DATA_CONTROL_MODULES = new Set(['dashboard', 'integrity', 'catalog', 'raw-verify']);
+
 /**
  * Which modules an account may open.
  *
@@ -23,8 +25,24 @@ export function resolveAllowedModules(
   // before it renders. Belt and braces so a stray caller cannot widen them.
   if (profile.role === 'crew') return new Set<ModuleId>();
 
-  const roleDefaults = () =>
-    new Set<ModuleId>(MODULES.filter(m => m.defaultRoles.includes(profile.role)).map(m => m.id));
+  const applyOutletBoundary = (allowed: Set<ModuleId>) => {
+    if (profile.role !== 'manager' || !profile.assignedOutlet) return allowed;
+    // These tools change business-wide configuration or imported source data and
+    // cannot be safely reduced to one outlet. Store managers keep reporting and
+    // shared catalog tools, while HQ managers retain the existing full menu.
+    const hqOnly: ModuleId[] = [
+      'exec-dashboard', 'online-profit', 'waste-v2', 'cash-flow',
+      'pnl-insights', 'data-control', 'bank-management',
+      'category-settings', 'team', 'rentals', 'holidays',
+      'bank-audit', 'upload', 'partnership',
+    ];
+    hqOnly.forEach(id => allowed.delete(id));
+    return allowed;
+  };
+
+  const roleDefaults = () => applyOutletBoundary(
+    new Set<ModuleId>(MODULES.filter(m => m.defaultRoles.includes(profile.role)).map(m => m.id)),
+  );
 
   // No group assigned → exactly the behaviour that existed before groups. This is
   // the fallback every un-migrated account lands on, so it must stay correct.
@@ -41,6 +59,13 @@ export function resolveAllowedModules(
     group.moduleIds.filter((id): id is ModuleId => MODULE_BY_ID.has(id as ModuleId)),
   );
 
+  // Existing groups may still contain one or more of the four links that now
+  // live inside Data Control. Preserve their route to the consolidated screen;
+  // group configuration can be tidied later without locking anyone out.
+  if (group.moduleIds.some(id => LEGACY_DATA_CONTROL_MODULES.has(id))) {
+    allowed.add('data-control');
+  }
+
   // Role-locked modules are never group-controlled. 'users' is the only one: an
   // admin always keeps the group editor (so no group can lock them out of it),
   // and nobody else ever gets it however the group is configured.
@@ -50,5 +75,5 @@ export function resolveAllowedModules(
     else allowed.delete(m.id);
   }
 
-  return allowed;
+  return applyOutletBoundary(allowed);
 }

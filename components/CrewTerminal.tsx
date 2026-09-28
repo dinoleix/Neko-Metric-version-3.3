@@ -11,6 +11,7 @@ import {
   DailySalesLog,
   SalesLedgerEntry,
   UserProfile,
+  StoreRental,
   MASTER_OUTLETS,
   MONTH_NAMES,
   getOutletName,
@@ -27,7 +28,6 @@ import {
   WasteEntry,
   WasteLineItem,
   WasteType,
-  TrackedConsumable,
   istNow,
   istDateString
 } from '../types';
@@ -224,6 +224,9 @@ const EntriesDataTable = ({ rows }: { rows: (string | number)[][] }) => {
 };
 
 const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, profile }) => {
+  const canViewAllStores = profile.role === 'admin' || (profile.role === 'manager' && !profile.assignedOutlet);
+  const dataOwnerId = profile.ownerId || user.uid;
+  const [activeOutlets, setActiveOutlets] = useState<Array<{ id: string; name: string }>>([]);
   const [activeMode, setActiveMode] = useState<'landing' | 'view' | 'add' | 'edit' | 'daily-sales' | 'transfer-10k' | 'record-waste' | 'pending-bills'>('landing');
   const [entryType, setEntryType] = useState<'expense' | 'purchase'>('purchase');
   const [entries, setEntries] = useState<DailyCounterEntry[]>([]);
@@ -245,7 +248,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
 
   // Firestore rules enforce the same outlet boundary. Including the outlet in
   // crew queries lets Firestore prove the query cannot return another store.
-  const bankAccountsQuery = (ownerId: string) => profile.role === 'crew' && profile.assignedOutlet
+  const bankAccountsQuery = (ownerId: string) => profile.assignedOutlet
     ? query(
         collection(db, 'bank_accounts'),
         where('userId', '==', ownerId),
@@ -286,7 +289,6 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
 
   const [showProductCatalog, setShowProductCatalog] = useState(false);
   const [productCatalogEnabled, setProductCatalogEnabled] = useState(false);
-  const [trackedConsumables, setTrackedConsumables] = useState<TrackedConsumable[]>([]);
   const [entriesLoadFailed, setEntriesLoadFailed] = useState(false);
   const [catalogProducts, setCatalogProducts] = useState<Product[]>([]);
   const [selectedProductId, setSelectedProductId] = useState('');
@@ -360,6 +362,19 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
   const [wSelItemKey, setWSelItemKey] = useState('');
   const [wQty, setWQty] = useState('1');
   const [wType, setWType] = useState<WasteType>('extra_demand');
+
+  useEffect(() => {
+    if (!canViewAllStores) return;
+    getCachedCollection<StoreRental>('rentals', dataOwnerId, 'userId')
+      .then(rows => {
+        const options = rows
+          .filter(row => row.status === 'active')
+          .map(row => ({ id: row.outletId, name: row.storeName }));
+        setActiveOutlets(options);
+        setOutletId(current => options.some(option => option.id === current) ? current : (options[0]?.id || ''));
+      })
+      .catch(err => console.error('[CrewTerminal] failed to load active stores:', err));
+  }, [canViewAllStores, dataOwnerId]);
 
   const fetchServingOptions = async () => {
     const ownerId = profile.ownerId || user.uid;
@@ -499,7 +514,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
       }
 
       // Date range is applied server-side so we only pay for the docs we show.
-      // Crew query their own entries by userId; admins query the whole business
+      // Store-scoped users query their outlet; admins and HQ managers query the whole business
       // by ownerId, plus their own legacy pre-ownerId entries by userId.
       // Needs the (userId, date) and (ownerId, date) composite indexes.
       // Each leg is isolated. Sharing a Promise.all meant one failing query threw
@@ -522,7 +537,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
 
       let docs: DailyCounterEntry[];
       let allFailed = false;
-      if (profile.role === 'admin') {
+      if (canViewAllStores) {
         // ownerId is the BUSINESS owner, not necessarily this admin. Querying
         // user.uid here (the only place in this file that did) meant a delegated
         // admin saw none of their crew's entries, while Crew Reports — which uses
@@ -543,15 +558,10 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
         // it because the query pins both ownerId and outletId.
         // Uses the existing (ownerId, outletId, date) composite index.
         //
-        // outletId is stamped on an entry at the moment it's created, from
-        // whatever profile.assignedOutlet was at the time. If an admin later
-        // reassigns this crew member to a different outlet, filtering by the
-        // CURRENT assignedOutlet alone would silently drop every entry they
-        // logged under the old one from their own history — the entry is still
-        // intact (admins query by ownerId only, no outlet filter), but the crew
-        // member who typed it would see it vanish. Always also fetch their own
-        // entries by userId regardless of outlet, and merge, so nothing they
-        // personally typed is ever lost to a reassignment.
+        // Previous-outlet entries remain available to admins after a crew
+        // reassignment. Crew access is intentionally limited to the currently
+        // assigned outlet, so an unscoped userId fallback would be rejected by
+        // Firestore and produce a misleading permissions warning on every load.
         const runOutlet = async () => {
           try {
             const snap = await getDocs(query(
@@ -567,20 +577,13 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
             return { docs: [] as any[], failed: true };
           }
         };
-        const [byOutlet, byUser] = await Promise.all([
-          runOutlet(),
-          runEntries('userId', user.uid),
-        ]);
-        allFailed = byOutlet.failed && byUser.failed;
-        const seen = new Set<string>();
-        docs = [...byOutlet.docs, ...byUser.docs]
-          .filter(d => { if (seen.has(d.id)) return false; seen.add(d.id); return true; })
-          .map(d => ({ id: d.id, ...d.data() } as DailyCounterEntry));
+        const byOutlet = await runOutlet();
+        allFailed = byOutlet.failed;
+        docs = byOutlet.docs.map(d => ({ id: d.id, ...d.data() } as DailyCounterEntry));
       } else {
-        // No outlet assigned — can only safely read one's own entries
-        const byUser = await runEntries('userId', user.uid);
-        allFailed = byUser.failed;
-        docs = byUser.docs.map(d => ({ id: d.id, ...d.data() } as DailyCounterEntry));
+        // A crew profile without an outlet has no permitted operational scope.
+        allFailed = false;
+        docs = [];
       }
 
       setEntriesLoadFailed(allFailed);
@@ -602,7 +605,6 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
       .then(snap => {
         if (!snap.exists()) return;
         setProductCatalogEnabled(snap.data().productCatalogEnabled === true);
-        setTrackedConsumables(snap.data().trackedConsumables || []);
       })
       .catch(() => {});
   }, []);
@@ -669,13 +671,6 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
 
   const billTotal = useMemo(() => billItems.reduce((s, i) => s + i.amount, 0), [billItems]);
 
-  // Consumables (gas cylinders etc) are tracked by unit count, so an entry
-  // without a quantity is useless for consumption reporting — require one.
-  const activeConsumable = useMemo(() =>
-    trackedConsumables.find(c =>
-      c.active !== false && c.category.trim().toUpperCase() === category.trim().toUpperCase()
-    ) || null,
-  [trackedConsumables, category]);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -737,6 +732,10 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!outletId) {
+      alert('Select the store for this entry.');
+      return;
+    }
     const hasBillItems = entryType === 'purchase' && billItems.length > 0;
     if (!hasBillItems && !amount) return;
     if (!category) return;
@@ -750,11 +749,6 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
       return;
     }
 
-    // Bill-builder lines already enforce qty > 0, so only the simple form needs this
-    if (activeConsumable && !hasBillItems && !(parseFloat(quantity) > 0)) {
-      alert(`Enter how many ${activeConsumable.unitLabel}s this covers — ${activeConsumable.label} is tracked by unit.`);
-      return;
-    }
 
     // Prevent cash expense if it would overdraw the selected source account
     if (entryType === 'expense' && status === 'paid' && expenseSourceAccount) {
@@ -944,6 +938,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
   const fetchDsLogs = async () => {
     setDsLoadingLogs(true);
     try {
+      const ownerId = profile.ownerId || user.uid;
       // Windowed, not the whole history. This used to fetch every log the crew
       // member had ever submitted, so the read cost grew by one document per day
       // forever and the list became unusable to scroll. Two weeks is what the
@@ -952,6 +947,8 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
         query(
           collection(db, 'daily_sales_logs'),
           where('userId', '==', user.uid),
+          where('ownerId', '==', ownerId),
+          where('outletId', '==', dsOutletId),
           where('date', '>=', istDateString(-DS_LOG_WINDOW_DAYS)),
           orderBy('date', 'desc'),
         )
@@ -990,14 +987,18 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
       const ownerId = profile.ownerId || user.uid;
 
       if (!dsExistingId) {
-        // Equality-only filter (no composite index needed); outlet checked client-side
+        // Keep the query inside the crew member's permitted outlet. Firestore
+        // evaluates the possible query result, so filtering the outlet only
+        // after reading causes the whole request to be denied for crew users.
         const dupQ = query(
           collection(db, 'daily_sales_logs'),
           where('userId', '==', user.uid),
-          where('date', '==', dsDate)
+          where('ownerId', '==', ownerId),
+          where('outletId', '==', dsOutletId),
+          where('date', '==', dsDate),
         );
         const dupSnap = await getDocs(dupQ);
-        const existing = dupSnap.docs.find(d => d.data().outletId === dsOutletId);
+        const existing = dupSnap.docs[0];
         if (existing) {
           setDsExistingId(existing.id);
           setDsDuplicateWarning(true);
@@ -1174,8 +1175,17 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
         resetDsForm();
       }, 1500);
     } catch (err) {
-      console.error(err);
-      alert('Submission failed. Check connection.');
+      console.error('Daily sales submission failed:', err);
+      const code = typeof err === 'object' && err !== null && 'code' in err
+        ? String((err as { code?: unknown }).code)
+        : '';
+      if (code.includes('permission-denied')) {
+        alert('Submission blocked by access permissions. Please refresh the app and try again.');
+      } else if (code.includes('failed-precondition')) {
+        alert('Daily sales reporting is still being prepared. Please try again shortly.');
+      } else {
+        alert('Submission failed. Please check your connection and try again.');
+      }
     } finally {
       setDsSaving(false);
     }
@@ -1199,6 +1209,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     setBillProductId('');
     setBillQty('');
     setBillPrice('');
+    setOutletId(profile.assignedOutlet || activeOutlets[0]?.id || '');
   };
 
   // Rebuilds the crew_* fields in expense_snapshots from scratch for the given outlet+period.
@@ -1246,11 +1257,24 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
         }
       };
 
-      // Dual-leg: legacy entries pre-dating the ownerId field carry only userId.
-      const [byOwner, byUser] = await Promise.all([
-        runLeg('ownerId', ownerId),
-        runLeg('userId', user.uid),
-      ]);
+      // Store managers and crew must include the outlet in the Firestore query;
+      // otherwise the rules cannot prove that another store will not be returned.
+      // HQ managers and admins retain the tenant-wide legacy fallback.
+      const [byOwner, byUser] = profile.assignedOutlet
+        ? [
+            (await getDocs(query(
+              collection(db, 'crew_entries'),
+              where('ownerId', '==', ownerId),
+              where('outletId', '==', profile.assignedOutlet),
+              where('date', '>=', start),
+              where('date', '<=', end)
+            ))).docs,
+            []
+          ]
+        : await Promise.all([
+            runLeg('ownerId', ownerId),
+            runLeg('userId', user.uid),
+          ]);
 
       const seen = new Set<string>();
       const merged = [...byOwner, ...byUser]
@@ -2076,7 +2100,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
             </div>
 
             {/* Store filter — admins see every outlet's entries */}
-            {profile.role === 'admin' && (
+            {canViewAllStores && (
               <div className="relative">
                 <MapPin className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={16} />
                 <select
@@ -2207,7 +2231,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
                       {entry.vendorName && (
                         <p className="text-xs font-medium text-indigo-500 truncate mt-0.5">{entry.vendorName}</p>
                       )}
-                      {profile.role === 'admin' && (
+                      {canViewAllStores && (
                         <p className="text-[10px] font-medium text-slate-400 truncate mt-0.5 flex items-center gap-1">
                           <MapPin size={10} className="shrink-0" /> {getOutletName(entry.outletId)}{entry.userName ? ` · ${entry.userName}` : ''}
                         </p>
@@ -2748,6 +2772,34 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
                 </button>
               </div>
 
+              {/* Store scope: fixed for assigned managers/crew; selectable for HQ. */}
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1.5 ml-0.5">Store</label>
+                {profile.assignedOutlet || activeMode === 'edit' ? (
+                  <div className="h-12 bg-slate-50 border border-slate-200 rounded-xl flex items-center px-4">
+                    <MapPin size={17} className="text-slate-400 mr-3 shrink-0" />
+                    <span className="text-sm font-semibold text-slate-700">{getOutletName(outletId)}</span>
+                  </div>
+                ) : (
+                  <div className="relative">
+                    <MapPin className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={17} />
+                    <select
+                      required
+                      value={outletId}
+                      onChange={e => setOutletId(e.target.value)}
+                      className="w-full h-12 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white focus:ring-4 focus:ring-indigo-500/10 outline-none pl-11 pr-9 rounded-xl text-sm font-semibold text-slate-700 appearance-none transition-all"
+                    >
+                      <option value="">Select store</option>
+                      {activeOutlets.map(store => <option key={store.id} value={store.id}>{store.name}</option>)}
+                    </select>
+                    <ChevronDown className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={16} />
+                  </div>
+                )}
+                {canViewAllStores && activeOutlets.length === 0 && activeMode !== 'edit' && (
+                  <p className="mt-1.5 text-xs font-medium text-amber-600">No active stores are available.</p>
+                )}
+              </div>
+
               {/* ── PURCHASE BILL BUILDER ───────────────────────────── */}
               {entryType === 'purchase' && activeMode !== 'edit' ? (
                 <>
@@ -3232,12 +3284,9 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
 
                   <div className="grid grid-cols-2 gap-5">
                     <div className="space-y-2">
-                      <label className={`text-[10px] font-black uppercase tracking-[0.2em] ml-1 block ${activeConsumable ? 'text-indigo-500' : 'text-slate-400'}`}>
-                        {activeConsumable ? `Quantity (${activeConsumable.unitLabel}s) *` : 'Quantity'}
-                      </label>
-                      <input type="number" step="0.01" min={activeConsumable ? '0.01' : '0'} value={quantity} onChange={e => setQuantity(e.target.value)}
-                        required={!!activeConsumable}
-                        className={`w-full bg-slate-50 border-2 outline-none px-5 py-5 rounded-2xl text-xl font-black text-slate-900 transition-all ${activeConsumable ? 'border-indigo-200 focus:border-indigo-500' : 'border-slate-100 focus:border-indigo-500'}`}
+                      <label className="text-[10px] font-black uppercase tracking-[0.2em] ml-1 block text-slate-400">Quantity</label>
+                      <input type="number" step="0.01" min="0" value={quantity} onChange={e => setQuantity(e.target.value)}
+                        className="w-full bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 outline-none px-5 py-5 rounded-2xl text-xl font-black text-slate-900 transition-all"
                         placeholder="0"
                       />
                     </div>

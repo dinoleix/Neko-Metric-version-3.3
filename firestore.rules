@@ -69,6 +69,22 @@ service cloud.firestore {
         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == role;
     }
 
+    // Managers with an empty assignedOutlet are HQ managers. A populated value
+    // is a hard store boundary for every operational document carrying outletId.
+    function managerCanAccessResourceOutlet() {
+      return !callerHasRole('manager') ||
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('assignedOutlet', '') == '' ||
+        resource.data.get('outletId', '') ==
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.assignedOutlet;
+    }
+
+    function managerCanAccessIncomingOutlet() {
+      return !callerHasRole('manager') ||
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('assignedOutlet', '') == '' ||
+        request.resource.data.get('outletId', '') ==
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.assignedOutlet;
+    }
+
     // Crew/waste documents carry both the acting user's uid and the business
     // owner's uid. These helpers keep those identities separate and prevent a
     // caller from moving an existing record between businesses.
@@ -246,6 +262,26 @@ service cloud.firestore {
         );
     }
 
+    // One immutable audit row per sign-in session. Users can record only their
+    // own identity and tenant; only tenant admins can inspect the history.
+    match /login_activity/{activityId} {
+      allow create: if isAuthenticated()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.ownerId == callerTenant()
+        && request.resource.data.email == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.email
+        && request.resource.data.role == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role
+        && request.resource.data.get('assignedOutlet', '') == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('assignedOutlet', '')
+        && request.resource.data.loggedInAt == request.time
+        && request.resource.data.locationStatus in ['available', 'denied', 'unavailable', 'unsupported']
+        && request.resource.data.keys().hasOnly([
+          'userId', 'ownerId', 'email', 'role', 'assignedOutlet', 'loggedInAt',
+          'latitude', 'longitude', 'accuracyMeters', 'locationStatus'
+        ]);
+      allow get, list: if isAdmin() && resource.data.ownerId == callerTenant();
+      allow delete: if isAdmin() && resource.data.ownerId == callerTenant();
+      allow update: if false;
+    }
+
     // category_settings uses the admin's UID as the document ID (no userId field inside)
     match /category_settings/{ownerId} {
       allow read: if isAuthenticated() && (
@@ -275,16 +311,17 @@ service cloud.firestore {
     // Viewers can inspect balances. Crew see only their assigned outlet and may
     // move balances, but cannot rename/reassign accounts or change metadata.
     match /bank_accounts/{accountId} {
-      allow read: if (ownerDocumentBelongsToCallerTenant() && !callerHasRole('crew')) ||
+      allow read: if (ownerDocumentBelongsToCallerTenant() && !callerHasRole('crew') && managerCanAccessResourceOutlet()) ||
         crewCanReadOwnerOutletDocument();
-      allow create: if isTenantStaff() && incomingOwnerDocumentBelongsToCallerTenant();
+      allow create: if isTenantStaff() && incomingOwnerDocumentBelongsToCallerTenant() && managerCanAccessIncomingOutlet();
       allow update: if (
-        isTenantStaff() && ownerDocumentBelongsToCallerTenant() && ownerIdentityUnchanged()
+        isTenantStaff() && ownerDocumentBelongsToCallerTenant() && ownerIdentityUnchanged() &&
+        managerCanAccessResourceOutlet() && managerCanAccessIncomingOutlet()
       ) || (
         crewCanUpdateOwnerOutletDocument() &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['balance', 'updatedAt'])
       );
-      allow delete: if isTenantStaff() && ownerDocumentBelongsToCallerTenant();
+      allow delete: if isTenantStaff() && ownerDocumentBelongsToCallerTenant() && managerCanAccessResourceOutlet();
     }
 
     // daily_sales_logs — crew writes with their own userId; admin reads via ownerId
@@ -292,15 +329,15 @@ service cloud.firestore {
       // userId here is the CREW MEMBER who submitted, not the owner, so
       // isLinkedToOwner (caller.ownerId vs doc.userId) never matches for a
       // delegated admin. isLinkedViaOwnerField compares ownerId to ownerId.
-      allow read: if (operationalRecordBelongsToCallerTenant() && !callerHasRole('crew')) ||
+      allow read: if (operationalRecordBelongsToCallerTenant() && !callerHasRole('crew') && managerCanAccessResourceOutlet()) ||
         isCrewOfSameOutlet();
       allow create: if incomingOperationalRecordBelongsToCaller() &&
-        (isTenantStaff() || crewCreateIsForAssignedOutlet());
+        ((isTenantStaff() && managerCanAccessIncomingOutlet()) || crewCreateIsForAssignedOutlet());
       allow update: if operationalIdentityUnchanged() && (
-        (isTenantStaff() && operationalRecordBelongsToCallerTenant()) ||
+        (isTenantStaff() && operationalRecordBelongsToCallerTenant() && managerCanAccessResourceOutlet() && managerCanAccessIncomingOutlet()) ||
         crewUpdateIsForAssignedOutlet()
       );
-      allow delete: if (isTenantStaff() && operationalRecordBelongsToCallerTenant()) ||
+      allow delete: if (isTenantStaff() && operationalRecordBelongsToCallerTenant() && managerCanAccessResourceOutlet()) ||
         (callerHasRole('crew') && isDocOwner() && isCrewOfSameOutlet());
     }
 
@@ -309,15 +346,15 @@ service cloud.firestore {
       // userId here is the CREW MEMBER who submitted, not the owner, so
       // isLinkedToOwner (caller.ownerId vs doc.userId) never matches for a
       // delegated admin. isLinkedViaOwnerField compares ownerId to ownerId.
-      allow read: if (operationalRecordBelongsToCallerTenant() && !callerHasRole('crew')) ||
+      allow read: if (operationalRecordBelongsToCallerTenant() && !callerHasRole('crew') && managerCanAccessResourceOutlet()) ||
         isCrewOfSameOutlet();
       allow create: if incomingOperationalRecordBelongsToCaller() &&
-        (isTenantStaff() || crewCreateIsForAssignedOutlet());
+        ((isTenantStaff() && managerCanAccessIncomingOutlet()) || crewCreateIsForAssignedOutlet());
       allow update: if operationalIdentityUnchanged() && (
-        (isTenantStaff() && operationalRecordBelongsToCallerTenant()) ||
+        (isTenantStaff() && operationalRecordBelongsToCallerTenant() && managerCanAccessResourceOutlet() && managerCanAccessIncomingOutlet()) ||
         crewUpdateIsForAssignedOutlet()
       );
-      allow delete: if (isTenantStaff() && operationalRecordBelongsToCallerTenant()) ||
+      allow delete: if (isTenantStaff() && operationalRecordBelongsToCallerTenant() && managerCanAccessResourceOutlet()) ||
         (callerHasRole('crew') && isDocOwner() && isCrewOfSameOutlet());
     }
 
@@ -327,15 +364,15 @@ service cloud.firestore {
       // userId here is the CREW MEMBER who submitted, not the owner, so
       // isLinkedToOwner (caller.ownerId vs doc.userId) never matches for a
       // delegated admin. isLinkedViaOwnerField compares ownerId to ownerId.
-      allow read: if (operationalRecordBelongsToCallerTenant() && !callerHasRole('crew')) ||
+      allow read: if (operationalRecordBelongsToCallerTenant() && !callerHasRole('crew') && managerCanAccessResourceOutlet()) ||
         isCrewOfSameOutlet();
       allow create: if incomingOperationalRecordBelongsToCaller() &&
-        (isTenantStaff() || crewCreateIsForAssignedOutlet());
+        ((isTenantStaff() && managerCanAccessIncomingOutlet()) || crewCreateIsForAssignedOutlet());
       allow update: if operationalIdentityUnchanged() && (
-        (isTenantStaff() && operationalRecordBelongsToCallerTenant()) ||
+        (isTenantStaff() && operationalRecordBelongsToCallerTenant() && managerCanAccessResourceOutlet() && managerCanAccessIncomingOutlet()) ||
         crewUpdateIsForAssignedOutlet()
       );
-      allow delete: if (isTenantStaff() && operationalRecordBelongsToCallerTenant()) ||
+      allow delete: if (isTenantStaff() && operationalRecordBelongsToCallerTenant() && managerCanAccessResourceOutlet()) ||
         (callerHasRole('crew') && isDocOwner() && isCrewOfSameOutlet());
     }
 
@@ -397,6 +434,18 @@ service cloud.firestore {
       allow delete: if isTenantStaff() && ownerFieldBelongsToCallerTenant();
     }
 
+    // inventory_items is the shared count-list configuration. Store-scoped
+    // managers can count their outlet but cannot change the common item list.
+    match /inventory_items/{docId} {
+      allow read: if canRead() || isFieldOwner() || isLinkedViaOwnerField();
+      allow create: if isTenantStaff() && incomingOwnerFieldBelongsToCallerTenant() &&
+        (isAdmin() || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('assignedOutlet', '') == '');
+      allow update: if isTenantStaff() && ownerFieldBelongsToCallerTenant() && ownerIdentityUnchanged() &&
+        (isAdmin() || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('assignedOutlet', '') == '');
+      allow delete: if isTenantStaff() && ownerFieldBelongsToCallerTenant() &&
+        (isAdmin() || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('assignedOutlet', '') == '');
+    }
+
     // menu_prices — the stated menu list price, one doc per master item name.
     // These docs carry userId = the BUSINESS OWNER's uid, not the editor's, so a
     // delegated admin's edit lands on the same doc the page reads back. The
@@ -434,21 +483,21 @@ service cloud.firestore {
       // the caller's ownerId against userId, never matches. Without this clause
       // Find Matching Bill returned nothing for them: the crew leg was denied and
       // fell back to an empty list.
-      allow read: if (operationalRecordBelongsToCallerTenant() && !callerHasRole('crew')) ||
+      allow read: if (operationalRecordBelongsToCallerTenant() && !callerHasRole('crew') && managerCanAccessResourceOutlet()) ||
         isCrewOfSameOutlet();
       allow create: if incomingOperationalRecordBelongsToCaller() &&
-        (isTenantStaff() || crewCreateIsForAssignedOutlet());
+        ((isTenantStaff() && managerCanAccessIncomingOutlet()) || crewCreateIsForAssignedOutlet());
       // isCrewOfSameOutlet() added so one crew member can settle a bill a
       // teammate on a different shift logged — Settle Pending Bills bulk-marks
       // paid across a whole month, which routinely spans more than one author.
       // Already true for read (shift handover); update needed the same reach.
       allow update: if operationalIdentityUnchanged() && (
-        (isTenantStaff() && operationalRecordBelongsToCallerTenant()) ||
+        (isTenantStaff() && operationalRecordBelongsToCallerTenant() && managerCanAccessResourceOutlet() && managerCanAccessIncomingOutlet()) ||
         crewUpdateIsForAssignedOutlet()
       );
       // Preserve the existing delete boundary: staff can delete inside their
       // tenant; crew can delete only records they authored in their own outlet.
-      allow delete: if (isTenantStaff() && operationalRecordBelongsToCallerTenant()) ||
+      allow delete: if (isTenantStaff() && operationalRecordBelongsToCallerTenant() && managerCanAccessResourceOutlet()) ||
         (callerHasRole('crew') && isDocOwner() && isCrewOfSameOutlet());
     }
 
@@ -456,46 +505,48 @@ service cloud.firestore {
     match /waste_entries/{docId} {
       // Same gap as crew_entries: userId is the recording crew member's, so a
       // delegated admin needs the ownerId-to-ownerId comparison.
-      allow read: if (operationalRecordBelongsToCallerTenant() && !callerHasRole('crew')) ||
+      allow read: if (operationalRecordBelongsToCallerTenant() && !callerHasRole('crew') && managerCanAccessResourceOutlet()) ||
         isCrewOfSameOutlet();
       allow create: if incomingOperationalRecordBelongsToCaller() &&
-        (isTenantStaff() || crewCreateIsForAssignedOutlet());
+        ((isTenantStaff() && managerCanAccessIncomingOutlet()) || crewCreateIsForAssignedOutlet());
       allow update: if operationalIdentityUnchanged() && (
-        (isTenantStaff() && operationalRecordBelongsToCallerTenant()) ||
+        (isTenantStaff() && operationalRecordBelongsToCallerTenant() && managerCanAccessResourceOutlet() && managerCanAccessIncomingOutlet()) ||
         crewUpdateIsForAssignedOutlet()
       );
-      allow delete: if (isTenantStaff() && operationalRecordBelongsToCallerTenant()) ||
+      allow delete: if (isTenantStaff() && operationalRecordBelongsToCallerTenant() && managerCanAccessResourceOutlet()) ||
         (callerHasRole('crew') && isDocOwner() && isCrewOfSameOutlet());
     }
 
     // expense_snapshots — admin owns; linked crew can write (they generate entries that feed reporting)
     match /expense_snapshots/{snapId} {
-      allow read: if (ownerOrStaffDocument() && !callerHasRole('crew')) ||
+      allow read: if (ownerOrStaffDocument() && !callerHasRole('crew') && managerCanAccessResourceOutlet()) ||
         crewCanReadOwnerOutletDocument();
-      allow create: if (isTenantStaff() && incomingOwnerOrStaffDocument()) || (
+      allow create: if (isTenantStaff() && incomingOwnerOrStaffDocument() && managerCanAccessIncomingOutlet()) || (
         crewCanCreateOwnerOutletDocument() && crewSnapshotCreateFieldsOnly()
       );
       allow update: if (
-        isTenantStaff() && ownerOrStaffDocument() && ownerIdentityUnchanged()
+        isTenantStaff() && ownerOrStaffDocument() && ownerIdentityUnchanged() &&
+        managerCanAccessResourceOutlet() && managerCanAccessIncomingOutlet()
       ) || (
         crewCanUpdateOwnerOutletDocument() && crewSnapshotFieldsOnly()
       );
-      allow delete: if isTenantStaff() && ownerOrStaffDocument();
+      allow delete: if isTenantStaff() && ownerOrStaffDocument() && managerCanAccessResourceOutlet();
     }
 
     // bill_counters — per-outlet-per-day bill number sequence; doc carries the
     // admin's UID in userId so both the admin and linked crew can bump it
     match /bill_counters/{counterId} {
       allow read: if resource == null ||
-        (ownerDocumentBelongsToCallerTenant() && !callerHasRole('crew')) ||
+        (ownerDocumentBelongsToCallerTenant() && !callerHasRole('crew') && managerCanAccessResourceOutlet()) ||
         (callerHasRole('crew') && ownerDocumentBelongsToCallerTenant() && (
           !('outletId' in resource.data) ||
           get(/databases/$(database)/documents/users/$(request.auth.uid)).data.assignedOutlet == resource.data.outletId
         ));
-      allow create: if (isTenantStaff() && incomingOwnerDocumentBelongsToCallerTenant()) ||
+      allow create: if (isTenantStaff() && incomingOwnerDocumentBelongsToCallerTenant() && managerCanAccessIncomingOutlet()) ||
         crewCanCreateOwnerOutletDocument();
       allow update: if (
-        isTenantStaff() && ownerDocumentBelongsToCallerTenant() && ownerIdentityUnchanged()
+        isTenantStaff() && ownerDocumentBelongsToCallerTenant() && ownerIdentityUnchanged() &&
+        managerCanAccessResourceOutlet() && managerCanAccessIncomingOutlet()
       ) || (
         callerHasRole('crew') && ownerDocumentBelongsToCallerTenant() && ownerIdentityUnchanged() &&
         request.resource.data.get('ownerId', '') == callerTenant() &&
@@ -503,7 +554,7 @@ service cloud.firestore {
         resource.data.get('outletId', request.resource.data.outletId) == request.resource.data.outletId &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ownerId', 'outletId', 'seq', 'updatedAt'])
       );
-      allow delete: if isTenantStaff() && ownerDocumentBelongsToCallerTenant();
+      allow delete: if isTenantStaff() && ownerDocumentBelongsToCallerTenant() && managerCanAccessResourceOutlet();
     }
 
     // cash_flow_snapshots — admin-only; keyed by ownerId_year_month
@@ -549,10 +600,14 @@ service cloud.firestore {
     }
 
     match /purchases/{docId} {
-      allow read: if resource == null || canRead();
-      allow write: if isDocOwner() || (isTenantStaff() && isLinkedToOwner()) ||
+      allow read: if resource == null || (canRead() && managerCanAccessResourceOutlet());
+      allow write: if (isDocOwner() && managerCanAccessResourceOutlet() &&
+          (request.resource == null || managerCanAccessIncomingOutlet())) ||
+        (isTenantStaff() && isLinkedToOwner() && managerCanAccessResourceOutlet() &&
+          (request.resource == null || managerCanAccessIncomingOutlet())) ||
         (resource == null && isTenantStaff() && isAuthenticated() &&
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('ownerId', request.auth.uid) == request.resource.data.userId);
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('ownerId', request.auth.uid) == request.resource.data.userId &&
+         managerCanAccessIncomingOutlet());
     }
 
     // user_groups — which modules appear in a member's sidebar.
@@ -592,14 +647,30 @@ service cloud.firestore {
           'users', 'user_groups', 'category_settings', 'online_order_details',
           'online_customers', 'bank_accounts', 'daily_sales_logs', 'sales_ledger',
           'bank_transactions', 'vendors', 'products', 'fc_ingredients', 'fc_recipes',
+          'inventory_items',
           'menu_prices', 'crew_categories', 'crew_entries', 'waste_entries',
           'expense_snapshots', 'bill_counters', 'cash_flow_snapshots', 'loan_profiles',
-          'bank_statement_imports', 'categorization_rules', 'purchases'
+          'bank_statement_imports', 'categorization_rules', 'purchases', 'login_activity'
         ]);
+      }
+      function isOutletScopedCollection() {
+        return collection in [
+          'sales_snapshots', 'item_snapshots', 'pnl_snapshots', 'cogs_adjustments',
+          'monthly_payrolls', 'employees', 'rentals', 'files', 'sales_summary',
+          'sales_analytics', 'item_sales', 'expenses', 'events', 'inventory_counts'
+        ];
+      }
+      function genericManagerReadAllowed() {
+        return !isOutletScopedCollection() || managerCanAccessResourceOutlet();
+      }
+      function genericManagerWriteAllowed() {
+        return !isOutletScopedCollection() ||
+          ((resource == null || managerCanAccessResourceOutlet()) &&
+           (request.resource == null || managerCanAccessIncomingOutlet()));
       }
       // resource == null allows getDoc() on a not-yet-existing doc (no data to leak);
       // without it, canRead() dereferences resource.data.userId on null and denies.
-      allow read: if isGenericCollection() && (resource == null || canRead());
+      allow read: if isGenericCollection() && (resource == null || (canRead() && genericManagerReadAllowed()));
       // Two ways in.
       //
       // 1. The document is literally yours — the original rule, unchanged. This
@@ -612,7 +683,7 @@ service cloud.firestore {
       //    role did not actually let them edit anything here.
       //
       // Only the explicit rules above authorize user/profile group access.
-      allow write: if isGenericCollection() && isTenantStaff() && (
+      allow write: if isGenericCollection() && isTenantStaff() && genericManagerWriteAllowed() && (
         (
           (resource == null || resource.data.get('userId', '') == request.auth.uid) &&
           (request.resource == null || request.resource.data.get('userId', '') == request.auth.uid)

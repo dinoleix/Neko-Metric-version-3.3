@@ -9,6 +9,7 @@ import {
   BarChart, Bar, LabelList,
 } from 'recharts';
 import { db } from '../firebase';
+import { managerOutlet, outletConstraint } from '../outletScope';
 import { getCachedCollection } from '../referenceCache';
 import {
   DailySalesLog,
@@ -300,12 +301,13 @@ const DataTable = ({ headers, rows, rightCols = [], minWidth = 900 }: { headers:
 
 const CrewReports: React.FC<{ user: User; profile: UserProfile; onBack?: () => void }> = ({ user, profile, onBack }) => {
   const ownerId = profile.ownerId || user.uid;
+  const scopedOutlet = managerOutlet(profile);
 
   const [activeTab, setActiveTab] = useState<ReportTab>('sales');
   const [datePreset, setDatePreset] = useState<DatePreset>('this-month');
   const [customStartDate, setCustomStartDate] = useState(istToday());
   const [customEndDate, setCustomEndDate] = useState(istToday());
-  const [filterOutlet, setFilterOutlet] = useState('all');
+  const [filterOutlet, setFilterOutlet] = useState(scopedOutlet || 'all');
   // Entries-tab filters. They narrow fEntries itself, so the Paid/Pending/Total
   // tiles, the charts, the table and the exports all describe the same slice —
   // a total that disagreed with the rows under it would be worse than no filter.
@@ -333,24 +335,26 @@ const CrewReports: React.FC<{ user: User; profile: UserProfile; onBack?: () => v
 
   // Bank accounts are needed to map 10K transfer transactions back to a store
   useEffect(() => {
-    getDocs(query(collection(db, 'bank_accounts'), where('userId', '==', ownerId)))
+    getDocs(query(collection(db, 'bank_accounts'), where('userId', '==', ownerId), ...outletConstraint(profile)))
       .then(snap => setBankAccounts(snap.docs.map(d => ({ id: d.id, ...d.data() } as BankAccount))))
       .catch(err => console.error('[Reports] bank accounts failed:', err));
   }, []);
 
   // Store filter lists only outlets whose rental record is active; if there are
   // no rental records at all, fall back to the full master list
-  const [activeOutlets, setActiveOutlets] = useState(MASTER_OUTLETS);
+  const [activeOutlets, setActiveOutlets] = useState(
+    scopedOutlet ? MASTER_OUTLETS.filter(o => o.id === scopedOutlet) : MASTER_OUTLETS
+  );
   useEffect(() => {
-    getDocs(query(collection(db, 'rentals'), where('userId', '==', ownerId)))
+    getDocs(query(collection(db, 'rentals'), where('userId', '==', ownerId), ...outletConstraint(profile)))
       .then(snap => {
         const activeIds = new Set(
           snap.docs.filter(d => d.data().status === 'active').map(d => d.data().outletId as string)
         );
         if (activeIds.size > 0) {
-          const outlets = MASTER_OUTLETS.filter(o => activeIds.has(o.id));
+          const outlets = MASTER_OUTLETS.filter(o => activeIds.has(o.id) && (!scopedOutlet || o.id === scopedOutlet));
           setActiveOutlets(outlets);
-          setFilterOutlet(prev => (prev === 'all' || outlets.some(o => o.id === prev)) ? prev : 'all');
+          setFilterOutlet(prev => (prev === 'all' || outlets.some(o => o.id === prev)) ? (scopedOutlet || prev) : (scopedOutlet || 'all'));
         }
       })
       .catch(err => console.error('[Reports] rentals failed:', err));
@@ -363,7 +367,7 @@ const CrewReports: React.FC<{ user: User; profile: UserProfile; onBack?: () => v
       try {
         if (activeTab === 'sales') {
           const snap = await getDocs(query(collection(db, 'daily_sales_logs'),
-            where('ownerId', '==', ownerId), where('date', '>=', start), where('date', '<=', end)));
+            where('ownerId', '==', ownerId), ...outletConstraint(profile), where('date', '>=', start), where('date', '<=', end)));
           if (!cancelled) setSalesLogs(snap.docs.map(d => ({ id: d.id, ...d.data() } as DailySalesLog)));
         } else if (activeTab === 'entries') {
           // Two legs, de-duplicated by document id — the same shape Crew Terminal
@@ -377,7 +381,7 @@ const CrewReports: React.FC<{ user: User; profile: UserProfile; onBack?: () => v
           const runEntries = async (field: 'ownerId' | 'userId', value: string) => {
             try {
               const snap = await getDocs(query(collection(db, 'crew_entries'),
-                where(field, '==', value), where('date', '>=', start), where('date', '<=', end)));
+                where(field, '==', value), ...outletConstraint(profile), where('date', '>=', start), where('date', '<=', end)));
               return snap.docs;
             } catch (err) {
               console.warn(`[Reports] crew_entries ${field} query failed:`, err);
@@ -395,7 +399,7 @@ const CrewReports: React.FC<{ user: User; profile: UserProfile; onBack?: () => v
           if (!cancelled) setEntries(merged);
         } else if (activeTab === 'transfers') {
           const snap = await getDocs(query(collection(db, 'bank_transactions'),
-            where('ownerId', '==', ownerId), where('category', '==', 'TRANSFER'),
+            where('ownerId', '==', ownerId), ...outletConstraint(profile), where('category', '==', 'TRANSFER'),
             where('date', '>=', start), where('date', '<=', end)));
           if (!cancelled) {
             // Keep only the counter-side debit so each transfer counts once
@@ -403,7 +407,7 @@ const CrewReports: React.FC<{ user: User; profile: UserProfile; onBack?: () => v
           }
         } else if (activeTab === 'waste') {
           const snap = await getDocs(query(collection(db, 'waste_entries'),
-            where('ownerId', '==', ownerId), where('date', '>=', start), where('date', '<=', end)));
+            where('ownerId', '==', ownerId), ...outletConstraint(profile), where('date', '>=', start), where('date', '<=', end)));
           if (!cancelled) setWasteEntries(snap.docs.map(d => ({ id: d.id, ...d.data() } as WasteEntry)));
         } else if (activeTab === 'catalog') {
           const [prods, vends] = await Promise.all([
@@ -783,7 +787,7 @@ const CrewReports: React.FC<{ user: User; profile: UserProfile; onBack?: () => v
               onChange={e => setFilterOutlet(e.target.value)}
               className="w-full h-11 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white focus:ring-4 focus:ring-indigo-500/10 outline-none pl-10 pr-8 rounded-xl text-sm font-medium text-slate-700 appearance-none transition-all"
             >
-              <option value="all">All stores</option>
+              {!scopedOutlet && <option value="all">All stores</option>}
               {activeOutlets.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
             </select>
             <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={15} />

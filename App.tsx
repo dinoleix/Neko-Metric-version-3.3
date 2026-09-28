@@ -6,6 +6,8 @@ import { doc, getDoc, setDoc, collection, query, where, onSnapshot } from 'fireb
 import { auth, db } from './firebase';
 import { UserRole, UserProfile, UserGroup, BankAccount, getOutletName } from './types';
 import Login from './components/Login';
+import ThemeToggle from './components/ThemeToggle';
+import { clearLoginActivitySession, recordLoginActivity } from './loginActivity';
 import {
   MODULES, MODULE_BY_ID, MODULE_SECTIONS, ModuleId, AppModule, landingModule,
 } from './moduleRegistry';
@@ -20,6 +22,8 @@ import {
   Calendar,
   Wallet,
   Banknote,
+  Menu,
+  X,
 } from 'lucide-react';
 
 const CrewTerminalComponent = MODULE_BY_ID.get('crew-terminal')!.Component;
@@ -50,6 +54,73 @@ const NavItem: React.FC<{ module: AppModule; active: boolean; onSelect: (id: Mod
   </button>
 );
 
+const AppSidebar: React.FC<{
+  user: User;
+  userProfile: UserProfile;
+  role: UserRole;
+  isReadOnly: boolean;
+  allowed: Set<ModuleId>;
+  activeTab: ModuleId;
+  onSelect: (id: ModuleId) => void;
+  onSignOut: () => void;
+  onClose?: () => void;
+}> = ({ user, userProfile, role, isReadOnly, allowed, activeTab, onSelect, onSignOut, onClose }) => (
+  <>
+    <div className="p-5 md:p-6 flex items-center gap-3 border-b border-slate-800/70 md:border-0">
+      <div className="p-2 bg-indigo-50 rounded-lg shadow-lg shadow-indigo-500/20">
+        <div className="relative">
+          <Cat className="w-6 h-6 text-indigo-600" />
+          <div className="absolute -top-1 -right-1 w-2 h-2 bg-emerald-500 rounded-full border-2 border-slate-900" />
+        </div>
+      </div>
+      <h1 className="text-xl font-black tracking-tight flex-1">NekoMetrics</h1>
+      {onClose && <button type="button" onClick={onClose} aria-label="Close menu" className="p-2 text-slate-400 hover:bg-slate-800 hover:text-white rounded-xl"><X size={20} /></button>}
+    </div>
+    <nav className="mt-3 md:mt-6 px-4 space-y-1.5 flex-1">
+      {MODULE_SECTIONS.map(section => {
+        const items = MODULES.filter(m => m.section === section && allowed.has(m.id));
+        if (items.length === 0) return null;
+        return (
+          <React.Fragment key={section}>
+            <div className="pt-4 pb-2 px-4 first:pt-0">
+              <p className="text-[10px] font-black uppercase tracking-widest text-slate-600">{section}</p>
+            </div>
+            {items.map(m => (
+              <NavItem key={m.id} module={m} active={activeTab === m.id} onSelect={id => { onSelect(id); onClose?.(); }} />
+            ))}
+          </React.Fragment>
+        );
+      })}
+    </nav>
+    <div className="p-4 border-t border-slate-800 mt-auto">
+      <div className="mb-4">
+        <p className="text-[9px] font-black text-slate-500 uppercase tracking-[0.18em] mb-2 px-1">Appearance</p>
+        <ThemeToggle />
+      </div>
+      <div className="flex items-center gap-3 mb-4 bg-slate-800/50 p-3 rounded-2xl">
+        <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-black ${isReadOnly ? 'bg-emerald-400 text-emerald-950' : 'bg-indigo-400 text-indigo-950'}`}>
+          {user.email?.[0].toUpperCase()}
+        </div>
+        <div className="overflow-hidden">
+          <div className="flex items-center gap-1.5">
+            <p className="text-[10px] font-black text-slate-500 uppercase tracking-tighter">{role} Access</p>
+            {isReadOnly && <Eye size={10} className="text-emerald-400" />}
+          </div>
+          <p className="text-xs font-bold truncate text-slate-200">{user.email}</p>
+          {role === 'manager' && (
+            <p className="mt-1 text-[9px] font-black uppercase tracking-wider text-indigo-300">
+              {userProfile.assignedOutlet ? `${getOutletName(userProfile.assignedOutlet)} Store` : 'HQ · All Stores'}
+            </p>
+          )}
+        </div>
+      </div>
+      <button onClick={onSignOut} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-bold text-slate-500 hover:text-rose-400 hover:bg-rose-50/5 rounded-xl transition-all">
+        <LogOut size={16} /> <span>Sign Out</span>
+      </button>
+    </div>
+  </>
+);
+
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
@@ -57,6 +128,7 @@ const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<ModuleId>('exec-dashboard');
   const [userGroup, setUserGroup] = useState<UserGroup | null>(null);
   const [showTimeoutWarning, setShowTimeoutWarning] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [primaryCashAccount, setPrimaryCashAccount] = useState<BankAccount | null>(null);
   const [primaryTenKAccount, setPrimaryTenKAccount] = useState<BankAccount | null>(null);
 
@@ -65,6 +137,11 @@ const App: React.FC = () => {
   const WARN_LABEL = userProfile?.role === 'crew' ? '5 minutes' : '1 minute';
   const warnTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const logoutTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleSignOut = useCallback(() => {
+    clearLoginActivitySession();
+    void signOut(auth);
+  }, []);
 
   const clearTimers = useCallback(() => {
     if (warnTimer.current) clearTimeout(warnTimer.current);
@@ -75,8 +152,8 @@ const App: React.FC = () => {
     clearTimers();
     setShowTimeoutWarning(false);
     warnTimer.current = setTimeout(() => setShowTimeoutWarning(true), WARN_MS);
-    logoutTimer.current = setTimeout(() => signOut(auth), INACTIVE_MS);
-  }, [clearTimers, INACTIVE_MS, WARN_MS]);
+    logoutTimer.current = setTimeout(handleSignOut, INACTIVE_MS);
+  }, [clearTimers, handleSignOut, INACTIVE_MS, WARN_MS]);
 
   useEffect(() => {
     if (!user) { clearTimers(); return; }
@@ -102,6 +179,7 @@ const App: React.FC = () => {
               profile.ownerId = profile.uid;
             }
             setUserProfile(profile);
+            void recordLoginActivity(u, profile);
             // Landing tab comes from the same resolver the sidebar uses, so an
             // account can never open on a module its group does not include.
             // No group is loaded yet at this point, so this is the role default;
@@ -118,6 +196,7 @@ const App: React.FC = () => {
             };
             await setDoc(doc(db, 'users', u.uid), newProfile);
             setUserProfile(newProfile);
+            void recordLoginActivity(u, newProfile);
             const initial = landingModule('viewer', resolveAllowedModules(newProfile, null));
             if (initial) setActiveTab(initial);
           }
@@ -129,6 +208,7 @@ const App: React.FC = () => {
           if (initial) setActiveTab(initial);
         }
       } else {
+        clearLoginActivitySession();
         setUser(null);
         setUserProfile(null);
       }
@@ -279,12 +359,13 @@ const App: React.FC = () => {
            </div>
 
            <div className="flex items-center gap-4">
+              <ThemeToggle compact />
               <div className="hidden lg:block text-right">
                  <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1">Authenticated As</p>
                  <p className="text-xs font-bold text-slate-300">{user.email}</p>
               </div>
               <button
-                onClick={() => signOut(auth)}
+                onClick={handleSignOut}
                 className="flex items-center gap-2 px-5 py-3 bg-rose-500/10 text-rose-400 rounded-2xl font-black text-[11px] uppercase tracking-widest border border-rose-500/20 transition-all hover:bg-rose-500 hover:text-white"
               >
                 <LogOut size={16} /> Sign Out
@@ -304,7 +385,7 @@ const App: React.FC = () => {
 
 
   return (
-    <div className="min-h-screen flex flex-col md:flex-row bg-slate-50">
+    <div className="app-shell min-h-screen flex bg-slate-50">
       {showTimeoutWarning && (
         <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 backdrop-blur-sm">
           <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-sm w-full mx-4 text-center space-y-4">
@@ -322,62 +403,30 @@ const App: React.FC = () => {
           </div>
         </div>
       )}
-      <aside className="w-full md:w-64 bg-slate-900 text-white flex-shrink-0 flex flex-col sticky top-0 h-screen overflow-y-auto custom-scrollbar">
-        <div className="p-6 flex items-center gap-3">
-          <div className="p-2 bg-indigo-50 rounded-lg shadow-lg shadow-indigo-500/20">
-            <div className="relative">
-              <Cat className="w-6 h-6 text-indigo-600" />
-              <div className="absolute -top-1 -right-1 w-2 h-2 bg-emerald-500 rounded-full border-2 border-slate-900" />
-            </div>
-          </div>
-          <h1 className="text-xl font-black tracking-tight">Neko Metrics</h1>
+      <header className="md:hidden sticky top-0 z-40 h-16 px-4 bg-slate-900 text-white border-b border-white/5 flex items-center gap-3 shadow-lg">
+        <button type="button" onClick={() => setMobileMenuOpen(true)} aria-label="Open menu" className="p-2.5 -ml-2 rounded-xl text-slate-200 hover:bg-slate-800"><Menu size={22} /></button>
+        <div className="min-w-0 flex-1">
+          <p className="text-[9px] font-black uppercase tracking-widest text-slate-500">NekoMetrics</p>
+          <p className="text-sm font-black truncate">{activeModule?.label || 'Dashboard'}</p>
         </div>
-        
-        <nav className="mt-6 px-4 space-y-1.5 flex-1">
-          {MODULE_SECTIONS.map(section => {
-            const items = MODULES.filter(m => m.section === section && allowed.has(m.id));
-            // Sections with nothing in them are not rendered. Previously the
-            // Executive and Crew Terminal headings were unconditional, so a viewer
-            // saw two headings with no entries under them.
-            if (items.length === 0) return null;
-            return (
-              <React.Fragment key={section}>
-                <div className="pt-4 pb-2 px-4 first:pt-0">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-600">{section}</p>
-                </div>
-                {items.map(m => (
-                  <NavItem key={m.id} module={m} active={activeTab === m.id} onSelect={setActiveTab} />
-                ))}
-              </React.Fragment>
-            );
-          })}
-        </nav>
+        <ThemeToggle compact />
+      </header>
 
-        <div className="p-4 border-t border-slate-800 mt-auto">
-          <div className="flex items-center gap-3 mb-4 bg-slate-800/50 p-3 rounded-2xl">
-            <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-black ${isReadOnly ? 'bg-emerald-400 text-emerald-950' : 'bg-indigo-400 text-indigo-950'}`}>
-              {user.email?.[0].toUpperCase()}
-            </div>
-            <div className="overflow-hidden">
-              <div className="flex items-center gap-1.5">
-                <p className="text-[10px] font-black text-slate-500 uppercase tracking-tighter">{role} Access</p>
-                {isReadOnly && <Eye size={10} className="text-emerald-400" />}
-              </div>
-              <p className="text-xs font-bold truncate text-slate-200">{user.email}</p>
-            </div>
-          </div>
-          <button
-            onClick={() => signOut(auth)}
-            className="w-full flex items-center gap-3 px-4 py-3 text-sm font-bold text-slate-500 hover:text-rose-400 hover:bg-rose-50/5 rounded-xl transition-all"
-          >
-            <LogOut size={16} />
-            <span>Sign Out</span>
-          </button>
+      {mobileMenuOpen && (
+        <div className="md:hidden fixed inset-0 z-[100] flex">
+          <button type="button" aria-label="Close menu" onClick={() => setMobileMenuOpen(false)} className="absolute inset-0 bg-slate-950/55 backdrop-blur-sm" />
+          <aside className="relative z-10 w-[min(20rem,88vw)] h-full bg-slate-900 text-white flex flex-col overflow-y-auto shadow-2xl custom-scrollbar">
+            <AppSidebar user={user} userProfile={userProfile} role={role} isReadOnly={isReadOnly} allowed={allowed} activeTab={activeTab} onSelect={setActiveTab} onSignOut={handleSignOut} onClose={() => setMobileMenuOpen(false)} />
+          </aside>
         </div>
+      )}
+
+      <aside className="hidden md:flex w-64 bg-slate-900 text-white flex-shrink-0 flex-col sticky top-0 h-screen overflow-y-auto custom-scrollbar">
+        <AppSidebar user={user} userProfile={userProfile} role={role} isReadOnly={isReadOnly} allowed={allowed} activeTab={activeTab} onSelect={setActiveTab} onSignOut={handleSignOut} />
       </aside>
 
-      <main className="flex-1 overflow-y-auto">
-        <div className="max-w-7xl mx-auto p-6 md:p-10">
+      <main className="flex-1 min-w-0 md:overflow-y-auto">
+        <div className="max-w-7xl mx-auto p-4 sm:p-6 md:p-10">
           {isReadOnly && !activeModule?.suppressReadOnlyBanner && (
             <div className="bg-emerald-50 border border-emerald-100 p-4 rounded-xl flex items-center gap-3 mb-8">
                <Eye className="text-emerald-600" size={18} />
@@ -396,7 +445,7 @@ const App: React.FC = () => {
             ) : activeModule.render ? (
               activeModule.render({ user, userProfile, dataOwnerId, isReadOnly, goTo: setActiveTab, goToLanding })
             ) : (
-              <activeModule.Component user={user} dataOwnerId={dataOwnerId} />
+              <activeModule.Component user={user} userProfile={userProfile} dataOwnerId={dataOwnerId} />
             )}
           </Suspense>
         </div>

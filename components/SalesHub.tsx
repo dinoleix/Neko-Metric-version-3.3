@@ -4,7 +4,8 @@ import type { User } from 'firebase/auth';
 import { collection, query, getDocs, where, limit } from 'firebase/firestore';
 import { db } from '../firebase';
 import { getCachedCollection } from '../referenceCache';
-import { SalesMonthlySnapshot, DailySalesLog, SalesSummaryRecord, StoreRental, SkuMapping, SkuCategory, getOutletName, YEAR_OPTIONS, MONTH_NAMES } from '../types';
+import { SalesMonthlySnapshot, DailySalesLog, SalesSummaryRecord, StoreRental, SkuMapping, SkuCategory, UserProfile, getOutletName, YEAR_OPTIONS, MONTH_NAMES } from '../types';
+import { managerOutlet, outletConstraint, rowsInManagerScope } from '../outletScope';
 import { 
   TrendingUp,
   RefreshCw,
@@ -58,7 +59,8 @@ const OUTLET_COLORS: Record<string, string> = {
   'default': '#94a3b8'
 };
 
-const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
+const SalesHub: React.FC<{ user: User; userProfile?: UserProfile; dataOwnerId: string }> = ({ user, userProfile, dataOwnerId }) => {
+  const scopedOutlet = managerOutlet(userProfile);
   const [snapshots, setSnapshots] = useState<SalesMonthlySnapshot[]>([]);
   const [rentals, setRentals] = useState<StoreRental[]>([]);
   const [dailySalesLogs, setDailySalesLogs] = useState<DailySalesLog[]>([]);
@@ -75,7 +77,7 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
   const [endMonth, setEndMonth] = useState(MONTH_NAMES[new Date().getMonth()]);
   const [endYear, setEndYear] = useState(new Date().getFullYear().toString());
   
-  const [storeFilter, setStoreFilter] = useState<'all' | string>('all');
+  const [storeFilter, setStoreFilter] = useState<'all' | string>(scopedOutlet || 'all');
   const [chartType, setChartType] = useState<ChartType>('line');
   const [outletChartType, setOutletChartType] = useState<ChartType>('line');
   const [trafficChannel, setTrafficChannel] = useState<'all' | 'dinein' | 'online'>('all');
@@ -86,13 +88,13 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
     setLoading(true);
     setError('');
     try {
-      const snapQ = query(collection(db, 'sales_snapshots'), where('userId', '==', dataOwnerId));
+      const snapQ = query(collection(db, 'sales_snapshots'), where('userId', '==', dataOwnerId), ...outletConstraint(userProfile));
       const [sSnap, rentArr] = await Promise.all([
         getDocs(snapQ),
-        getCachedCollection<StoreRental>('rentals', dataOwnerId)
+        getCachedCollection<StoreRental>('rentals', dataOwnerId, 'userId', scopedOutlet)
       ]);
       setSnapshots(sSnap.docs.map(d => ({ ...d.data(), id: d.id } as SalesMonthlySnapshot)));
-      setRentals(rentArr);
+      setRentals(rowsInManagerScope(rentArr, userProfile));
     } catch (err: any) {
       setError("Failed to sync intelligence suite.");
     } finally { setLoading(false); }
@@ -113,7 +115,7 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
     const run = async (field: 'ownerId' | 'userId') => {
       try {
         const snap = await getDocs(query(collection(db, 'daily_sales_logs'),
-          where(field, '==', dataOwnerId), where('date', '>=', start), where('date', '<=', end)));
+          where(field, '==', dataOwnerId), ...outletConstraint(userProfile), where('date', '>=', start), where('date', '<=', end)));
         return { docs: snap.docs, failed: false };
       } catch (err) {
         console.warn(`[SalesHub] daily_sales_logs ${field} query failed:`, err);
@@ -128,7 +130,7 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
     const runSales = async () => {
       try {
         const snap = await getDocs(query(collection(db, 'sales_summary'),
-          where('userId', '==', dataOwnerId), where('date', '>=', start), where('date', '<=', end)));
+          where('userId', '==', dataOwnerId), ...outletConstraint(userProfile), where('date', '>=', start), where('date', '<=', end)));
         return { docs: snap.docs, failed: false };
       } catch (err) {
         console.warn('[SalesHub] sales_summary recon query failed:', err);
@@ -149,8 +151,8 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
     setReconLoadFailed((byOwner.failed && byUser.failed) || sales.failed);
   };
 
-  useEffect(() => { fetchData(); }, [user]);
-  useEffect(() => { fetchReconLogs(); }, [dataOwnerId, reconMonth, reconYear]);
+  useEffect(() => { fetchData(); }, [user, scopedOutlet]);
+  useEffect(() => { fetchReconLogs(); }, [dataOwnerId, reconMonth, reconYear, scopedOutlet]);
 
   const activeOutletOptions = useMemo(() => {
     const startMonthIdx = MONTH_NAMES.indexOf(startMonth);
@@ -415,7 +417,7 @@ const SalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwn
             <div className="bg-white px-4 py-2.5 rounded-xl border border-slate-100 shadow-sm flex items-center gap-2">
               <MapPin size={14} className="text-indigo-500" />
               <select value={storeFilter} onChange={e => setStoreFilter(e.target.value)} className="bg-transparent font-bold text-xs outline-none uppercase tracking-tight">
-                <option value="all">All Active Outlets</option>
+                {!scopedOutlet && <option value="all">All Active Outlets</option>}
                 {activeOutletOptions.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
               </select>
             </div>

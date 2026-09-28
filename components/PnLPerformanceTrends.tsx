@@ -23,9 +23,11 @@ import { db } from '../firebase';
 import { 
   SalesMonthlySnapshot, 
   PnLMonthlySnapshot, 
+  UserProfile,
   MONTH_NAMES,
   getOutletName
 } from '../types';
+import { outletConstraint } from '../outletScope';
 import { 
   TrendingUp, 
   Calendar, 
@@ -44,6 +46,7 @@ interface PnLPerformanceTrendsProps {
   dataOwnerId: string;
   selectedOutlets: string[];
   rentals: any[];
+  userProfile?: UserProfile;
 }
 
 const METRIC_CONFIG = {
@@ -59,7 +62,7 @@ const METRIC_CONFIG = {
   netMargin: { label: 'Net Margin %', color: '#06b6d4', type: 'percent' },
 };
 
-const PnLPerformanceTrends: React.FC<PnLPerformanceTrendsProps> = ({ user, dataOwnerId, selectedOutlets, rentals }) => {
+const PnLPerformanceTrends: React.FC<PnLPerformanceTrendsProps> = ({ user, dataOwnerId, selectedOutlets, rentals, userProfile }) => {
   const [period, setPeriod] = useState<number>(6); // Default 6 months
   const [loading, setLoading] = useState(false);
   const [trendData, setTrendData] = useState<any[]>([]);
@@ -82,11 +85,11 @@ const PnLPerformanceTrends: React.FC<PnLPerformanceTrendsProps> = ({ user, dataO
       // especially since we need multiple months
       const salesQuery = query(
         collection(db, 'sales_snapshots'),
-        where('userId', '==', dataOwnerId)
+        where('userId', '==', dataOwnerId), ...outletConstraint(userProfile)
       );
       const pnlQuery = query(
         collection(db, 'pnl_snapshots'),
-        where('userId', '==', dataOwnerId)
+        where('userId', '==', dataOwnerId), ...outletConstraint(userProfile)
       );
 
       const [salesSnap, pnlSnap] = await Promise.all([

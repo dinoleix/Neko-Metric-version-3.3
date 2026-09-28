@@ -19,8 +19,10 @@ import {
   CategorySettings,
   YEAR_OPTIONS,
   MONTH_NAMES,
-  ALWAYS_EXCLUDED_PURCHASE_CATEGORIES
+  ALWAYS_EXCLUDED_PURCHASE_CATEGORIES,
+  UserProfile
 } from '../types';
+import { managerOutlet, outletConstraint, rowsInManagerScope } from '../outletScope';
 import { 
   Receipt, 
   RefreshCw, 
@@ -76,7 +78,8 @@ const PILLAR_COLORS: Record<string, string> = {
   'UNCATEGORIZED': '#ef4444' // Bright Red
 };
 
-const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
+const ExpenseHub: React.FC<{ user: User; userProfile?: UserProfile; dataOwnerId: string }> = ({ user, userProfile, dataOwnerId }) => {
+  const scopedOutlet = managerOutlet(userProfile);
   const [snapshots, setSnapshots] = useState<ExpenseMonthlySnapshot[]>([]);
   const [rentals, setRentals] = useState<StoreRental[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -95,7 +98,7 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
 
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear().toString());
   const [selectedMonth, setSelectedMonth] = useState(MONTH_NAMES[new Date().getMonth()]);
-  const [storeFilter, setStoreFilter] = useState<'all' | string>('all');
+  const [storeFilter, setStoreFilter] = useState<'all' | string>(scopedOutlet || 'all');
   const [viewMode, setViewMode] = useState<ViewMode>('combined');
   const [cogsVisualMode, setCogsVisualMode] = useState<CogsVisualMode>('pie');
   
@@ -118,12 +121,12 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
       const yearRange = [yearInt.toString(), (yearInt - 1).toString()];
       const settingsRef = doc(db, 'category_settings', dataOwnerId);
       const [snapSnap, rentArr, empArr, payArr, adjSnap, setSnap] = await Promise.all([
-        getDocs(query(collection(db, 'expense_snapshots'), where('userId', '==', dataOwnerId), where('year', 'in', yearRange))),
-        getCachedCollection<StoreRental>('rentals', dataOwnerId),
-        getCachedCollection<Employee>('employees', dataOwnerId),
-        getCachedCollection<MonthlyPayroll>('monthly_payrolls', dataOwnerId),
+        getDocs(query(collection(db, 'expense_snapshots'), where('userId', '==', dataOwnerId), ...outletConstraint(userProfile), where('year', 'in', yearRange))),
+        getCachedCollection<StoreRental>('rentals', dataOwnerId, 'userId', scopedOutlet),
+        getCachedCollection<Employee>('employees', dataOwnerId, 'userId', scopedOutlet),
+        getCachedCollection<MonthlyPayroll>('monthly_payrolls', dataOwnerId, 'userId', scopedOutlet),
         // Bounded read: cogs_adjustments carries a `year` (zigzag-merge, no composite index needed)
-        getDocs(query(collection(db, 'cogs_adjustments'), where('userId', '==', dataOwnerId), where('year', 'in', yearRange))),
+        getDocs(query(collection(db, 'cogs_adjustments'), where('userId', '==', dataOwnerId), ...outletConstraint(userProfile), where('year', 'in', yearRange))),
         getDoc(settingsRef)
       ]);
       
@@ -137,9 +140,9 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
       }
 
       setSnapshots(snapSnap.docs.map(d => ({ ...d.data(), id: d.id } as ExpenseMonthlySnapshot)));
-      setRentals(rentArr);
-      setEmployees(empArr);
-      setMonthlyPayrolls(payArr);
+      setRentals(rowsInManagerScope(rentArr, userProfile));
+      setEmployees(rowsInManagerScope(empArr, userProfile));
+      setMonthlyPayrolls(rowsInManagerScope(payArr, userProfile));
       setAdjustments(adjSnap.docs.map(d => ({ ...d.data(), id: d.id } as CogsAdjustment)));
     } catch (err: any) {
       console.error(err);
@@ -148,7 +151,7 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
     }
   };
 
-  useEffect(() => { fetchData(); }, [user, selectedYear]);
+  useEffect(() => { fetchData(); }, [user, selectedYear, scopedOutlet]);
 
   // Cash basis by default: the crew* maps hold settled spend only, matching
   // P&L Command. Turning this on folds in the crewPending* maps (committed but
@@ -631,7 +634,7 @@ const ExpenseHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataO
           <div className="px-4 py-2 bg-slate-50 rounded-2xl flex items-center gap-2 border border-slate-100">
             <MapPin size={14} className="text-rose-500" />
             <select value={storeFilter} onChange={e => setStoreFilter(e.target.value)} className="bg-transparent font-bold text-[10px] outline-none uppercase tracking-tight">
-              <option value="all">All Active Outlets</option>
+              {!scopedOutlet && <option value="all">All Active Outlets</option>}
               {activeOutletOptions.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
             </select>
           </div>

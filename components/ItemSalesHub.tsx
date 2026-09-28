@@ -17,8 +17,10 @@ import {
   ServingOption,
   StoreTier,
   YEAR_OPTIONS,
-  MONTH_NAMES
+  MONTH_NAMES,
+  UserProfile
 } from '../types';
+import { managerOutlet, outletConstraint, rowsInManagerScope } from '../outletScope';
 import { 
   History,
   RefreshCw, 
@@ -68,8 +70,6 @@ import {
   Scale,
   Check,
   Filter,
-  Maximize2,
-  X as CloseIcon
 } from 'lucide-react';
 import { getItemChannelValues, CHANNEL_MODE_OPTIONS, ItemChannelMode } from '../itemChannels';
 
@@ -101,7 +101,8 @@ interface Combo {
   avgOrderValue: number;
 }
 
-const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
+const ItemSalesHub: React.FC<{ user: User; userProfile?: UserProfile; dataOwnerId: string }> = ({ user, userProfile, dataOwnerId }) => {
+  const scopedOutlet = managerOutlet(userProfile);
   const [snapshots, setSnapshots] = useState<ItemMonthlySnapshot[]>([]);
   const [salesSnaps, setSalesSnaps] = useState<SalesMonthlySnapshot[]>([]);
   const [rentals, setRentals] = useState<StoreRental[]>([]);
@@ -111,7 +112,7 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
   const [normalizationMap, setNormalizationMap] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
   
-  const [storeFilter, setStoreFilter] = useState('all');
+  const [storeFilter, setStoreFilter] = useState(scopedOutlet || 'all');
   const [channelMode, setChannelMode] = useState<ItemChannelMode>('all');
   const [selectedMonth, setSelectedMonth] = useState(MONTH_NAMES[new Date().getMonth()]);
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear().toString());
@@ -123,25 +124,18 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
   const [activeTab, setActiveTab] = useState<InsightTab>('matrix');
   const [historyCategory, setHistoryCategory] = useState<string>('all');
   const [selectedItemName, setSelectedItemName] = useState<string | null>(null);
+  const [comparisonItemNames, setComparisonItemNames] = useState<string[]>([]);
+  const [comparisonMetric, setComparisonMetric] = useState<'units' | 'revenue'>('units');
+  const [dashboardCategory, setDashboardCategory] = useState<string>('all');
+  const [selectedDashboardItem, setSelectedDashboardItem] = useState<AggregatedItem | null>(null);
   
   const [hoveredBubble, setHoveredBubble] = useState<{ x: number, y: number, item: AggregatedItem } | null>(null);
-  const [isMatrixFullscreen, setIsMatrixFullscreen] = useState(false);
-
-  useEffect(() => {
-    if (!isMatrixFullscreen) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { setHoveredBubble(null); setIsMatrixFullscreen(false); } };
-    window.addEventListener('keydown', onKey);
-    // Stop the page behind the overlay from scrolling while it's open.
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => { window.removeEventListener('keydown', onKey); document.body.style.overflow = prevOverflow; };
-  }, [isMatrixFullscreen]);
 
   const fetchData = async () => {
     if (!user?.uid) return;
     setLoading(true);
     try {
-      let constraints = [where('userId', '==', dataOwnerId)];
+      let constraints = [where('userId', '==', dataOwnerId), ...outletConstraint(userProfile)];
       
       if (analysisPeriod === 'custom') {
         constraints.push(where('year', '==', selectedYear));
@@ -163,7 +157,7 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
         // and without it an online margin can't be shown net of the aggregator's cut.
         // Same period constraints, so this stays date-windowed rather than unbounded.
         getDocs(query(collection(db, 'sales_snapshots'), ...constraints)),
-        getCachedCollection<StoreRental>('rentals', dataOwnerId),
+        getCachedCollection<StoreRental>('rentals', dataOwnerId, 'userId', scopedOutlet),
         getCachedCollection<ItemCost>('item_costs', dataOwnerId),
         getCachedCollection<SkuMapping>('sku_mappings', dataOwnerId),
         getCachedCollection<ServingOption>('serving_options', dataOwnerId),
@@ -185,7 +179,7 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
 
       setSnapshots(fetchedSnaps);
       setSalesSnaps(salesSnap.docs.map(d => d.data() as SalesMonthlySnapshot));
-      setRentals(rentalsArr);
+      setRentals(rowsInManagerScope(rentalsArr, userProfile));
       setItemCosts(costsArr);
       setServingOptions(servingArr);
 
@@ -203,7 +197,7 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
     } catch (err) { console.error(err); } finally { setLoading(false); }
   };
 
-  useEffect(() => { fetchData(); }, [user, selectedYear, selectedMonth, analysisPeriod]);
+  useEffect(() => { fetchData(); }, [user, selectedYear, selectedMonth, analysisPeriod, scopedOutlet]);
 
   // Rentals are the source of truth for operational outlets. Closed stores stay
   // in their historical records but must not appear in current analytics scope.
@@ -390,6 +384,15 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
     };
   }, [snapshots, storeFilter, channelMode, selectedMonth, itemCosts, normalizationMap, skuMappings, rentals, selectedSegments, rankingLimit, activeOutletIds]);
 
+  useEffect(() => {
+    if (!intelligence) {
+      setComparisonItemNames([]);
+      return;
+    }
+    const available = new Set(intelligence.items.map(item => item.name));
+    setComparisonItemNames(current => current.filter(name => available.has(name)));
+  }, [intelligence]);
+
   // Per-item in-store vs online comparison. Online list prices are marked up to
   // absorb commission, so comparing raw prices is meaningless — the online side is
   // shown net of the aggregator's cut, which is the only basis on which the two
@@ -463,82 +466,123 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
     return { rows, takePercent, requiredMarkupPct: takePercent < 100 ? (takePercent / (100 - takePercent)) * 100 : 0 };
   }, [snapshots, salesSnaps, storeFilter, itemCosts, normalizationMap, rentals, skuMappings, selectedSegments, activeOutletIds]);
 
-  // Plain function rather than a component so the fullscreen and inline copies don't
-  // remount (and lose hover state) on every parent render. labelCount rises in
-  // fullscreen, where there's room to name far more bubbles without collisions.
-  const renderMatrixSvg = (labelCount: number) => {
+  // Zero-price modifiers (for example ICE, COLD, packing choices) carry unit
+  // counts but no product revenue. They remain in the ledger, but including them
+  // in menu recommendations makes them look like urgent low-margin products.
+  const dashboardItems = intelligence?.items.filter(item =>
+    item.revenue > 0 && item.avgPrice > 0 &&
+    (dashboardCategory === 'all' || item.segment === dashboardCategory)
+  ) || [];
+
+  const dashboardGroups = intelligence ? [
+    { id: 'star', label: 'Stars', hint: 'Strong volume + strong margin', color: 'emerald', items: dashboardItems.filter(item => item.quadrant === 'star') },
+    { id: 'reprice', label: 'Reprice', hint: 'Strong volume + weak margin', color: 'amber', items: dashboardItems.filter(item => item.quadrant === 'reprice') },
+    { id: 'promote', label: 'Promote', hint: 'Low volume + strong margin', color: 'indigo', items: dashboardItems.filter(item => item.quadrant === 'promote') },
+    { id: 'review', label: 'Review', hint: 'Low volume + weak margin', color: 'rose', items: dashboardItems.filter(item => item.quadrant === 'dog') },
+  ] : [];
+
+  const recommendationFor = (item: AggregatedItem) => item.quadrant === 'star'
+    ? 'Protect'
+    : item.quadrant === 'reprice'
+      ? 'Reprice'
+      : item.quadrant === 'promote'
+        ? 'Promote'
+        : 'Review';
+
+  const opportunityScore = (item: AggregatedItem) => {
+    if (!intelligence) return 0;
+    // Percentage margin keeps low-price add-ons from outranking full menu items
+    // merely because their rupee margin sits far below the portfolio median.
+    if (item.quadrant === 'reprice') return item.revenue * Math.max(0, 60 - item.marginPercent) / 100;
+    if (item.quadrant === 'promote') return Math.max(0, item.margin) * Math.max(1, intelligence.medianQty - item.quantity);
+    if (item.quadrant === 'dog') return item.revenue;
+    return Math.max(0, item.margin) * item.quantity;
+  };
+
+  // Equal-size dots plus a small deterministic collision adjustment make dense
+  // product clusters readable without changing the underlying axes.
+  const renderDashboardSvg = () => {
     if (!intelligence) return null;
-    const PAD_L = 78, PAD_R = 26, PAD_T = 26, PAD_B = 54;
+    const chartItems = [...dashboardItems].sort((a, b) => b.revenue - a.revenue).slice(0, 30);
+    const PAD_L = 78, PAD_R = 26, PAD_T = 30, PAD_B = 54;
     const W = 1000 - PAD_L - PAD_R;
-    const H = 460 - PAD_T - PAD_B;
-    const maxQ = intelligence.maxQty || 1;
-    const minM = Math.min(intelligence.minMargin, 0);
-    const maxM = Math.max(intelligence.maxMargin, minM + 1);
+    const H = 420 - PAD_T - PAD_B;
+    const maxQ = Math.max(...chartItems.map(item => item.quantity), 1);
+    const minM = Math.min(...chartItems.map(item => item.margin), 0);
+    const maxM = Math.max(...chartItems.map(item => item.margin), minM + 1);
     const x = (q: number) => PAD_L + (q / maxQ) * W;
     const y = (m: number) => PAD_T + (1 - (m - minM) / (maxM - minM)) * H;
-    const cx = x(intelligence.medianQty);
-    const cy = y(intelligence.medianMargin);
-    const trendColor = (s: string) => s === 'rising' ? '#10b981' : (s === 'declining' ? '#f43f5e' : '#94a3b8');
-    const byProfit = [...intelligence.items].sort((a, b) => (b.margin * b.quantity) - (a.margin * a.quantity));
-    const labelled = new Set(byProfit.slice(0, labelCount).map(i => i.name));
+    const cx = Math.max(PAD_L, Math.min(1000 - PAD_R, x(intelligence.medianQty)));
+    const cy = Math.max(PAD_T, Math.min(420 - PAD_B, y(intelligence.medianMargin)));
+    const trendColor = (s: string) => s === 'rising' ? '#10b981' : (s === 'declining' ? '#f43f5e' : '#f59e0b');
+    const byProfit = [...chartItems].sort((a, b) => (b.margin * b.quantity) - (a.margin * a.quantity));
+    const labelled = new Set(byProfit.slice(0, 4).map(item => item.name));
+    const placed: Array<{ item: AggregatedItem; px: number; py: number }> = [];
+    byProfit.forEach(item => {
+      const baseX = x(item.quantity);
+      const baseY = y(item.margin);
+      let px = baseX, py = baseY;
+      for (let attempt = 0; attempt < 18 && placed.some(point => Math.hypot(point.px - px, point.py - py) < 18); attempt++) {
+        const radius = 7 + Math.floor(attempt / 4) * 7;
+        const angle = attempt * 2.4;
+        px = Math.max(PAD_L + 7, Math.min(1000 - PAD_R - 7, baseX + Math.cos(angle) * radius));
+        py = Math.max(PAD_T + 7, Math.min(420 - PAD_B - 7, baseY + Math.sin(angle) * radius));
+      }
+      placed.push({ item, px, py });
+    });
     const quadrants = [
-      { label: 'Puzzles', hint: 'Promote', qx: PAD_L + 8, qy: PAD_T + 20, color: '#6366f1' },
-      { label: 'Stars', hint: 'Protect', qx: 1000 - PAD_R - 8, qy: PAD_T + 20, color: '#10b981', anchor: 'end' },
-      { label: 'Dogs', hint: 'Cut or rework', qx: PAD_L + 8, qy: 460 - PAD_B - 10, color: '#f43f5e' },
-      { label: 'Plow-horses', hint: 'Reprice / cut cost', qx: 1000 - PAD_R - 8, qy: 460 - PAD_B - 10, color: '#f59e0b', anchor: 'end' },
+      { label: 'Promote', qx: PAD_L + 8, qy: PAD_T + 20, color: '#6366f1' },
+      { label: 'Stars', qx: 1000 - PAD_R - 8, qy: PAD_T + 20, color: '#10b981', anchor: 'end' },
+      { label: 'Review', qx: PAD_L + 8, qy: 420 - PAD_B - 10, color: '#f43f5e' },
+      { label: 'Reprice', qx: 1000 - PAD_R - 8, qy: 420 - PAD_B - 10, color: '#f59e0b', anchor: 'end' },
     ];
 
     return (
-      <svg viewBox="0 0 1000 460" className="w-full h-full overflow-visible">
-        <rect x={cx} y={PAD_T} width={Math.max(0, 1000 - PAD_R - cx)} height={Math.max(0, cy - PAD_T)} fill="#10b981" opacity="0.04" />
-        <rect x={PAD_L} y={cy} width={Math.max(0, cx - PAD_L)} height={Math.max(0, 460 - PAD_B - cy)} fill="#f43f5e" opacity="0.04" />
-
+      <svg viewBox="0 0 1000 420" className="w-full h-auto overflow-visible" role="img" aria-label="Item portfolio showing units sold against margin per item">
         {[0, 0.25, 0.5, 0.75, 1].map((p, i) => (
           <g key={i}>
             <line x1={PAD_L} y1={PAD_T + p * H} x2={1000 - PAD_R} y2={PAD_T + p * H} stroke="#e2e8f0" strokeWidth="1" />
             <text x={PAD_L - 10} y={PAD_T + p * H + 4} textAnchor="end" className="text-[11px] font-bold fill-slate-400">
               ₹{Math.round(maxM - p * (maxM - minM))}
             </text>
-            <text x={PAD_L + p * W} y={460 - PAD_B + 22} textAnchor="middle" className="text-[11px] font-bold fill-slate-400">
+            <text x={PAD_L + p * W} y={420 - PAD_B + 22} textAnchor="middle" className="text-[11px] font-bold fill-slate-400">
               {Math.round(p * maxQ)}
             </text>
           </g>
         ))}
 
         {minM < 0 && <line x1={PAD_L} y1={y(0)} x2={1000 - PAD_R} y2={y(0)} stroke="#f43f5e" strokeWidth="1.5" strokeDasharray="2 3" />}
-        <line x1={cx} y1={PAD_T} x2={cx} y2={460 - PAD_B} stroke="#94a3b8" strokeWidth="1.5" strokeDasharray="5 4" />
+        <line x1={cx} y1={PAD_T} x2={cx} y2={420 - PAD_B} stroke="#94a3b8" strokeWidth="1.5" strokeDasharray="5 4" />
         <line x1={PAD_L} y1={cy} x2={1000 - PAD_R} y2={cy} stroke="#94a3b8" strokeWidth="1.5" strokeDasharray="5 4" />
 
         {quadrants.map(q => (
           <text key={q.label} x={q.qx} y={q.qy} textAnchor={(q.anchor as any) || 'start'} className="text-[13px] font-black uppercase tracking-widest" fill={q.color} opacity="0.55">
-            {q.label}<tspan className="text-[10px] font-bold"> · {q.hint}</tspan>
+            {q.label}
           </text>
         ))}
 
-        {byProfit.map((item, idx) => {
-          const profit = item.margin * item.quantity;
-          const r = 5 + Math.sqrt(Math.max(0, profit) / intelligence.maxProfitContribution) * 24;
-          const px = x(item.quantity), py = y(item.margin);
+        {placed.map(({ item, px, py }) => {
           return (
-            <g key={idx}>
+            <g key={item.name}>
               <circle
-                cx={px} cy={py} r={r}
-                fill={trendColor(item.trendStatus)} fillOpacity="0.28"
-                stroke={trendColor(item.trendStatus)} strokeWidth="2"
-                className="transition-all hover:fill-opacity-70 cursor-pointer"
+                cx={px} cy={py} r={selectedDashboardItem?.name === item.name ? 9 : 6}
+                fill={trendColor(item.trendStatus)} fillOpacity={selectedDashboardItem?.name === item.name ? 1 : 0.78}
+                stroke="white" strokeWidth="2"
+                className="transition-all cursor-pointer"
+                onClick={() => setSelectedDashboardItem(item)}
                 onMouseEnter={(e) => { const rect = e.currentTarget.getBoundingClientRect(); setHoveredBubble({ x: rect.left + rect.width / 2, y: rect.top, item }); }}
                 onMouseLeave={() => setHoveredBubble(null)}
               />
               {labelled.has(item.name) && (
-                <text x={px} y={py - r - 6} textAnchor="middle" className="text-[10px] font-black fill-slate-600 pointer-events-none">
-                  {item.name.length > 18 ? `${item.name.slice(0, 18)}…` : item.name}
+                <text x={px > 820 ? px - 9 : px + 9} y={py - 8} textAnchor={px > 820 ? 'end' : 'start'} className="text-[10px] font-black fill-slate-600 pointer-events-none">
+                  {item.name.length > 15 ? `${item.name.slice(0, 15)}…` : item.name}
                 </text>
               )}
             </g>
           );
         })}
 
-        <text x={PAD_L + W / 2} y={458} textAnchor="middle" className="text-[11px] font-black uppercase tracking-widest fill-slate-400">Units Sold →</text>
+        <text x={PAD_L + W / 2} y={418} textAnchor="middle" className="text-[11px] font-black uppercase tracking-widest fill-slate-400">Units Sold →</text>
         <text x={16} y={PAD_T + H / 2} textAnchor="middle" transform={`rotate(-90 16 ${PAD_T + H / 2})`} className="text-[11px] font-black uppercase tracking-widest fill-slate-400">Margin / Unit →</text>
       </svg>
     );
@@ -581,7 +625,7 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
             </>
           )}
           
-          <div className="bg-white px-4 py-2.5 rounded-xl border border-slate-100 shadow-sm flex items-center gap-2"><MapPin size={14} className="text-emerald-500" /><select value={storeFilter} onChange={e => setStoreFilter(e.target.value)} className="bg-transparent font-bold text-xs outline-none uppercase tracking-tight"><option value="all">All Active Outlets</option>{activeOutletOptions.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}</select></div>
+          <div className="bg-white px-4 py-2.5 rounded-xl border border-slate-100 shadow-sm flex items-center gap-2"><MapPin size={14} className="text-emerald-500" /><select value={storeFilter} onChange={e => setStoreFilter(e.target.value)} className="bg-transparent font-bold text-xs outline-none uppercase tracking-tight">{!scopedOutlet && <option value="all">All Active Outlets</option>}{activeOutletOptions.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}</select></div>
 
           <div className="bg-white px-4 py-2.5 rounded-xl border border-slate-100 shadow-sm flex items-center gap-2" title="Quantity, revenue and margin respect this filter. Trend history, velocity, and combos have no per-channel breakdown in the data and always reflect combined POS + online."><Smartphone size={14} className="text-emerald-500" /><select value={channelMode} onChange={e => setChannelMode(e.target.value as ItemChannelMode)} className="bg-transparent font-bold text-xs outline-none uppercase tracking-tight">{CHANNEL_MODE_OPTIONS.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}</select></div>
 
@@ -662,38 +706,144 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
         <div className="py-32 bg-white rounded-[3rem] border-2 border-dashed border-slate-200 text-center"><SearchX size={48} className="mx-auto text-slate-200 mb-4" /><h3 className="text-xl font-black text-slate-900">No Snapshot Data</h3></div>
       ) : (
         <>
-          <div className="flex items-center gap-2 bg-slate-200/40 p-1.5 rounded-[2rem] w-fit border border-slate-100 shadow-inner flex-wrap">{(['matrix', 'channels', 'ranking', 'profit', 'velocity', 'trends', 'item-history', 'combos', 'ledger'] as InsightTab[]).map((tab) => (<button key={tab} onClick={() => { setActiveTab(tab); setHoveredBubble(null); }} className={`px-6 py-2.5 rounded-[1.5rem] text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === tab ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-600'}`}>{tab === 'item-history' ? 'Item History' : tab}</button>))}</div>
+          <div className="flex items-center gap-2 bg-slate-200/40 p-1.5 rounded-[2rem] w-fit border border-slate-100 shadow-inner flex-wrap">{(['matrix', 'channels', 'ranking', 'profit', 'velocity', 'trends', 'item-history', 'combos', 'ledger'] as InsightTab[]).map((tab) => (<button key={tab} onClick={() => { setActiveTab(tab); setHoveredBubble(null); }} className={`px-6 py-2.5 rounded-[1.5rem] text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === tab ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-600'}`}>{tab === 'matrix' ? 'Item Dashboard' : tab === 'item-history' ? 'Item History' : tab}</button>))}</div>
           
           <div className="mt-8">
-            {activeTab === 'matrix' && (
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 animate-in slide-in-from-bottom-4 duration-500">
-                <section className="lg:col-span-9 bg-white rounded-[3rem] p-10 border border-slate-100 shadow-sm relative overflow-hidden">
-                  <div className="flex flex-wrap items-start justify-between gap-4 mb-8">
+            {activeTab === 'matrix' && (() => {
+              const totalRevenue = dashboardItems.reduce((sum, item) => sum + item.revenue, 0);
+              const groupValue = (group: typeof dashboardGroups[number]) => {
+                const revenue = group.items.reduce((sum, item) => sum + item.revenue, 0);
+                if (group.id === 'reprice') {
+                  const gap = group.items.reduce((sum, item) => sum + item.revenue * Math.max(0, 60 - item.marginPercent) / 100, 0);
+                  return `₹${Math.round(gap).toLocaleString()} margin gap`;
+                }
+                if (group.id === 'promote') {
+                  const avg = group.items.length ? group.items.reduce((sum, item) => sum + item.marginPercent, 0) / group.items.length : 0;
+                  return `${avg.toFixed(0)}% avg margin`;
+                }
+                return `${totalRevenue > 0 ? Math.round((revenue / totalRevenue) * 100) : 0}% of revenue`;
+              };
+              const colorClasses: Record<string, { text: string; bg: string; border: string }> = {
+                emerald: { text: 'text-emerald-600', bg: 'bg-emerald-50', border: 'hover:border-emerald-300' },
+                amber: { text: 'text-amber-600', bg: 'bg-amber-50', border: 'hover:border-amber-300' },
+                indigo: { text: 'text-indigo-600', bg: 'bg-indigo-50', border: 'hover:border-indigo-300' },
+                rose: { text: 'text-rose-600', bg: 'bg-rose-50', border: 'hover:border-rose-300' },
+              };
+              const sortedByOpportunity = [...dashboardItems].sort((a, b) => opportunityScore(b) - opportunityScore(a));
+              const opportunities = (['reprice', 'promote', 'dog', 'star'] as const)
+                .map(quadrant => sortedByOpportunity.find(item => item.quadrant === quadrant))
+                .filter((item): item is AggregatedItem => Boolean(item));
+              sortedByOpportunity.forEach(item => {
+                if (opportunities.length < 5 && !opportunities.some(existing => existing.name === item.name)) opportunities.push(item);
+              });
+              const selectedInsight = selectedDashboardItem && dashboardItems.some(item => item.name === selectedDashboardItem.name)
+                ? selectedDashboardItem
+                : opportunities[0] || null;
+              const rankedRows = sortedByOpportunity.filter(item => item.quadrant !== 'star').slice(0, 15);
+
+              return (
+                <div className="space-y-6 animate-in slide-in-from-bottom-4 duration-500">
+                  <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
                     <div>
-                      <h3 className="text-2xl font-black text-slate-900 tracking-tight">Menu Engineering Matrix</h3>
-                      <p className="text-slate-400 text-sm font-medium">Popularity vs. Profitability — split at the median of each</p>
+                      <h3 className="text-2xl font-black text-slate-900 tracking-tight">Item Performance Dashboard</h3>
+                      <p className="text-slate-400 text-sm font-medium mt-1">See what to protect, promote, reprice, or review.</p>
                     </div>
-                    <div className="flex items-center gap-4 text-[9px] font-black uppercase tracking-widest">
-                      <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-emerald-500" /> Rising</span>
-                      <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-rose-500" /> Declining</span>
-                      <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-slate-400" /> Flat</span>
-                      <span className="text-slate-400 normal-case font-bold">• bubble = total profit</span>
-                      <button
-                        onClick={() => { setHoveredBubble(null); setIsMatrixFullscreen(true); }}
-                        title="Expand to full screen"
-                        className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-slate-900 text-white hover:bg-indigo-600 transition-all shadow-sm"
-                      >
-                        <Maximize2 size={12} /> Expand
-                      </button>
+                    <div className="bg-white px-4 py-2.5 rounded-xl border border-slate-100 shadow-sm flex items-center gap-2 min-w-[220px]">
+                      <Layers size={14} className="text-indigo-500" />
+                      <select value={dashboardCategory} onChange={e => { setDashboardCategory(e.target.value); setSelectedDashboardItem(null); }} className="w-full bg-transparent font-bold text-xs outline-none uppercase tracking-tight">
+                        <option value="all">All Categories</option>
+                        {intelligence.availableSegments.map(segment => <option key={segment} value={segment}>{segment}</option>)}
+                      </select>
                     </div>
                   </div>
-                  <div className="relative w-full bg-slate-50 rounded-[2.5rem] p-6">
-                    {renderMatrixSvg(8)}
+
+                  <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+                    {dashboardGroups.map(group => {
+                      const colors = colorClasses[group.color];
+                      return (
+                        <button key={group.id} onClick={() => setSelectedDashboardItem(group.items[0] || null)} className={`text-left bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm transition-all ${colors.border}`}>
+                          <div className="flex items-center justify-between gap-3">
+                            <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">{group.label}</p>
+                            <span className={`w-9 h-9 rounded-xl flex items-center justify-center text-xs font-black ${colors.text} ${colors.bg}`}>{group.items.length}</span>
+                          </div>
+                          <p className="text-xl font-black text-slate-900 tracking-tight mt-4">{groupValue(group)}</p>
+                          <p className="text-[10px] font-bold text-slate-400 uppercase mt-2">{group.hint}</p>
+                        </button>
+                      );
+                    })}
+                  </section>
+
+                  <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
+                    <section className="xl:col-span-8 bg-white rounded-[2.5rem] p-7 border border-slate-100 shadow-sm">
+                      <div className="flex flex-wrap items-start justify-between gap-4 mb-5">
+                        <div>
+                          <h4 className="text-lg font-black text-slate-900 tracking-tight">Portfolio Overview</h4>
+                          <p className="text-slate-400 text-xs font-medium mt-1">Top {Math.min(30, dashboardItems.length)} revenue-driving items · equal-size dots and automatic spacing.</p>
+                        </div>
+                        <div className="flex items-center gap-4 text-[9px] font-black uppercase tracking-widest">
+                          <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-emerald-500" /> Rising</span>
+                          <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-amber-500" /> Flat</span>
+                          <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-rose-500" /> Declining</span>
+                        </div>
+                      </div>
+                      {dashboardItems.length ? renderDashboardSvg() : <div className="py-24 text-center text-slate-400 text-sm font-bold">No items in this category for the selected period.</div>}
+                    </section>
+
+                    <aside className="xl:col-span-4 bg-white rounded-[2.5rem] p-7 border border-slate-100 shadow-sm">
+                      <h4 className="text-lg font-black text-slate-900 tracking-tight">Top Opportunities</h4>
+                      <p className="text-slate-400 text-xs font-medium mt-1 mb-5">Largest actions for this period.</p>
+                      <div className="divide-y divide-slate-100">
+                        {opportunities.map((item, index) => {
+                          const action = recommendationFor(item);
+                          const tone = item.quadrant === 'star' ? colorClasses.emerald : item.quadrant === 'reprice' ? colorClasses.amber : item.quadrant === 'promote' ? colorClasses.indigo : colorClasses.rose;
+                          return (
+                            <button key={item.name} onClick={() => setSelectedDashboardItem(item)} className="w-full flex items-center gap-3 py-3 text-left group">
+                              <span className="w-8 h-8 rounded-xl bg-slate-100 text-slate-500 flex items-center justify-center text-[10px] font-black shrink-0">{index + 1}</span>
+                              <span className="min-w-0 flex-1"><span className="block text-[11px] font-black text-slate-800 uppercase truncate">{item.name}</span><span className="block text-[9px] font-bold text-slate-400 mt-1">₹{Math.round(item.revenue).toLocaleString()} revenue · ₹{item.margin.toFixed(0)} margin</span></span>
+                              <span className={`px-2.5 py-1 rounded-lg text-[9px] font-black uppercase ${tone.text} ${tone.bg}`}>{action}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {selectedInsight && (
+                        <div className="mt-5 p-5 bg-indigo-50 rounded-2xl border border-indigo-100">
+                          <p className="text-[10px] font-black uppercase tracking-widest text-indigo-700">{selectedInsight.name}</p>
+                          <p className="text-xs font-bold text-indigo-900 mt-2 leading-relaxed">
+                            {selectedInsight.quadrant === 'star' && 'Protect availability and consistency. This item combines strong demand and margin.'}
+                            {selectedInsight.quadrant === 'reprice' && 'Review its selling price, recipe cost, and portion size. Demand is strong but margin is below the portfolio median.'}
+                            {selectedInsight.quadrant === 'promote' && 'Increase its menu visibility and crew recommendations. The margin is attractive but sales volume is still low.'}
+                            {selectedInsight.quadrant === 'dog' && 'Review its quality, positioning, and role on the menu before keeping or removing it.'}
+                          </p>
+                        </div>
+                      )}
+                    </aside>
                   </div>
-                </section>
-                <aside className="lg:col-span-3 bg-slate-900 p-8 rounded-[3rem] text-white shadow-xl flex flex-col justify-between"><div className="w-12 h-12 bg-white/10 rounded-2xl flex items-center justify-center mb-6 text-indigo-400"><Info size={24}/></div><h4 className="text-sm font-black uppercase tracking-widest mb-4">Reading Master Metrics</h4><p className="text-slate-400 text-sm leading-relaxed mb-6">Service tiers are factored in: Tier 1 costs use disposable utensils while Tier 2 uses proper service items.</p><div className="p-6 bg-white/5 rounded-3xl border border-white/5"><p className="text-[10px] font-black uppercase text-indigo-400 mb-1">Theoretical Burn</p><p className="text-3xl font-black">₹{intelligence.totalTheoreticalCost.toLocaleString()}</p></div></aside>
-              </div>
-            )}
+
+                  <section className="bg-white rounded-[2.5rem] border border-slate-100 shadow-sm overflow-hidden">
+                    <div className="p-7 border-b border-slate-100">
+                      <h4 className="text-lg font-black text-slate-900 tracking-tight">Items Requiring Attention</h4>
+                      <p className="text-slate-400 text-xs font-medium mt-1">Ranked by estimated business impact with one clear recommendation.</p>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left">
+                        <thead className="bg-slate-50/80"><tr><th className="px-6 py-4 text-[9px] font-black uppercase tracking-widest text-slate-400">Item</th><th className="px-4 py-4 text-[9px] font-black uppercase tracking-widest text-slate-400">Category</th><th className="px-4 py-4 text-[9px] font-black uppercase tracking-widest text-slate-400 text-right">Units</th><th className="px-4 py-4 text-[9px] font-black uppercase tracking-widest text-slate-400 text-right">Revenue</th><th className="px-4 py-4 text-[9px] font-black uppercase tracking-widest text-slate-400 text-right">Margin</th><th className="px-4 py-4 text-[9px] font-black uppercase tracking-widest text-slate-400 text-right">Trend</th><th className="px-6 py-4 text-[9px] font-black uppercase tracking-widest text-slate-400">Recommendation</th></tr></thead>
+                        <tbody className="divide-y divide-slate-50">
+                          {rankedRows.map(item => {
+                            const action = recommendationFor(item);
+                            const tone = item.quadrant === 'star' ? colorClasses.emerald : item.quadrant === 'reprice' ? colorClasses.amber : item.quadrant === 'promote' ? colorClasses.indigo : colorClasses.rose;
+                            return (
+                              <tr key={item.name} onClick={() => setSelectedDashboardItem(item)} className="hover:bg-slate-50 cursor-pointer transition-colors">
+                                <td className="px-6 py-4 text-[11px] font-black uppercase text-slate-800">{item.name}</td><td className="px-4 py-4 text-xs font-bold text-slate-500">{item.segment || 'Unmapped'}</td><td className="px-4 py-4 text-xs font-black text-slate-700 text-right">{item.quantity.toLocaleString()}</td><td className="px-4 py-4 text-xs font-black text-slate-700 text-right">₹{Math.round(item.revenue).toLocaleString()}</td><td className="px-4 py-4 text-xs font-black text-slate-700 text-right">₹{item.margin.toFixed(0)}</td><td className={`px-4 py-4 text-xs font-black text-right ${item.trendStatus === 'rising' ? 'text-emerald-600' : item.trendStatus === 'declining' ? 'text-rose-600' : 'text-slate-400'}`}>{item.trendPercent > 0 ? '+' : ''}{item.trendPercent.toFixed(0)}%</td><td className="px-6 py-4"><span className={`inline-block px-2.5 py-1 rounded-lg text-[9px] font-black uppercase ${tone.text} ${tone.bg}`}>{action}</span></td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                </div>
+              );
+            })()}
             
             {activeTab === 'channels' && (
               <div className="space-y-8 animate-in slide-in-from-bottom-4 duration-500">
@@ -1007,6 +1157,9 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
                 : intelligence.items.filter(i => i.segment === historyCategory);
               const sortedItemOptions = [...itemsForCategory].sort((a, b) => a.name.localeCompare(b.name));
               const selected = selectedItemName ? intelligence.items.find(i => i.name === selectedItemName) : null;
+              const comparisonItems = comparisonItemNames
+                .map(name => intelligence.items.find(item => item.name === name))
+                .filter((item): item is AggregatedItem => Boolean(item));
 
               // The current calendar month's item_snapshots doesn't exist until the
               // CSV is uploaded at month-end, so a rolling "Last N Months" window
@@ -1075,14 +1228,84 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
                 );
               };
 
+              const renderComparisonChart = () => {
+                const colors = ['#4f46e5', '#10b981', '#f59e0b', '#ec4899', '#0ea5e9', '#8b5cf6'];
+                let labels = [...intelligence.monthLabels];
+                let series = comparisonItems.map((item, index) => ({
+                  name: item.name,
+                  color: colors[index % colors.length],
+                  values: [...(comparisonMetric === 'units' ? item.history : item.revenueHistory)],
+                }));
+
+                if (analysisPeriod !== 'custom' && labels.length > 1) {
+                  const lastIndex = labels.length - 1;
+                  const currentMonthEmpty = series.length > 0 && series.every(line => line.values[lastIndex] === 0);
+                  if (currentMonthEmpty) {
+                    labels = labels.slice(0, -1);
+                    series = series.map(line => ({ ...line, values: line.values.slice(0, -1) }));
+                  }
+                }
+
+                const max = Math.max(...series.flatMap(line => line.values), 1);
+                const W = 1000, H = 380, PAD_L = 76, PAD_R = 28, PAD_T = 30, PAD_B = 55;
+                const plotW = W - PAD_L - PAD_R, plotH = H - PAD_T - PAD_B;
+                const x = (index: number) => PAD_L + (labels.length <= 1 ? plotW / 2 : (index / (labels.length - 1)) * plotW);
+                const y = (value: number) => PAD_T + plotH - (value / max) * plotH;
+                const labelStep = Math.max(1, Math.ceil(labels.length / 12));
+                const formatValue = (value: number) => comparisonMetric === 'units'
+                  ? Math.round(value).toLocaleString()
+                  : `₹${Math.round(value).toLocaleString()}`;
+
+                return (
+                  <div>
+                    <div className="flex flex-wrap gap-x-5 gap-y-2 mb-6">
+                      {series.map(line => (
+                        <div key={line.name} className="flex items-center gap-2 min-w-0">
+                          <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: line.color }} />
+                          <span className="text-[10px] font-black uppercase text-slate-600 truncate">{line.name}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto overflow-visible">
+                      {[0, 0.25, 0.5, 0.75, 1].map(p => {
+                        const value = max * p;
+                        const py = y(value);
+                        return (
+                          <g key={p}>
+                            <line x1={PAD_L} y1={py} x2={W - PAD_R} y2={py} stroke="#e2e8f0" strokeWidth="1" strokeDasharray={p === 0 ? '0' : '4 4'} />
+                            <text x={PAD_L - 12} y={py + 4} textAnchor="end" className="fill-slate-400 text-[10px] font-black">{formatValue(value)}</text>
+                          </g>
+                        );
+                      })}
+                      {labels.map((label, index) => (index % labelStep === 0 || index === labels.length - 1) && (
+                        <text key={label + index} x={x(index)} y={H - 20} textAnchor="middle" className="fill-slate-500 text-[10px] font-black uppercase">{label}</text>
+                      ))}
+                      {series.map(line => {
+                        const points = line.values.map((value, index) => `${x(index)},${y(value)}`).join(' ');
+                        return (
+                          <g key={line.name}>
+                            <polyline points={points} fill="none" stroke={line.color} strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
+                            {line.values.map((value, index) => (
+                              <circle key={index} cx={x(index)} cy={y(value)} r="5" fill="white" stroke={line.color} strokeWidth="3">
+                                <title>{`${line.name} · ${labels[index]}: ${formatValue(value)}`}</title>
+                              </circle>
+                            ))}
+                          </g>
+                        );
+                      })}
+                    </svg>
+                  </div>
+                );
+              };
+
               return (
                 <div className="space-y-8 animate-in slide-in-from-bottom-4 duration-500">
                   <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm">
                     <div className="flex items-center gap-3 mb-6">
                       <div className="p-3 bg-indigo-50 text-indigo-600 rounded-2xl"><History size={20} /></div>
                       <div>
-                        <h3 className="text-lg font-black text-slate-900 uppercase tracking-tight">Look up one dish</h3>
-                        <p className="text-slate-400 text-xs font-medium">Pick a category to narrow the list, then pick the dish, to see its month-by-month trend over the period selected above.</p>
+                        <h3 className="text-lg font-black text-slate-900 uppercase tracking-tight">Item history &amp; comparison</h3>
+                        <p className="text-slate-400 text-xs font-medium">Choose a category and compare several dishes, or select one dish for its detailed units and revenue charts.</p>
                       </div>
                     </div>
                     <div className="flex flex-wrap gap-4">
@@ -1097,6 +1320,10 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
                               const stillMatches = intelligence.items.find(i => i.name === selectedItemName)?.segment === e.target.value;
                               if (!stillMatches) setSelectedItemName(null);
                             }
+                            setComparisonItemNames(current => current.filter(name => {
+                              if (e.target.value === 'all') return true;
+                              return intelligence.items.find(item => item.name === name)?.segment === e.target.value;
+                            }));
                           }}
                           className="w-full bg-transparent font-bold text-xs outline-none uppercase"
                         >
@@ -1118,7 +1345,64 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
                         </select>
                       </div>
                     </div>
+
+                    <div className="mt-6 pt-6 border-t border-slate-100">
+                      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                        <div>
+                          <p className="text-[10px] font-black uppercase tracking-widest text-slate-700">Items to compare</p>
+                          <p className="text-xs font-medium text-slate-400 mt-1">Select up to 6 items for a readable chart.</p>
+                        </div>
+                        {comparisonItemNames.length > 0 && (
+                          <button onClick={() => setComparisonItemNames([])} className="text-[10px] font-black uppercase tracking-widest text-indigo-600 hover:text-indigo-800">Clear selection</button>
+                        )}
+                      </div>
+                      {historyCategory === 'all' ? (
+                        <div className="rounded-2xl bg-indigo-50 border border-indigo-100 px-5 py-4 text-sm font-bold text-indigo-700">
+                          Choose a category to show its menu items for comparison.
+                        </div>
+                      ) : sortedItemOptions.length === 0 ? (
+                        <div className="rounded-2xl bg-slate-50 border border-slate-100 px-5 py-4 text-sm font-bold text-slate-400">No items sold in this category during the selected period.</div>
+                      ) : (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 max-h-64 overflow-y-auto pr-1">
+                          {sortedItemOptions.map(item => {
+                            const checked = comparisonItemNames.includes(item.name);
+                            const disabled = !checked && comparisonItemNames.length >= 6;
+                            return (
+                              <label key={item.name} className={`flex items-center gap-3 rounded-xl border px-4 py-3 transition-all ${checked ? 'bg-indigo-50 border-indigo-300 text-indigo-900' : 'bg-white border-slate-200 text-slate-600'} ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer hover:border-indigo-200'}`}>
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  disabled={disabled}
+                                  onChange={() => setComparisonItemNames(current => checked ? current.filter(name => name !== item.name) : [...current, item.name])}
+                                  className="w-4 h-4 accent-indigo-600"
+                                />
+                                <span className="text-[11px] font-black uppercase truncate">{item.name}</span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
                   </div>
+
+                  {!intelligence.isSingleMonth && comparisonItems.length > 0 && (
+                    <section className="bg-white rounded-[3rem] border border-slate-100 shadow-sm p-8 md:p-10">
+                      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-7">
+                        <div>
+                          <h4 className="text-sm font-black text-slate-900 uppercase tracking-widest flex items-center gap-2"><TrendingUp size={16} className="text-indigo-500" /> Menu Item Comparison</h4>
+                          <p className="text-xs font-medium text-slate-400 mt-1">{comparisonItems.length} item{comparisonItems.length === 1 ? '' : 's'} across the selected period</p>
+                        </div>
+                        <div className="flex bg-slate-100 p-1 rounded-xl self-start">
+                          {(['units', 'revenue'] as const).map(metric => (
+                            <button key={metric} onClick={() => setComparisonMetric(metric)} className={`px-5 py-2.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${comparisonMetric === metric ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500'}`}>
+                              {metric}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      {renderComparisonChart()}
+                    </section>
+                  )}
 
                   {intelligence.isSingleMonth ? (
                     <div className="py-24 bg-white rounded-[3rem] border-2 border-dashed border-slate-200 text-center">
@@ -1239,37 +1523,6 @@ const ItemSalesHub: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dat
             )}
           </div>
         </>
-      )}
-
-      {isMatrixFullscreen && intelligence && (
-        <div className="fixed inset-0 z-[900] bg-slate-900/70 backdrop-blur-sm flex flex-col p-4 md:p-8 animate-in fade-in duration-200">
-          <div className="bg-white rounded-[2.5rem] shadow-2xl flex-1 flex flex-col overflow-hidden">
-            <div className="flex flex-wrap items-center justify-between gap-4 px-8 py-5 border-b border-slate-100">
-              <div>
-                <h3 className="text-xl font-black text-slate-900 tracking-tight">Menu Engineering Matrix</h3>
-                <p className="text-slate-400 text-xs font-medium">
-                  Popularity vs. Profitability · {intelligence.items.length} SKUs · median {intelligence.medianQty} units / ₹{intelligence.medianMargin.toFixed(0)} margin
-                </p>
-              </div>
-              <div className="flex items-center gap-4 text-[9px] font-black uppercase tracking-widest">
-                <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-emerald-500" /> Rising</span>
-                <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-rose-500" /> Declining</span>
-                <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-slate-400" /> Flat</span>
-                <span className="text-slate-400 normal-case font-bold">• bubble = total profit</span>
-                <button
-                  onClick={() => { setHoveredBubble(null); setIsMatrixFullscreen(false); }}
-                  title="Close (Esc)"
-                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-slate-900 text-white hover:bg-rose-600 transition-all shadow-sm"
-                >
-                  <CloseIcon size={12} /> Close
-                </button>
-              </div>
-            </div>
-            <div className="flex-1 min-h-0 bg-slate-50 m-4 rounded-[2rem] p-6 flex">
-              {renderMatrixSvg(30)}
-            </div>
-          </div>
-        </div>
       )}
 
       {hoveredBubble && (

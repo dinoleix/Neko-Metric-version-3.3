@@ -5,6 +5,14 @@ import './index.css';
 import App from './App';
 import ErrorBoundary from './components/ErrorBoundary';
 
+// Apply the saved appearance before React paints to avoid a light-mode flash.
+const savedTheme = localStorage.getItem('neko-theme');
+const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+const initialDark = savedTheme === 'dark' || ((savedTheme === 'system' || !savedTheme) && prefersDark);
+document.documentElement.classList.add(initialDark ? 'theme-dark' : 'theme-light');
+document.documentElement.classList.toggle('dark', initialDark);
+document.documentElement.style.colorScheme = initialDark ? 'dark' : 'light';
+
 // Vite's own signal for a lazy-import chunk that 404s — happens when a tab
 // left open from before the latest deploy navigates to a route whose chunk
 // hash has since changed. A reload picks up the new build; guard against a

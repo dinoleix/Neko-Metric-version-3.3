@@ -2,10 +2,10 @@ import React, { lazy } from 'react';
 import type { User } from 'firebase/auth';
 import { UserRole, UserProfile } from './types';
 import {
-  Crown, TrendingUp, Receipt, ShoppingBag, Globe, Zap, Flame, PieChart, Smartphone,
-  Banknote, Sparkles, Handshake, BarChart3, ShieldHalf, LayoutDashboard, ShieldCheck,
-  Database, ShieldAlert, Settings2, Users, Building2, Calendar, Wallet, Store,
+  Crown, TrendingUp, Receipt, ShoppingBag, Globe, Zap, PieChart, Smartphone,
+  Banknote, Sparkles, Handshake, BarChart3, ShieldHalf, ShieldCheck, Settings2, Users, Building2, Calendar, Wallet, Store,
   ChefHat, IndianRupee, PlusSquare,
+  ClipboardCheck,
 } from 'lucide-react';
 
 /**
@@ -23,43 +23,40 @@ import {
 // Lazy, with string-literal paths so Vite still emits one chunk per module.
 // lazy() only stores the thunk — importing this file fetches no component code,
 // which is what lets UserManagement import the registry for its module picker.
-const Dashboard = lazy(() => import('./components/Dashboard'));
 const Uploader = lazy(() => import('./components/Uploader'));
 const SalesHub = lazy(() => import('./components/SalesHub'));
-const RawSalesHub = lazy(() => import('./components/RawSalesHub'));
 const ExpenseHub = lazy(() => import('./components/ExpenseHub'));
 const ItemSalesHub = lazy(() => import('./components/ItemSalesHub'));
 const PnLHub = lazy(() => import('./components/PnLHub'));
 const PnLHubCrew = lazy(() => import('./components/PnLHubCrew'));
 const PnLAnalytics = lazy(() => import('./components/PnLAnalytics'));
 const WasteManagementV2 = lazy(() => import('./components/WasteManagementV2'));
-const IntegrityAudit = lazy(() => import('./components/IntegrityAudit'));
 const Team = lazy(() => import('./components/Team'));
 const Rentals = lazy(() => import('./components/Rentals'));
-const DataCatalog = lazy(() => import('./components/DataCatalog'));
+const DataControl = lazy(() => import('./components/DataControl'));
 const CategorySettings = lazy(() => import('./components/CategorySettings'));
 const PartnershipModel = lazy(() => import('./components/PartnershipModel'));
 const ExecDashboard = lazy(() => import('./components/ExecDashboard'));
 const CrewTerminal = lazy(() => import('./components/CrewTerminal'));
 const CrewReports = lazy(() => import('./components/CrewReports'));
-const UserManagement = lazy(() => import('./components/UserManagement'));
+const AccessAdministration = lazy(() => import('./components/AccessAdministration'));
 const BankManagement = lazy(() => import('./components/BankManagement'));
 const BankReconciliation = lazy(() => import('./components/BankReconciliation'));
 const VendorManagement = lazy(() => import('./components/VendorManagement'));
 const CashFlowTracker = lazy(() => import('./components/CashFlowTracker'));
 const HolidayRegistry = lazy(() => import('./components/HolidayRegistry'));
 const OnlineProfitCenter = lazy(() => import('./components/OnlineProfitCenter'));
-const ConsumablesEfficiency = lazy(() => import('./components/ConsumablesEfficiency'));
 const RecipeCostLab = lazy(() => import('./components/RecipeCostLab'));
 const MenuPriceBoard = lazy(() => import('./components/MenuPriceBoard'));
+const InventoryCount = lazy(() => import('./components/InventoryCount'));
 
 export type ModuleId =
   | 'exec-dashboard' | 'sales' | 'expenses' | 'items' | 'online-profit' | 'waste-v2'
-  | 'consumables' | 'pnl' | 'pnl-crew' | 'cash-flow' | 'pnl-insights' | 'partnership'
-  | 'crew-terminal' | 'crew-reports' | 'users' | 'dashboard' | 'integrity' | 'catalog'
-  | 'raw-verify' | 'category-settings' | 'team' | 'rentals' | 'holidays'
+  | 'pnl' | 'pnl-crew' | 'cash-flow' | 'pnl-insights' | 'partnership'
+  | 'crew-terminal' | 'crew-reports' | 'users' | 'data-control' | 'category-settings'
+  | 'team' | 'rentals' | 'holidays'
   | 'bank-management' | 'bank-audit' | 'vendor-management' | 'recipe-costing'
-  | 'menu-prices' | 'upload';
+  | 'menu-prices' | 'inventory-count' | 'upload';
 
 export type ModuleSection = 'Executive' | 'Intelligence' | 'Crew Terminal' | 'Operations' | 'Inputs';
 
@@ -149,23 +146,18 @@ export const MODULES: AppModule[] = [
     defaultRoles: ['admin', 'manager', 'viewer'], suppressReadOnlyBanner: true,
   },
   {
-    id: 'consumables', label: 'Consumables', icon: <Flame size={18} />,
-    section: 'Intelligence', Component: ConsumablesEfficiency,
-    defaultRoles: ['admin', 'manager'], sensitive: true,
-  },
-  {
     id: 'pnl', label: 'P&L Command', icon: <PieChart size={18} />,
     section: 'Intelligence', Component: PnLHub,
     defaultRoles: ['admin', 'manager', 'viewer'], suppressReadOnlyBanner: true,
     // readOnly is the ONLY thing making P&L non-editable for viewers, and the
     // component defaults it to false. Dropping it silently grants edit rights.
-    render: ctx => <PnLHub user={ctx.user} dataOwnerId={ctx.dataOwnerId} readOnly={ctx.isReadOnly} />,
+    render: ctx => <PnLHub user={ctx.user} userProfile={ctx.userProfile} dataOwnerId={ctx.dataOwnerId} readOnly={ctx.isReadOnly} />,
   },
   {
     id: 'pnl-crew', label: 'P&L Command (Crew)', icon: <Smartphone size={18} />,
     section: 'Intelligence', Component: PnLHubCrew,
     defaultRoles: ['admin', 'manager', 'viewer'], suppressReadOnlyBanner: true,
-    render: ctx => <PnLHubCrew user={ctx.user} dataOwnerId={ctx.dataOwnerId} readOnly={ctx.isReadOnly} />,
+    render: ctx => <PnLHubCrew user={ctx.user} userProfile={ctx.userProfile} dataOwnerId={ctx.dataOwnerId} readOnly={ctx.isReadOnly} />,
   },
   {
     // Same banner note as online-profit.
@@ -201,26 +193,15 @@ export const MODULES: AppModule[] = [
 
   // ---- Operations ----
   {
-    id: 'users', label: 'User Access', icon: <ShieldHalf size={18} />,
-    section: 'Operations', Component: UserManagement,
-    defaultRoles: ['admin'], roleLocked: 'admin',
-    render: ctx => <UserManagement user={ctx.user} dataOwnerId={ctx.dataOwnerId} />,
+    id: 'users', label: 'Access & Activity', icon: <ShieldHalf size={18} />,
+    section: 'Operations', Component: AccessAdministration,
+    defaultRoles: ['admin'], roleLocked: 'admin', sensitive: true,
+    render: ctx => <AccessAdministration user={ctx.user} dataOwnerId={ctx.dataOwnerId} />,
   },
   {
-    id: 'dashboard', label: 'Operations Control', icon: <LayoutDashboard size={18} />,
-    section: 'Operations', Component: Dashboard, defaultRoles: ['admin', 'manager'],
-  },
-  {
-    id: 'integrity', label: 'Data Integrity', icon: <ShieldCheck size={18} />,
-    section: 'Operations', Component: IntegrityAudit, defaultRoles: ['admin', 'manager'],
-  },
-  {
-    id: 'catalog', label: 'Data Catalog', icon: <Database size={18} />,
-    section: 'Operations', Component: DataCatalog, defaultRoles: ['admin', 'manager'],
-  },
-  {
-    id: 'raw-verify', label: 'Raw Data Verify', icon: <ShieldAlert size={18} />,
-    section: 'Operations', Component: RawSalesHub, defaultRoles: ['admin', 'manager'],
+    id: 'data-control', label: 'Data Control', icon: <ShieldHalf size={18} />,
+    section: 'Operations', Component: DataControl, defaultRoles: ['admin', 'manager'], sensitive: true,
+    render: ctx => <DataControl user={ctx.user} dataOwnerId={ctx.dataOwnerId} />,
   },
   {
     id: 'category-settings', label: 'Mapping', icon: <Settings2 size={18} />,
@@ -253,6 +234,12 @@ export const MODULES: AppModule[] = [
   {
     id: 'recipe-costing', label: 'Recipe Costing', icon: <ChefHat size={18} />,
     section: 'Operations', Component: RecipeCostLab, defaultRoles: ['admin', 'manager'],
+  },
+  {
+    id: 'inventory-count', label: 'Stock Count', icon: <ClipboardCheck size={18} />,
+    section: 'Operations', Component: InventoryCount, defaultRoles: ['admin', 'manager'],
+    sensitive: true,
+    render: ctx => <InventoryCount user={ctx.user} dataOwnerId={ctx.dataOwnerId} userProfile={ctx.userProfile} />,
   },
   {
     id: 'menu-prices', label: 'Menu Prices', icon: <IndianRupee size={18} />,

@@ -4,6 +4,133 @@
 
 body {
   font-family: 'Inter', sans-serif;
+  background: #f5f1e8;
+  color: #20231f;
+  transition: background-color 180ms ease, color 180ms ease;
+  overflow-x: hidden;
+}
+
+/* The desktop dashboard keeps its dense canvas. On phones, leave space for the
+   compact header and avoid browser edge collisions around inputs and drawers. */
+@media (max-width: 767px) {
+  html { -webkit-text-size-adjust: 100%; }
+  body { overscroll-behavior-x: none; }
+  button, input, select, textarea { touch-action: manipulation; }
+}
+
+h1, h2, h3 {
+  letter-spacing: -0.025em;
+}
+
+.theme-toggle {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.25rem;
+  padding: 0.25rem;
+  border: 1px solid rgba(185, 154, 98, 0.2);
+  border-radius: 0.9rem;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.theme-toggle button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  min-height: 2.25rem;
+  padding: 0 0.55rem;
+  border-radius: 0.65rem;
+  color: #94a3b8;
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  transition: all 160ms ease;
+}
+
+.theme-toggle button:hover { color: #f5f1e8; }
+.theme-toggle button.is-active {
+  color: #17241d;
+  background: #c5a66a;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+}
+.theme-toggle-compact { display: flex; }
+.theme-toggle-compact button { width: 2.25rem; padding: 0; }
+
+/* Quiet Luxury — warm paper surfaces with a forest-and-champagne shell. */
+.theme-light body { background: #f5f1e8; color: #20231f; }
+.theme-light .app-shell.bg-slate-50,
+.theme-light .bg-slate-50 { background-color: #f5f1e8 !important; }
+.theme-light aside.bg-slate-900 { background-color: #17241d !important; }
+.theme-light .login-shell.bg-slate-900 { background: radial-gradient(circle at 50% 0%, #31483b 0%, #17241d 48%, #101713 100%) !important; }
+.theme-light aside .bg-indigo-600 { background-color: #b99a62 !important; }
+.theme-light aside .text-indigo-600 { color: #31483b !important; }
+.theme-light aside .shadow-indigo-900\/40 { --tw-shadow-color: rgba(0,0,0,.22) !important; }
+.theme-light .text-indigo-600 { color: #415f4d !important; }
+.theme-light .bg-indigo-600 { background-color: #415f4d !important; }
+.theme-light .border-indigo-500 { border-color: #6f8b77 !important; }
+.theme-light .focus\:border-indigo-500:focus { border-color: #6f8b77 !important; }
+.theme-light .bg-white { background-color: #fffdf8 !important; }
+.theme-light .border-slate-100 { border-color: #e9e2d6 !important; }
+.theme-light .border-slate-200 { border-color: #ddd4c5 !important; }
+
+/* Midnight Executive — the same hierarchy translated into a dark palette. */
+.theme-dark body { background: #0d1215; color: #e8e4da; }
+.theme-dark .app-shell.bg-slate-50,
+.theme-dark .bg-slate-50 { background-color: #0d1215 !important; }
+.theme-dark aside.bg-slate-900,
+.theme-dark .bg-slate-900 { background-color: #10171a !important; }
+.theme-dark .bg-slate-950 { background-color: #0a0f11 !important; }
+.theme-dark .login-shell.bg-slate-900 { background: radial-gradient(circle at 50% 0%, #1d292d 0%, #0d1215 55%, #080b0d 100%) !important; }
+.theme-dark .bg-white { background-color: #151d20 !important; }
+.theme-dark .bg-slate-100 { background-color: #202a2e !important; }
+.theme-dark .bg-slate-200 { background-color: #2a3539 !important; }
+.theme-dark .border-slate-100 { border-color: #263136 !important; }
+.theme-dark .border-slate-200 { border-color: #344146 !important; }
+.theme-dark .border-slate-300 { border-color: #46545a !important; }
+.theme-dark .text-slate-900,
+.theme-dark .text-slate-800 { color: #f2eee5 !important; }
+.theme-dark .text-slate-700,
+.theme-dark .text-slate-600 { color: #c7c2b8 !important; }
+.theme-dark .text-slate-500 { color: #9ca6a8 !important; }
+.theme-dark .text-slate-400 { color: #899497 !important; }
+.theme-dark .text-slate-300 { color: #b8c0c1 !important; }
+.theme-dark .bg-indigo-600 { background-color: #b89455 !important; color: #10171a !important; }
+.theme-dark .text-indigo-600,
+.theme-dark .text-indigo-500,
+.theme-dark .text-indigo-400 { color: #d2ae68 !important; }
+.theme-dark .bg-indigo-50 { background-color: rgba(184, 148, 85, .14) !important; }
+.theme-dark .border-indigo-100,
+.theme-dark .border-indigo-200 { border-color: rgba(184, 148, 85, .28) !important; }
+.theme-dark .bg-amber-50 { background-color: rgba(184, 148, 85, .12) !important; }
+.theme-dark .bg-amber-100 { background-color: rgba(184, 148, 85, .2) !important; }
+.theme-dark .border-amber-100,
+.theme-dark .border-amber-200 { border-color: rgba(184, 148, 85, .3) !important; }
+.theme-dark .text-amber-800,
+.theme-dark .text-amber-700,
+.theme-dark .text-amber-600 { color: #dfbf80 !important; }
+.theme-dark .bg-emerald-50 { background-color: rgba(60, 140, 112, .12) !important; }
+.theme-dark .bg-emerald-100 { background-color: rgba(60, 140, 112, .2) !important; }
+.theme-dark .border-emerald-100,
+.theme-dark .border-emerald-200 { border-color: rgba(60, 140, 112, .3) !important; }
+.theme-dark .text-emerald-800,
+.theme-dark .text-emerald-700 { color: #8dc6ae !important; }
+.theme-dark .bg-red-50,
+.theme-dark .bg-rose-50 { background-color: rgba(190, 75, 84, .12) !important; }
+.theme-dark .border-red-100,
+.theme-dark .border-rose-100 { border-color: rgba(190, 75, 84, .28) !important; }
+.theme-dark input,
+.theme-dark select,
+.theme-dark textarea { color-scheme: dark; }
+.theme-dark input::placeholder,
+.theme-dark textarea::placeholder { color: #6f7b7e; }
+.theme-dark .shadow-sm,
+.theme-dark .shadow-lg,
+.theme-dark .shadow-xl,
+.theme-dark .shadow-2xl { --tw-shadow-color: rgba(0, 0, 0, .42) !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  body, .theme-toggle button { transition: none; }
 }
 
 .custom-scrollbar::-webkit-scrollbar {
@@ -25,6 +152,7 @@ body {
    `display` so the print target keeps its layout box while every ancestor
    collapses out of view. */
 @media print {
+  html, body { background: #fff !important; color: #000 !important; }
   body * { visibility: hidden; }
   #recipe-print, #recipe-print * { visibility: visible; }
   #recipe-print {

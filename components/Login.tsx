@@ -9,6 +9,7 @@ import { doc, setDoc, getDoc } from 'firebase/firestore';
 import { auth, db } from '../firebase';
 import { UserProfile } from '../types';
 import { Cat, Mail, Lock, LogIn } from 'lucide-react';
+import ThemeToggle from './ThemeToggle';
 
 const Login: React.FC = () => {
   const [email, setEmail] = useState('');
@@ -53,18 +54,20 @@ const Login: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
+    <div className="login-shell min-h-screen bg-slate-900 flex items-center justify-center p-4 relative overflow-hidden">
+      <div className="absolute top-5 right-5 z-10"><ThemeToggle /></div>
       <div className="max-w-md w-full">
         <div className="text-center mb-10">
           <div className="inline-flex items-center justify-center p-4 bg-indigo-600 rounded-2xl mb-4 shadow-xl shadow-indigo-500/20">
             <Cat className="w-10 h-10 text-white" />
           </div>
-          <h1 className="text-3xl font-bold text-white mb-2">Neko Metrics</h1>
+          <h1 className="text-4xl font-semibold text-white mb-2 tracking-tight">NekoMetrics</h1>
+          <p className="text-[10px] font-bold uppercase tracking-[0.34em] text-amber-200/70">Restaurant Intelligence</p>
         </div>
 
         <div className="bg-white rounded-3xl p-8 shadow-2xl">
           <h2 className="text-xl font-bold text-slate-800 mb-6">
-            Welcome back!
+            Welcome back
           </h2>
 
           <form onSubmit={handleSubmit} className="space-y-4">

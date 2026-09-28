@@ -9,12 +9,16 @@ const TTL_MS = 5 * 60 * 1000;
 
 const cache = new Map<string, { at: number; promise: Promise<any[]> }>();
 
-export function getCachedCollection<T = any>(coll: string, ownerId: string, field: 'userId' | 'ownerId' = 'userId'): Promise<T[]> {
-  const key = `${coll}:${ownerId}`;
+export function getCachedCollection<T = any>(coll: string, ownerId: string, field: 'userId' | 'ownerId' = 'userId', outletId?: string | null): Promise<T[]> {
+  const key = `${coll}:${ownerId}:${outletId || 'all'}`;
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.promise as Promise<T[]>;
 
-  const promise = getDocs(query(collection(db, coll), where(field, '==', ownerId)))
+  const promise = getDocs(query(
+    collection(db, coll),
+    where(field, '==', ownerId),
+    ...(outletId ? [where('outletId', '==', outletId)] : []),
+  ))
     .then(snap => snap.docs.map(d => ({ id: d.id, ...d.data() })))
     .catch(err => {
       // Don't cache failures — next caller retries
