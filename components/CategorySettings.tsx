@@ -14,6 +14,7 @@ import {
   ItemMonthlySnapshot, 
   SkuMapping, 
   SkuCategory,
+  SkuItemType,
   MenuNormalization,
   CategorySettings as CategorySettingsType,
   ServingOption,
@@ -84,6 +85,21 @@ const SKU_CATEGORIES: {id: SkuCategory, label: string, color: string, icon: any}
   { id: 'MISC', label: 'Misc/Fees', color: 'bg-slate-400', icon: Box }
 ];
 
+const SKU_ITEM_TYPES: { id: SkuItemType; label: string }[] = [
+  { id: 'PRODUCT', label: 'Product' },
+  { id: 'ADD_ON', label: 'Add-on' },
+  { id: 'MODIFIER', label: 'Modifier' },
+  { id: 'PACKAGING', label: 'Packaging' },
+  { id: 'IGNORE', label: 'Ignore' },
+];
+
+type SkuMappingDraft = {
+  category: SkuCategory;
+  segment?: string;
+  itemType?: SkuItemType;
+  isInherited?: boolean;
+};
+
 type SettingsTab = 'purchase' | 'master-menu' | 'product' | 'tiered-costs' | 'servings' | 'segments';
 
 const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
@@ -108,7 +124,7 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
   const [servingOptions, setServingOptions] = useState<ServingOption[]>([]);
   const [itemCosts, setItemCosts] = useState<ItemCost[]>([]);
   const [skuList, setSkuList] = useState<string[]>([]);
-  const [skuMappings, setSkuMappings] = useState<Record<string, { category: SkuCategory, segment?: string, isInherited?: boolean }>>({});
+  const [skuMappings, setSkuMappings] = useState<Record<string, SkuMappingDraft>>({});
   const [normalizationMap, setNormalizationMap] = useState<Record<string, string>>({});
   const [allSourceStrings, setAllSourceStrings] = useState<string[]>([]);
 
@@ -218,14 +234,14 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
       setNormalizationMap(normMap);
       setNormDocIds(normIds);
 
-      const dbMappings: Record<string, { category: SkuCategory, segment?: string }> = {};
+      const dbMappings: Record<string, SkuMappingDraft> = {};
       const sortedSkuDocs = skuMapSnaps.docs
         .map(d => d.data() as SkuMapping)
         .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
       sortedSkuDocs.forEach(data => {
         const key = data.itemName.trim().toUpperCase();
         if (!dbMappings[key]) {
-          dbMappings[key] = { category: data.category, segment: data.segment };
+          dbMappings[key] = { category: data.category, segment: data.segment, itemType: data.itemType || 'UNCLASSIFIED' };
         }
       });
 
@@ -278,7 +294,7 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
       setLastSoldStamp(lastSold);
       setLastSoldSourceStamp(lastSoldSource);
 
-      const finalMappings: Record<string, { category: SkuCategory, segment?: string, isInherited?: boolean }> = {};
+      const finalMappings: Record<string, SkuMappingDraft> = {};
       const initialCosts: Record<string, { ingredient: string, tier1: string, tier2: string }> = {};
       const recipeBackedMap: Record<string, { recipeName: string; publishedAt: number }> = {};
 
@@ -427,12 +443,17 @@ const CategorySettings: React.FC<{ user: User; dataOwnerId: string }> = ({ user,
       for (let i = 0; i < entries.length; i += 400) {
         const batch = writeBatch(db);
         entries.slice(i, i + 400).forEach(([itemName, val]) => {
-          const data = val as { category: SkuCategory; segment?: string };
+          const data = val as SkuMappingDraft;
           const safeId = itemName.trim().toUpperCase().replace(/[^a-zA-Z0-9]/g, '_');
           // dataOwnerId, not user.uid — fetchData reads from dataOwnerId, so writing
           // to user.uid means a delegated admin's edits land on a doc nobody reads.
           batch.set(doc(db, 'sku_mappings', `${dataOwnerId}_sku_${safeId}`), {
-            itemName, category: data.category || 'UNMAPPED', segment: data.segment || '', userId: dataOwnerId, updatedAt: Date.now()
+            itemName,
+            category: data.category || 'UNMAPPED',
+            segment: data.segment || '',
+            itemType: data.itemType || 'UNCLASSIFIED',
+            userId: dataOwnerId,
+            updatedAt: Date.now()
           }, { merge: true });
         });
         await batch.commit();
@@ -1264,12 +1285,13 @@ ${allSourceStrings.join('\n')}`;
                       <button onClick={autoCategorizeWithAI} disabled={isMappingAI || menuSegments.length === 0} className="px-6 py-4 bg-slate-900 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest flex items-center gap-2 hover:bg-slate-800 transition-all shadow-xl disabled:opacity-50">{isMappingAI ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />} Auto-Categorize</button>
                    </div>
                 </div>
-                <div className="p-10 overflow-x-auto"><table className="w-full text-left"><thead><tr className="border-b border-slate-100"><th className="px-6 py-4 text-[11px] font-black text-slate-400 uppercase tracking-widest">Master Menu Item</th><th className="px-6 py-4 text-[11px] font-black text-slate-400 uppercase text-center">Core Pillar</th><th className="px-6 py-4 text-[11px] font-black text-slate-400 uppercase text-center">POS Segment</th><th className="px-6 py-4 text-[11px] font-black text-slate-400 uppercase text-right">Integrity</th></tr></thead><tbody className="divide-y divide-slate-50">{filteredSkuList.map(name => (
+                <div className="p-10 overflow-x-auto"><table className="w-full text-left"><thead><tr className="border-b border-slate-100"><th className="px-6 py-4 text-[11px] font-black text-slate-400 uppercase tracking-widest">Master Menu Item</th><th className="px-6 py-4 text-[11px] font-black text-slate-400 uppercase text-center">Core Pillar</th><th className="px-6 py-4 text-[11px] font-black text-slate-400 uppercase text-center">POS Segment</th><th className="px-6 py-4 text-[11px] font-black text-slate-400 uppercase text-center">Item Type</th><th className="px-6 py-4 text-[11px] font-black text-slate-400 uppercase text-right">Integrity</th></tr></thead><tbody className="divide-y divide-slate-50">{filteredSkuList.map(name => (
                   <tr key={name} className="group hover:bg-slate-50/50 transition-colors">
                      <td className="px-6 py-5"><p className="text-sm font-black text-slate-800 uppercase">{name}</p></td>
                      <td className="px-6 py-5"><div className="flex items-center justify-center gap-2">{SKU_CATEGORIES.map(cat => (<button key={cat.id} onClick={() => setSkuMappings(prev => ({ ...prev, [name]: { ...prev[name], category: cat.id, isInherited: false } }))} className={`px-3 py-2 rounded-xl text-[8px] font-black uppercase transition-all flex items-center gap-1.5 ${skuMappings[name]?.category === cat.id ? `${cat.color} text-white shadow-md` : 'bg-white text-slate-400 border border-slate-100 hover:border-indigo-200'}`}><cat.icon size={10} /> {cat.label}</button>))}</div></td>
                      <td className="px-6 py-5"><div className="relative max-w-[180px] mx-auto"><select value={skuMappings[name]?.segment || ''} onChange={e => setSkuMappings(prev => ({ ...prev, [name]: { ...prev[name], segment: e.target.value, isInherited: false } }))} className="w-full px-4 py-2 rounded-xl border border-slate-200 bg-white text-[10px] font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500 appearance-none uppercase text-center"><option value="">-- Unsegmented --</option>{menuSegments.map(seg => <option key={seg} value={seg}>{seg}</option>)}</select><ChevronDown size={12} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" /></div></td>
-                     <td className="px-6 py-5 text-right">{skuMappings[name]?.isInherited ? (<div className="inline-flex items-center gap-1.5 px-3 py-1 bg-indigo-50 text-indigo-600 rounded-full text-[9px] font-black uppercase border border-indigo-100"><History size={10} /> Inherited</div>) : (skuMappings[name]?.category !== 'UNMAPPED' && skuMappings[name]?.segment) ? (<div className="inline-flex items-center gap-1.5 px-3 py-1 bg-emerald-50 text-emerald-600 rounded-full text-[9px] font-black uppercase"><Check size={10} /> Ready</div>) : (<div className="inline-flex items-center gap-1.5 px-3 py-1 bg-amber-50 text-amber-600 rounded-full text-[9px] font-black uppercase"><Zap size={10} /> Missing Info</div>)}</td>
+                     <td className="px-6 py-5"><div className="relative min-w-[145px] max-w-[170px] mx-auto"><select value={skuMappings[name]?.itemType || 'UNCLASSIFIED'} onChange={e => setSkuMappings(prev => ({ ...prev, [name]: { ...prev[name], itemType: e.target.value as SkuItemType, isInherited: false } }))} className="w-full px-4 py-2 rounded-xl border border-slate-200 bg-white text-[10px] font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500 appearance-none uppercase text-center"><option value="UNCLASSIFIED">-- Unclassified --</option>{SKU_ITEM_TYPES.map(type => <option key={type.id} value={type.id}>{type.label}</option>)}</select><ChevronDown size={12} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" /></div></td>
+                     <td className="px-6 py-5 text-right">{skuMappings[name]?.isInherited ? (<div className="inline-flex items-center gap-1.5 px-3 py-1 bg-indigo-50 text-indigo-600 rounded-full text-[9px] font-black uppercase border border-indigo-100"><History size={10} /> Inherited</div>) : (skuMappings[name]?.category !== 'UNMAPPED' && skuMappings[name]?.segment && skuMappings[name]?.itemType && skuMappings[name]?.itemType !== 'UNCLASSIFIED') ? (<div className="inline-flex items-center gap-1.5 px-3 py-1 bg-emerald-50 text-emerald-600 rounded-full text-[9px] font-black uppercase"><Check size={10} /> Ready</div>) : (<div className="inline-flex items-center gap-1.5 px-3 py-1 bg-amber-50 text-amber-600 rounded-full text-[9px] font-black uppercase"><Zap size={10} /> Missing Info</div>)}</td>
                   </tr>
                 ))}</tbody></table></div></section>
            )}

@@ -362,12 +362,15 @@ export interface WasteEntry {
 }
 
 export type SkuCategory = 'FOOD' | 'DRINKS' | 'MISC' | 'UNMAPPED';
+export type SkuItemType = 'PRODUCT' | 'ADD_ON' | 'MODIFIER' | 'PACKAGING' | 'IGNORE' | 'UNCLASSIFIED';
 
 export interface SkuMapping {
   id?: string;
   itemName: string;
   category: SkuCategory;
-  segment?: string; 
+  segment?: string;
+  /** Analytical role, separate from the menu department in `segment`. */
+  itemType?: SkuItemType;
   userId: string;
   updatedAt: number;
 }
