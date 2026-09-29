@@ -10,12 +10,52 @@ body {
   overflow-x: hidden;
 }
 
-/* The desktop dashboard keeps its dense canvas. On phones, leave space for the
-   compact header and avoid browser edge collisions around inputs and drawers. */
+/* Phone layout foundation.
+   Modules were originally written as desktop-first dashboards.  Keep their
+   desktop rules intact and, below the md breakpoint, stop dense controls,
+   tables and cards from widening the document beyond the viewport. */
 @media (max-width: 767px) {
+  html, body, #root { width: 100%; max-width: 100%; overflow-x: hidden; }
   html { -webkit-text-size-adjust: 100%; }
   body { overscroll-behavior-x: none; }
   button, input, select, textarea { touch-action: manipulation; }
+
+  .app-shell, .crew-shell { width: 100%; max-width: 100%; overflow-x: clip; }
+  .app-shell main, .crew-shell main,
+  .app-shell main > div, .crew-shell main > div { min-width: 0; width: 100%; max-width: 100%; }
+
+  /* Flex and grid children default to min-content width, which is what made a
+     long label or a desktop input push whole pages sideways on a phone. */
+  .app-shell main :where(.flex, .grid) > *, .crew-shell main :where(.flex, .grid) > * { min-width: 0; }
+  .app-shell main :where(button, input, select, textarea), .crew-shell main :where(button, input, select, textarea) { max-width: 100%; }
+  .app-shell main [class*="min-w-["], .crew-shell main [class*="min-w-["] { min-width: 0 !important; max-width: 100%; }
+  .app-shell main [class*="w-["], .crew-shell main [class*="w-["] { max-width: 100%; }
+
+  /* Dashboard grids remain compact, but never try to squeeze three or more
+     desktop columns into a phone. Two-column forms and paired action cards
+     retain their intended layout. */
+  .app-shell main .grid.grid-cols-3, .crew-shell main .grid.grid-cols-3,
+  .app-shell main .grid.grid-cols-4, .crew-shell main .grid.grid-cols-4,
+  .app-shell main .grid.grid-cols-5, .crew-shell main .grid.grid-cols-5,
+  .app-shell main .grid.grid-cols-6, .crew-shell main .grid.grid-cols-6,
+  .app-shell main .grid.grid-cols-7, .crew-shell main .grid.grid-cols-7,
+  .app-shell main .grid.grid-cols-8, .crew-shell main .grid.grid-cols-8,
+  .app-shell main .grid.grid-cols-9, .crew-shell main .grid.grid-cols-9 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+  /* A table remains a table; it gains its own horizontal scroll area instead
+     of enlarging the whole page. Existing table wrappers continue to work. */
+  .app-shell main table, .crew-shell main table { display: block; max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .app-shell main table :where(th, td), .crew-shell main table :where(th, td) { white-space: nowrap; }
+
+  /* Large desktop cards have generous breathing room. On a narrow screen that
+     padding leaves too little space for the actual content. */
+  .app-shell main [class~="p-10"], .crew-shell main [class~="p-10"] { padding: 1.5rem; }
+  .app-shell main [class~="p-8"], .crew-shell main [class~="p-8"] { padding: 1.25rem; }
+  .app-shell main [class~="px-10"], .crew-shell main [class~="px-10"] { padding-left: 1.25rem; padding-right: 1.25rem; }
+  .app-shell main [class~="px-8"], .crew-shell main [class~="px-8"] { padding-left: 1.25rem; padding-right: 1.25rem; }
+
+  .app-shell main :where(h1, h2, h3, h4, p, span), .crew-shell main :where(h1, h2, h3, h4, p, span) { overflow-wrap: anywhere; }
+  .app-shell main :where(.fixed, [role="dialog"]), .crew-shell main :where(.fixed, [role="dialog"]) { max-width: 100vw; }
 }
 
 h1, h2, h3 {

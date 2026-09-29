@@ -294,9 +294,9 @@ const App: React.FC = () => {
   // If user is crew, provide a specialized fullscreen layout
   if (isCrew) {
     return (
-      <div className="min-h-screen bg-slate-950 overflow-x-hidden">
-        <header className="p-6 bg-slate-900 border-b border-white/5 flex flex-col md:flex-row md:items-center justify-between gap-6 shadow-2xl">
-           <div className="flex flex-col md:flex-row md:items-center gap-6">
+      <div className="crew-shell min-h-screen bg-slate-950 overflow-x-hidden">
+        <header className="p-4 md:p-6 bg-slate-900 border-b border-white/5 flex flex-col md:flex-row md:items-center justify-between gap-4 md:gap-6 shadow-2xl">
+           <div className="min-w-0 flex flex-col md:flex-row md:items-center gap-4 md:gap-6">
               <div className="flex items-center gap-3">
                 <div className="p-2.5 bg-indigo-600 rounded-2xl shadow-lg shadow-indigo-900/40">
                     <Smartphone className="text-white" size={24} />
@@ -305,8 +305,8 @@ const App: React.FC = () => {
               </div>
 
               {/* Context Highlights */}
-              <div className="flex flex-wrap items-center gap-3">
-                 <div className="px-4 py-2.5 bg-indigo-600/20 border border-indigo-500/30 rounded-2xl flex items-center gap-3 shadow-inner group transition-all hover:bg-indigo-600/30">
+              <div className="flex w-full md:w-auto overflow-x-auto md:overflow-visible items-center gap-3 pb-1 md:pb-0 no-scrollbar">
+                 <div className="shrink-0 px-4 py-2.5 bg-indigo-600/20 border border-indigo-500/30 rounded-2xl flex items-center gap-3 shadow-inner group transition-all hover:bg-indigo-600/30">
                     <div className="p-1.5 bg-indigo-600 rounded-lg shadow-lg">
                        <MapPin size={16} className="text-white" />
                     </div>
@@ -318,7 +318,7 @@ const App: React.FC = () => {
                     </div>
                  </div>
 
-                 <div className="px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-2xl flex items-center gap-3 shadow-inner">
+                 <div className="shrink-0 px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-2xl flex items-center gap-3 shadow-inner">
                     <div className="p-1.5 bg-slate-700 rounded-lg">
                        <Calendar size={16} className="text-slate-400" />
                     </div>
@@ -330,7 +330,7 @@ const App: React.FC = () => {
                     </div>
                  </div>
 
-                 <div className="px-4 py-2.5 bg-emerald-500/10 border border-emerald-500/30 rounded-2xl flex items-center gap-3 shadow-inner">
+                 <div className="shrink-0 px-4 py-2.5 bg-emerald-500/10 border border-emerald-500/30 rounded-2xl flex items-center gap-3 shadow-inner">
                     <div className="p-1.5 bg-emerald-600/40 rounded-lg">
                        <Wallet size={16} className="text-emerald-400" />
                     </div>
@@ -343,7 +343,7 @@ const App: React.FC = () => {
                  </div>
 
                  {primaryTenKAccount && (
-                   <div className="px-4 py-2.5 bg-amber-500/10 border border-amber-500/30 rounded-2xl flex items-center gap-3 shadow-inner">
+                   <div className="shrink-0 px-4 py-2.5 bg-amber-500/10 border border-amber-500/30 rounded-2xl flex items-center gap-3 shadow-inner">
                       <div className="p-1.5 bg-amber-500/40 rounded-lg">
                          <Banknote size={16} className="text-amber-400" />
                       </div>
@@ -358,7 +358,7 @@ const App: React.FC = () => {
               </div>
            </div>
 
-           <div className="flex items-center gap-4">
+           <div className="flex flex-wrap items-center gap-3 md:gap-4">
               <ThemeToggle compact />
               <div className="hidden lg:block text-right">
                  <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1">Authenticated As</p>
@@ -385,7 +385,7 @@ const App: React.FC = () => {
 
 
   return (
-    <div className="app-shell min-h-screen flex bg-slate-50">
+    <div className="app-shell min-h-screen flex flex-col md:flex-row bg-slate-50">
       {showTimeoutWarning && (
         <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 backdrop-blur-sm">
           <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-sm w-full mx-4 text-center space-y-4">

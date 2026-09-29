@@ -13,6 +13,7 @@ import {
   getOutletName, 
   SkuCategory, 
   SkuMapping,
+  SkuItemType,
   MenuNormalization,
   ServingOption,
   StoreTier,
@@ -75,6 +76,17 @@ import { getItemChannelValues, CHANNEL_MODE_OPTIONS, ItemChannelMode } from '../
 
 type InsightTab = 'matrix' | 'channels' | 'ranking' | 'profit' | 'velocity' | 'trends' | 'item-history' | 'combos' | 'ledger';
 type AnalysisPeriod = 'custom' | '2m' | '3m' | '4m' | '6m' | '9m' | '12m' | '24m';
+type ItemTypeScope = 'PRODUCT' | 'ADD_ON' | 'MODIFIER' | 'PACKAGING' | 'IGNORE' | 'UNCLASSIFIED' | 'ALL';
+
+const ITEM_TYPE_SCOPE_OPTIONS: Array<{ id: ItemTypeScope; label: string }> = [
+  { id: 'PRODUCT', label: 'Products' },
+  { id: 'ADD_ON', label: 'Add-ons' },
+  { id: 'MODIFIER', label: 'Modifiers' },
+  { id: 'PACKAGING', label: 'Packaging' },
+  { id: 'IGNORE', label: 'Ignored' },
+  { id: 'UNCLASSIFIED', label: 'Unclassified' },
+  { id: 'ALL', label: 'All item types' },
+];
 
 interface AggregatedItem {
   name: string;
@@ -91,6 +103,7 @@ interface AggregatedItem {
   trendStatus: 'rising' | 'declining' | 'flat';
   trendPercent: number;
   segment?: string;
+  itemType: SkuItemType;
   quadrant?: 'star' | 'promote' | 'reprice' | 'dog';
 }
 
@@ -108,7 +121,7 @@ const ItemSalesHub: React.FC<{ user: User; userProfile?: UserProfile; dataOwnerI
   const [rentals, setRentals] = useState<StoreRental[]>([]);
   const [itemCosts, setItemCosts] = useState<ItemCost[]>([]);
   const [servingOptions, setServingOptions] = useState<ServingOption[]>([]);
-  const [skuMappings, setSkuMappings] = useState<Record<string, { category: SkuCategory, segment?: string }>>({});
+  const [skuMappings, setSkuMappings] = useState<Record<string, { category: SkuCategory, segment?: string, itemType: SkuItemType }>>({});
   const [normalizationMap, setNormalizationMap] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
   
@@ -118,6 +131,9 @@ const ItemSalesHub: React.FC<{ user: User; userProfile?: UserProfile; dataOwnerI
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear().toString());
   const [analysisPeriod, setAnalysisPeriod] = useState<AnalysisPeriod>('custom');
   const [selectedSegments, setSelectedSegments] = useState<string[]>([]);
+  // Product Intelligence opens on actual menu products. The remaining scopes
+  // retain their operational data without letting modifiers distort product KPIs.
+  const [itemTypeScope, setItemTypeScope] = useState<ItemTypeScope>('PRODUCT');
   const [showSegmentDropdown, setShowSegmentDropdown] = useState(false);
   const [rankingMode, setRankingMode] = useState<'top' | 'bottom'>('top');
   const [rankingLimit, setRankingLimit] = useState(10);
@@ -189,9 +205,13 @@ const ItemSalesHub: React.FC<{ user: User; userProfile?: UserProfile; dataOwnerI
       });
       setNormalizationMap(normMap);
 
-      const mappingObj: Record<string, { category: SkuCategory, segment?: string }> = {};
+      const mappingObj: Record<string, { category: SkuCategory, segment?: string, itemType: SkuItemType }> = {};
       skuArr.forEach(data => {
-        mappingObj[data.itemName.trim().toUpperCase()] = { category: data.category, segment: data.segment };
+        mappingObj[data.itemName.trim().toUpperCase()] = {
+          category: data.category,
+          segment: data.segment,
+          itemType: data.itemType || 'UNCLASSIFIED'
+        };
       });
       setSkuMappings(mappingObj);
     } catch (err) { console.error(err); } finally { setLoading(false); }
@@ -324,12 +344,17 @@ const ItemSalesHub: React.FC<{ user: User; userProfile?: UserProfile; dataOwnerI
         marginPercent: price > 0 ? (margin/price)*100 : 0, 
         velocity: data.quantity/totalDays, history, revenueHistory: data.revenueTrend, trendStatus: status,
         trendPercent: avgPrev > 0 ? ((avgRecent - avgPrev) / avgPrev) * 100 : 0,
-        segment: mapping?.segment
+        segment: mapping?.segment,
+        itemType: mapping?.itemType || 'UNCLASSIFIED'
       };
     }).filter(i => i.quantity > 0);
 
     const availableSegments = Array.from(new Set((Object.values(skuMappings) as { segment?: string }[]).map(m => m.segment).filter(Boolean))) as string[];
-    const finalItems = aggregated.filter(i => selectedSegments.length === 0 || (i.segment && selectedSegments.includes(i.segment)));
+    const matchesItemTypeScope = (itemType: SkuItemType) => itemTypeScope === 'ALL' || itemType === itemTypeScope;
+    const finalItems = aggregated.filter(i =>
+      matchesItemTypeScope(i.itemType) &&
+      (selectedSegments.length === 0 || (i.segment && selectedSegments.includes(i.segment)))
+    );
 
     const medianQty = [...finalItems].sort((a, b) => a.quantity - b.quantity)[Math.floor(finalItems.length / 2)]?.quantity || 0;
     const medianMargin = [...finalItems].sort((a, b) => a.margin - b.margin)[Math.floor(finalItems.length / 2)]?.margin || 0;
@@ -338,12 +363,15 @@ const ItemSalesHub: React.FC<{ user: User; userProfile?: UserProfile; dataOwnerI
     const comboMap: Record<string, { items: string[], count: number, totalRevenue: number }> = {};
     filteredSnaps.forEach(snap => {
        (snap.combos || []).forEach(c => {
-          // Check if all items in combo match the segment filter if active
-          if (selectedSegments.length > 0) {
+          // A product scope keeps modifier/add-on-only combinations out of the
+          // menu basket analysis, while the other scopes remain inspectable.
+          if (selectedSegments.length > 0 || itemTypeScope !== 'ALL') {
             const allMatch = c.items.every(item => {
               const masterName = (normalizationMap[item.trim().toUpperCase()] || item).trim().toUpperCase();
-              const seg = skuMappings[masterName]?.segment;
-              return seg && selectedSegments.includes(seg);
+              const mapping = skuMappings[masterName];
+              const segmentMatches = selectedSegments.length === 0 || Boolean(mapping?.segment && selectedSegments.includes(mapping.segment));
+              const itemTypeMatches = itemTypeScope === 'ALL' || (mapping?.itemType || 'UNCLASSIFIED') === itemTypeScope;
+              return segmentMatches && itemTypeMatches;
             });
             if (!allMatch) return;
           }
@@ -382,7 +410,7 @@ const ItemSalesHub: React.FC<{ user: User; userProfile?: UserProfile; dataOwnerI
       totalTheoreticalCost: finalItems.reduce((sum, i) => sum + ((i.cost + (i.servingsCost || 0)) * i.quantity), 0),
       totalRev: finalItems.reduce((sum, i) => sum + i.revenue, 0)
     };
-  }, [snapshots, storeFilter, channelMode, selectedMonth, itemCosts, normalizationMap, skuMappings, rentals, selectedSegments, rankingLimit, activeOutletIds]);
+  }, [snapshots, storeFilter, channelMode, selectedMonth, itemCosts, normalizationMap, skuMappings, rentals, selectedSegments, itemTypeScope, rankingLimit, activeOutletIds]);
 
   useEffect(() => {
     if (!intelligence) {
@@ -457,14 +485,16 @@ const ItemSalesHub: React.FC<{ user: User; userProfile?: UserProfile; dataOwnerI
         markupPct, requiredMarkupPct,
         hasCost: !!costRecord,
         segment: skuMappings[name]?.segment,
+        itemType: skuMappings[name]?.itemType || 'UNCLASSIFIED',
       };
     }).filter(r =>
       r.posQty > 0 && r.onlineQty > 0 &&
+      (itemTypeScope === 'ALL' || r.itemType === itemTypeScope) &&
       (selectedSegments.length === 0 || (r.segment && selectedSegments.includes(r.segment)))
     ).sort((a, b) => a.gapPct - b.gapPct);
 
     return { rows, takePercent, requiredMarkupPct: takePercent < 100 ? (takePercent / (100 - takePercent)) * 100 : 0 };
-  }, [snapshots, salesSnaps, storeFilter, itemCosts, normalizationMap, rentals, skuMappings, selectedSegments, activeOutletIds]);
+  }, [snapshots, salesSnaps, storeFilter, itemCosts, normalizationMap, rentals, skuMappings, selectedSegments, itemTypeScope, activeOutletIds]);
 
   // Zero-price modifiers (for example ICE, COLD, packing choices) carry unit
   // counts but no product revenue. They remain in the ledger, but including them
@@ -628,6 +658,8 @@ const ItemSalesHub: React.FC<{ user: User; userProfile?: UserProfile; dataOwnerI
           <div className="bg-white px-4 py-2.5 rounded-xl border border-slate-100 shadow-sm flex items-center gap-2"><MapPin size={14} className="text-emerald-500" /><select value={storeFilter} onChange={e => setStoreFilter(e.target.value)} className="bg-transparent font-bold text-xs outline-none uppercase tracking-tight">{!scopedOutlet && <option value="all">All Active Outlets</option>}{activeOutletOptions.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}</select></div>
 
           <div className="bg-white px-4 py-2.5 rounded-xl border border-slate-100 shadow-sm flex items-center gap-2" title="Quantity, revenue and margin respect this filter. Trend history, velocity, and combos have no per-channel breakdown in the data and always reflect combined POS + online."><Smartphone size={14} className="text-emerald-500" /><select value={channelMode} onChange={e => setChannelMode(e.target.value as ItemChannelMode)} className="bg-transparent font-bold text-xs outline-none uppercase tracking-tight">{CHANNEL_MODE_OPTIONS.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}</select></div>
+
+          <div className="bg-white px-4 py-2.5 rounded-xl border border-slate-100 shadow-sm flex items-center gap-2" title="Products is the default scope. Use the other scopes to inspect add-ons, modifiers, packaging, ignored rows, or unclassified data separately."><Package size={14} className="text-amber-500" /><select value={itemTypeScope} onChange={e => setItemTypeScope(e.target.value as ItemTypeScope)} className="bg-transparent font-bold text-xs outline-none uppercase tracking-tight">{ITEM_TYPE_SCOPE_OPTIONS.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></div>
 
           {intelligence?.availableSegments && intelligence.availableSegments.length > 0 && (
             <div className="relative">
