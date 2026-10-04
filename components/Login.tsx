@@ -8,7 +8,7 @@ import {
 import { doc, setDoc, getDoc } from 'firebase/firestore';
 import { auth, db } from '../firebase';
 import { UserProfile } from '../types';
-import { Cat, Mail, Lock, LogIn } from 'lucide-react';
+import { Mail, Lock, LogIn } from 'lucide-react';
 import ThemeToggle from './ThemeToggle';
 
 const Login: React.FC = () => {
@@ -58,8 +58,8 @@ const Login: React.FC = () => {
       <div className="absolute top-5 right-5 z-10"><ThemeToggle /></div>
       <div className="max-w-md w-full">
         <div className="text-center mb-10">
-          <div className="inline-flex items-center justify-center p-4 bg-indigo-600 rounded-2xl mb-4 shadow-xl shadow-indigo-500/20">
-            <Cat className="w-10 h-10 text-white" />
+          <div className="inline-flex h-28 w-36 items-center justify-center overflow-hidden rounded-2xl bg-black mb-4 shadow-xl shadow-emerald-950/40">
+            <img src="/neko-tech.png" alt="NekoTech" className="h-full w-full object-contain scale-[1.65]" />
           </div>
           <h1 className="text-4xl font-semibold text-white mb-2 tracking-tight">NekoMetrics</h1>
           <p className="text-[10px] font-bold uppercase tracking-[0.34em] text-amber-200/70">Restaurant Intelligence</p>

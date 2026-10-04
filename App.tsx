@@ -67,9 +67,9 @@ const AppSidebar: React.FC<{
 }> = ({ user, userProfile, role, isReadOnly, allowed, activeTab, onSelect, onSignOut, onClose }) => (
   <>
     <div className="p-5 md:p-6 flex items-center gap-3 border-b border-slate-800/70 md:border-0">
-      <div className="p-2 bg-indigo-50 rounded-lg shadow-lg shadow-indigo-500/20">
-        <div className="relative">
-          <Cat className="w-6 h-6 text-indigo-600" />
+      <div className="h-11 w-14 overflow-hidden rounded-lg bg-black shadow-lg shadow-emerald-950/30">
+        <div className="relative h-full w-full">
+          <img src="/neko-tech.png" alt="NekoTech" className="h-full w-full object-contain scale-[1.75]" />
           <div className="absolute -top-1 -right-1 w-2 h-2 bg-emerald-500 rounded-full border-2 border-slate-900" />
         </div>
       </div>
