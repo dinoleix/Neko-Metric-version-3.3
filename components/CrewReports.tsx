@@ -979,9 +979,9 @@ const CrewReports: React.FC<{ user: User; profile: UserProfile; onBack?: () => v
       ) : activeTab === 'entries' ? (
         <div className="space-y-3">
           <div className="grid grid-cols-3 gap-2">
-            <Tile label="Paid" value={`₹${entryTotals.paid.toLocaleString('en-IN')}`} tone="text-emerald-600" />
-            <Tile label="Pending" value={`₹${entryTotals.pending.toLocaleString('en-IN')}`} tone="text-amber-600" />
-            <Tile label="Total" value={`₹${entryTotals.total.toLocaleString('en-IN')}`} />
+            <Tile label="Paid / settled" value={`₹${entryTotals.paid.toLocaleString('en-IN')}`} tone="text-emerald-600" />
+            <Tile label="Pending / unpaid" value={`₹${entryTotals.pending.toLocaleString('en-IN')}`} tone="text-amber-600" />
+            <Tile label="All submitted" value={`₹${entryTotals.total.toLocaleString('en-IN')}`} />
           </div>
           {/* View toggle + exports */}
           <div className="flex flex-wrap items-center gap-2">

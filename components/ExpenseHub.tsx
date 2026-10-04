@@ -271,6 +271,14 @@ const ExpenseHub: React.FC<{ user: User; userProfile?: UserProfile; dataOwnerId:
       + ((viewMode === 'combined' || viewMode === 'purchase') ? (s2.crewPendingTotalPurchase || 0) : 0)
       + ((viewMode === 'combined' || viewMode === 'expense') ? (s2.crewPendingTotalExpense || 0) : 0), 0);
 
+    // Crew Reports intentionally shows every submitted bill, while this screen
+    // is cash-basis by default. Keep the three figures together so a pending
+    // bill can never look like it disappeared between the two modules.
+    const crewPaidTotal = filteredSnaps.reduce((acc, s2) => acc
+      + ((viewMode === 'combined' || viewMode === 'purchase') ? (s2.crewTotalPurchase || 0) : 0)
+      + ((viewMode === 'combined' || viewMode === 'expense') ? (s2.crewTotalExpense || 0) : 0), 0);
+    const crewSubmittedTotal = crewPaidTotal + pendingTotal;
+
     // Snapshots written before the crewPending* fields existed carry `undefined`,
     // not 0. Reporting those as "no unpaid spend" would understate silently, so
     // they are surfaced as needing a recount instead.
@@ -406,6 +414,8 @@ const ExpenseHub: React.FC<{ user: User; userProfile?: UserProfile; dataOwnerId:
       rentTotal: fixedRent,
       uncatTotal: csvUncat,
       isPayrollFiscal,
+      crewPaidTotal,
+      crewSubmittedTotal,
       pendingTotal,
       staleSnapshots,
       bucketOrigin
@@ -700,6 +710,33 @@ const ExpenseHub: React.FC<{ user: User; userProfile?: UserProfile; dataOwnerId:
         </div>
       )}
 
+      {analytics.crewSubmittedTotal > 0 && (
+        <section className="bg-indigo-50 border border-indigo-100 rounded-2xl p-5 flex flex-col lg:flex-row lg:items-center gap-4">
+          <div className="p-2.5 bg-indigo-600 rounded-xl shrink-0">
+            <ClipboardList className="text-white" size={20} />
+          </div>
+          <div className="flex-1">
+            <p className="text-[10px] font-black uppercase tracking-widest text-indigo-700">Crew Reports reconciliation</p>
+            <p className="text-sm font-bold text-indigo-950 mt-1">
+              Crew Reports shows every submitted bill. Expense Radar classifies paid bills into Inventory, Operations, Labour, or Storage.
+            </p>
+            <div className="flex flex-wrap gap-x-5 gap-y-1 mt-2 text-xs font-bold text-indigo-800">
+              <span>Submitted: ₹{Math.round(analytics.crewSubmittedTotal).toLocaleString('en-IN')}</span>
+              <span>Paid: ₹{Math.round(analytics.crewPaidTotal).toLocaleString('en-IN')}</span>
+              <span>Pending: ₹{Math.round(analytics.pendingTotal).toLocaleString('en-IN')}</span>
+            </div>
+          </div>
+          {!includePending && analytics.pendingTotal > 0 && (
+            <button
+              onClick={() => setIncludePending(true)}
+              className="shrink-0 px-5 py-3 bg-indigo-600 text-white rounded-xl font-black uppercase text-[10px] tracking-widest hover:bg-indigo-700 transition-all"
+            >
+              Include pending bills
+            </button>
+          )}
+        </section>
+      )}
+
       {analytics.storageTotal > 0 && (
         <div className="bg-sky-50 border border-sky-200 rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center gap-4">
           <div className="p-2.5 bg-sky-500/15 rounded-xl shrink-0">
@@ -744,7 +781,7 @@ const ExpenseHub: React.FC<{ user: User; userProfile?: UserProfile; dataOwnerId:
         <div className="py-40 bg-white rounded-[3.5rem] border-2 border-dashed border-slate-200 text-center"><SearchX size={56} className="mx-auto text-slate-200 mb-6" /><h3 className="text-2xl font-black text-slate-900">No Records Detected</h3><p className="text-slate-500 mt-2 font-medium">Verify your data catalog for the selected period.</p></div>
       ) : (
         <>
-          <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-8">
+          <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-8">
              <div className="bg-white p-10 rounded-[3rem] border border-slate-100 shadow-sm flex flex-col justify-between group hover:-translate-y-1 transition-all">
                 <div><p className="text-[11px] font-black text-slate-400 uppercase tracking-[0.2em] mb-2">Operational Outflow</p><h4 className="text-4xl font-black tracking-tighter text-slate-900">₹{analytics.opsTotal.toLocaleString()}</h4></div>
                 <div className="mt-8 flex items-center gap-3 text-slate-300 text-[10px] font-black uppercase"><Receipt size={14} className="text-indigo-400" /> Utility & G&A</div>
@@ -753,6 +790,10 @@ const ExpenseHub: React.FC<{ user: User; userProfile?: UserProfile; dataOwnerId:
                 {analytics.totalCogsOffset > 0 && <div className="absolute top-4 right-4"><PackageCheck size={20} className="text-emerald-500 animate-pulse" /></div>}
                 <div><p className="text-[11px] font-black text-slate-400 uppercase tracking-[0.2em] mb-2">Net Inventory Value</p><h4 className="text-4xl font-black tracking-tighter text-slate-900">₹{analytics.cogsTotal.toLocaleString()}</h4></div>
                 <div className="mt-8 flex items-center gap-3 text-slate-300 text-[10px] font-black uppercase"><ShoppingCart size={14} className="text-amber-400" /> Adjusted Consumption</div>
+             </div>
+             <div className="bg-white p-10 rounded-[3rem] border border-slate-100 shadow-sm flex flex-col justify-between group hover:-translate-y-1 transition-all">
+                <div><p className="text-[11px] font-black text-slate-400 uppercase tracking-[0.2em] mb-2">Labour &amp; Staff</p><h4 className="text-4xl font-black tracking-tighter text-slate-900">₹{analytics.labourTotal.toLocaleString()}</h4></div>
+                <div className="mt-8 flex items-center gap-3 text-slate-300 text-[10px] font-black uppercase"><Users size={14} className="text-indigo-400" /> Meals, wages &amp; payroll</div>
              </div>
              <div className="bg-slate-900 p-10 rounded-[3rem] text-white shadow-2xl relative overflow-hidden group hover:-translate-y-1 transition-all">
                 <div className="absolute top-0 right-0 p-8 opacity-10 group-hover:rotate-12 transition-transform"><Flame size={120} /></div>
