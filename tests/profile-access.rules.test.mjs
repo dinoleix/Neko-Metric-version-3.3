@@ -70,6 +70,10 @@ beforeEach(async () => {
       userId: 'owner', ownerId: 'owner', outletId: 'outlet-a', month: 'September', year: '2026',
       status: 'frozen', totals: {}, lines: [], countedAt: 1, updatedAt: 1,
     });
+    batch.set(doc(db, 'inventory_counts', 'draft-count'), {
+      userId: 'owner', ownerId: 'owner', outletId: 'outlet-a', month: 'October', year: '2026',
+      status: 'draft', totals: {}, lines: [], countedAt: 1, updatedAt: 1,
+    });
     batch.set(doc(db, 'vendors', 'vendor'), { userId: 'crew', ownerId: 'owner', name: 'Supplier' });
     batch.set(doc(db, 'products', 'product'), { userId: 'crew', ownerId: 'owner', name: 'Rice' });
     batch.set(doc(db, 'fc_ingredients', 'ingredient'), { userId: 'manager', ownerId: 'owner', name: 'Rice' });
@@ -213,6 +217,11 @@ test('a frozen inventory count is view-only except for an auditable admin unfree
   await assertSucceeds(updateDoc(frozen, {
     status: 'draft', updatedAt: 2, updatedBy: 'owner', unfrozenAt: 2, unfrozenBy: 'owner',
   }));
+});
+
+test('only an admin can delete a draft inventory count', async () => {
+  await assertFails(deleteDoc(doc(dbFor('manager-store'), 'inventory_counts', 'draft-count')));
+  await assertSucceeds(deleteDoc(doc(dbFor('owner'), 'inventory_counts', 'draft-count')));
 });
 
 test('store manager is restricted to the assigned outlet while HQ manager keeps all stores', async () => {

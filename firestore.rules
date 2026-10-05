@@ -702,6 +702,7 @@ service cloud.firestore {
       // administrator can make the one narrow, auditable transition to draft.
       allow write: if isGenericCollection()
         && (!(collection == 'inventory_counts' && resource != null && resource.data.get('status', 'draft') == 'frozen') || isAdminUnfreezingInventoryCount())
+        && !(collection == 'inventory_counts' && request.resource == null && !(isAdmin() && resource.data.get('status', 'draft') == 'draft'))
         && isTenantStaff() && genericManagerWriteAllowed() && (
         (
           (resource == null || resource.data.get('userId', '') == request.auth.uid) &&

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import type { User } from 'firebase/auth';
-import { collection, doc, getDocs, query, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
+import { collection, deleteDoc, doc, getDocs, query, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import {
   InventoryBucket, InventoryCount as InventoryCountRecord, InventoryCountLine,
@@ -270,6 +270,23 @@ const InventoryCount: React.FC<Props> = ({ user, dataOwnerId, userProfile }) => 
     } catch (error) {
       console.error('Inventory count unfreeze failed', error);
       alert('Could not unfreeze this count.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const deleteDraftCount = async () => {
+    if (!selectedCount?.id || selectedCount.status !== 'draft' || !canUnfreeze) return;
+    if (!window.confirm(`Delete the ${selectedCount.month} ${selectedCount.year} draft for ${getOutletName(selectedCount.outletId)}? This cannot be undone.`)) return;
+    setSaving(true);
+    try {
+      await deleteDoc(doc(db, 'inventory_counts', selectedCount.id));
+      setSavedCounts(current => current.filter(count => count.id !== selectedCount.id));
+      setStatus('draft');
+      setLines(items.map(item => ({ inventoryItemId: item.id!, name: item.name, bucket: item.bucket, unit: item.unit, sourceUnit: item.sourceUnit, quantity: 0, unitCost: Number(item.unitCost || 0), total: 0 })));
+    } catch (error) {
+      console.error('Inventory draft deletion failed', error);
+      alert('Could not delete this draft.');
     } finally {
       setSaving(false);
     }
@@ -547,7 +564,7 @@ const InventoryCount: React.FC<Props> = ({ user, dataOwnerId, userProfile }) => 
           <section className={`rounded-3xl border p-5 flex flex-col md:flex-row gap-4 md:items-center justify-between ${isFrozen ? 'border-slate-200 bg-slate-100' : 'border-amber-100 bg-amber-50'}`}>
             <div className="flex gap-3"><AlertTriangle className={`shrink-0 ${isFrozen ? 'text-slate-600' : 'text-amber-600'}`} size={20} /><div><p className={`font-black ${isFrozen ? 'text-slate-900' : 'text-amber-900'}`}>{isFrozen ? 'This count is frozen' : 'Review before using it in P&L'}</p><p className={`text-sm mt-1 ${isFrozen ? 'text-slate-700' : 'text-amber-800'}`}>{isFrozen ? 'The recorded quantities, costs and groups are locked. It remains available here as a historical closing count.' : 'Saving this count creates an inventory record only. It does not change the current manual Closing Stock in P&L Command.'}</p></div></div>
             {isFrozen && canUnfreeze && <button onClick={unfreezeCount} disabled={saving} className="shrink-0 px-4 py-3 bg-white border border-slate-300 text-slate-800 rounded-xl font-bold text-sm disabled:opacity-50">{saving ? 'Unfreezing…' : 'Unfreeze count'}</button>}
-            {!isFrozen && <div className="flex flex-wrap gap-2 shrink-0"><button onClick={() => saveCount('draft')} disabled={saving} className="px-4 py-3 bg-white border border-amber-200 text-amber-800 rounded-xl font-bold text-sm disabled:opacity-50 flex items-center gap-2">{saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} Save draft</button><button onClick={() => saveCount('reviewed')} disabled={saving} className="px-4 py-3 bg-white border border-emerald-200 text-emerald-800 rounded-xl font-bold text-sm disabled:opacity-50 flex items-center gap-2">{saving ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />} Mark reviewed</button><button onClick={() => saveCount('frozen')} disabled={saving} className="px-4 py-3 bg-slate-900 text-white rounded-xl font-bold text-sm disabled:opacity-50 flex items-center gap-2">{saving ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />} Freeze count</button></div>}
+            {!isFrozen && <div className="flex flex-wrap gap-2 shrink-0">{canUnfreeze && selectedCount?.status === 'draft' && <button onClick={deleteDraftCount} disabled={saving} className="px-4 py-3 bg-white border border-rose-200 text-rose-700 rounded-xl font-bold text-sm disabled:opacity-50">Delete draft</button>}<button onClick={() => saveCount('draft')} disabled={saving} className="px-4 py-3 bg-white border border-amber-200 text-amber-800 rounded-xl font-bold text-sm disabled:opacity-50 flex items-center gap-2">{saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} Save draft</button><button onClick={() => saveCount('reviewed')} disabled={saving} className="px-4 py-3 bg-white border border-emerald-200 text-emerald-800 rounded-xl font-bold text-sm disabled:opacity-50 flex items-center gap-2">{saving ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />} Mark reviewed</button><button onClick={() => saveCount('frozen')} disabled={saving} className="px-4 py-3 bg-slate-900 text-white rounded-xl font-bold text-sm disabled:opacity-50 flex items-center gap-2">{saving ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />} Freeze count</button></div>}
           </section>
         </>
       )}
