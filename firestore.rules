@@ -683,7 +683,12 @@ service cloud.firestore {
       //    role did not actually let them edit anything here.
       //
       // Only the explicit rules above authorize user/profile group access.
-      allow write: if isGenericCollection() && isTenantStaff() && genericManagerWriteAllowed() && (
+      // A frozen closing count is accounting history. The UI also becomes
+      // read-only, but this server-side guard prevents direct API writes,
+      // imports, deletes, and accidental overwrites after it is frozen.
+      allow write: if isGenericCollection()
+        && !(collection == 'inventory_counts' && resource != null && resource.data.get('status', 'draft') == 'frozen')
+        && isTenantStaff() && genericManagerWriteAllowed() && (
         (
           (resource == null || resource.data.get('userId', '') == request.auth.uid) &&
           (request.resource == null || request.resource.data.get('userId', '') == request.auth.uid)

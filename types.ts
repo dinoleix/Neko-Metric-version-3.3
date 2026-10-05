@@ -703,7 +703,7 @@ export interface InventoryCountLine {
   total: number;
 }
 
-/** A draft or reviewed detailed count. It does not alter the P&L adjustment. */
+/** A detailed count. A frozen count is an immutable historical record. */
 export interface InventoryCount {
   id?: string;
   userId: string;
@@ -711,11 +711,13 @@ export interface InventoryCount {
   outletId: string;
   month: string;
   year: string;
-  status: 'draft' | 'reviewed';
+  status: 'draft' | 'reviewed' | 'frozen';
   lines: InventoryCountLine[];
   totals: Record<InventoryBucket, number>;
   countedAt: number;
   updatedAt: number;
+  frozenAt?: number;
+  frozenBy?: string;
 }
 
 export interface SalesSummaryRecord {

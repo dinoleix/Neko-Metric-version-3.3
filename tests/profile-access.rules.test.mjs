@@ -66,6 +66,10 @@ beforeEach(async () => {
       userId: 'owner', outletId: 'outlet-b', month: 'September', year: '2026',
       totalPurchase: 600, crewTotalPurchase: 30, crewLastUpdated: 1,
     });
+    batch.set(doc(db, 'inventory_counts', 'frozen-count'), {
+      userId: 'owner', ownerId: 'owner', outletId: 'outlet-a', month: 'September', year: '2026',
+      status: 'frozen', totals: {}, lines: [], countedAt: 1, updatedAt: 1,
+    });
     batch.set(doc(db, 'vendors', 'vendor'), { userId: 'crew', ownerId: 'owner', name: 'Supplier' });
     batch.set(doc(db, 'products', 'product'), { userId: 'crew', ownerId: 'owner', name: 'Rice' });
     batch.set(doc(db, 'fc_ingredients', 'ingredient'), { userId: 'manager', ownerId: 'owner', name: 'Rice' });
@@ -196,6 +200,15 @@ test('unrelated working financial reads/writes and crew entry updates remain sup
   await assertSucceeds(getDoc(doc(dbFor('viewer'), 'sales_snapshots', 'sales')));
   await assertFails(updateDoc(doc(dbFor('viewer'), 'sales_snapshots', 'sales'), { total: 0 }));
   await assertSucceeds(updateDoc(doc(dbFor('crew'), 'crew_entries', 'entry'), { status: 'paid' }));
+});
+
+test('a frozen inventory count remains readable but cannot be overwritten or deleted', async () => {
+  const frozen = doc(dbFor('owner'), 'inventory_counts', 'frozen-count');
+  await assertSucceeds(getDoc(frozen));
+  await assertFails(updateDoc(frozen, { status: 'draft', updatedAt: 2 }));
+  await assertFails(setDoc(frozen, { userId: 'owner', ownerId: 'owner', outletId: 'outlet-a', status: 'draft' }, { merge: true }));
+  await assertFails(deleteDoc(frozen));
+  await assertFails(updateDoc(doc(dbFor('manager-store'), 'inventory_counts', 'frozen-count'), { updatedAt: 2 }));
 });
 
 test('store manager is restricted to the assigned outlet while HQ manager keeps all stores', async () => {

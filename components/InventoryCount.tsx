@@ -117,7 +117,7 @@ const InventoryCount: React.FC<Props> = ({ user, dataOwnerId, userProfile }) => 
   const [rentals, setRentals] = useState<StoreRental[]>([]);
   const [savedCounts, setSavedCounts] = useState<InventoryCountRecord[]>([]);
   const [lines, setLines] = useState<DraftLine[]>([]);
-  const [status, setStatus] = useState<'draft' | 'reviewed'>('draft');
+  const [status, setStatus] = useState<InventoryCountRecord['status']>('draft');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [seeding, setSeeding] = useState(false);
@@ -208,12 +208,14 @@ const InventoryCount: React.FC<Props> = ({ user, dataOwnerId, userProfile }) => 
     };
   }, [allItems]);
   const countedItems = lines.filter(line => line.dirty).length;
+  const isFrozen = status === 'frozen';
   const shownLines = useMemo(() => {
     const needle = queryText.trim().toLowerCase();
     return lines.filter(line => (bucket === 'ALL' || line.bucket === bucket) && (!needle || line.name.toLowerCase().includes(needle)));
   }, [bucket, lines, queryText]);
 
   const updateLine = (id: string, patch: Partial<DraftLine>) => {
+    if (isFrozen) return;
     setLines(current => current.map(line => {
       if (line.inventoryItemId !== id) return line;
       const next = { ...line, ...patch, dirty: true };
@@ -222,8 +224,9 @@ const InventoryCount: React.FC<Props> = ({ user, dataOwnerId, userProfile }) => 
     }));
   };
 
-  const saveCount = async (nextStatus: 'draft' | 'reviewed') => {
-    if (!outletId) return;
+  const saveCount = async (nextStatus: InventoryCountRecord['status']) => {
+    if (!outletId || isFrozen) return;
+    if (nextStatus === 'frozen' && !window.confirm('Freeze this closing count? It will remain visible for history but quantities, costs and groups can no longer be edited.')) return;
     setSaving(true);
     try {
       const countId = `${dataOwnerId}_${outletId}_${year}_${month}`;
@@ -240,6 +243,7 @@ const InventoryCount: React.FC<Props> = ({ user, dataOwnerId, userProfile }) => 
         countedAt: Date.now(),
         updatedAt: Date.now(),
         updatedBy: user.uid,
+        ...(nextStatus === 'frozen' ? { frozenAt: Date.now(), frozenBy: user.uid } : {}),
       }, { merge: true });
       setStatus(nextStatus);
       setLines(current => current.map(line => ({ ...line, dirty: false })));
@@ -426,11 +430,11 @@ const InventoryCount: React.FC<Props> = ({ user, dataOwnerId, userProfile }) => 
       </section>
 
       {!!savedCountCards.length && <section className="bg-white rounded-3xl border border-slate-100 shadow-sm p-5">
-        <div className="flex flex-col md:flex-row gap-2 md:items-end justify-between mb-4"><div><p className="text-[10px] font-black uppercase tracking-widest text-indigo-600">Saved stock counts</p><h2 className="font-black text-lg text-slate-900 mt-1">Open a month-end count</h2><p className="text-sm text-slate-500 mt-1">Choose the store and date first. The amount is the full closing-stock value for that count.</p></div><p className="text-xs text-slate-400 font-semibold">Drafts can still be reviewed or corrected.</p></div>
+        <div className="flex flex-col md:flex-row gap-2 md:items-end justify-between mb-4"><div><p className="text-[10px] font-black uppercase tracking-widest text-indigo-600">Saved stock counts</p><h2 className="font-black text-lg text-slate-900 mt-1">Open a month-end count</h2><p className="text-sm text-slate-500 mt-1">Choose the store and date first. The amount is the full closing-stock value for that count.</p></div><p className="text-xs text-slate-400 font-semibold">Frozen counts are permanently view-only.</p></div>
         <div className="grid md:grid-cols-2 gap-3">{savedCountCards.map(count => {
           const total = countTotal(count.totals);
           const isSelected = count.outletId === outletId && count.month === month && count.year === year;
-          return <button key={count.id} onClick={() => { setMonth(count.month); setYear(count.year); setOutletId(count.outletId); }} className={`text-left rounded-2xl border p-4 transition-colors ${isSelected ? 'border-indigo-300 bg-indigo-50 ring-2 ring-indigo-100' : 'border-slate-100 hover:border-indigo-200 hover:bg-slate-50'}`}><div className="flex justify-between gap-3"><div><p className="font-black text-slate-900">{count.month} {count.year} closing count</p><p className="text-sm font-semibold text-slate-500 mt-1">{getOutletName(count.outletId)}</p></div><span className={`text-[10px] uppercase tracking-wider font-black px-2.5 py-1 rounded-full h-fit ${count.status === 'reviewed' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>{count.status}</span></div><p className="text-2xl font-black text-slate-900 mt-4">{money(total)}</p><p className="text-xs text-indigo-600 font-bold mt-1">View details →</p></button>;
+          return <button key={count.id} onClick={() => { setMonth(count.month); setYear(count.year); setOutletId(count.outletId); }} className={`text-left rounded-2xl border p-4 transition-colors ${isSelected ? 'border-indigo-300 bg-indigo-50 ring-2 ring-indigo-100' : 'border-slate-100 hover:border-indigo-200 hover:bg-slate-50'}`}><div className="flex justify-between gap-3"><div><p className="font-black text-slate-900">{count.month} {count.year} closing count</p><p className="text-sm font-semibold text-slate-500 mt-1">{getOutletName(count.outletId)}</p></div><span className={`text-[10px] uppercase tracking-wider font-black px-2.5 py-1 rounded-full h-fit ${count.status === 'frozen' ? 'bg-slate-200 text-slate-700' : count.status === 'reviewed' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>{count.status}</span></div><p className="text-2xl font-black text-slate-900 mt-4">{money(total)}</p><p className="text-xs text-indigo-600 font-bold mt-1">View details →</p></button>;
         })}</div>
       </section>}
 
@@ -441,9 +445,9 @@ const InventoryCount: React.FC<Props> = ({ user, dataOwnerId, userProfile }) => 
           <SelectField label="Store" value={outletId} onChange={setOutletId} options={activeOutlets.map(outlet => outlet.id)} labels={Object.fromEntries(activeOutlets.map(outlet => [outlet.id, outlet.name]))} disabled={!!scopedOutlet} />
         </div>
         {canManageItems && <div className="flex flex-wrap gap-2">
-          <button onClick={() => setShowAdd(true)} className="px-4 py-3 rounded-xl border border-slate-200 text-slate-700 font-bold text-sm hover:bg-slate-50 flex items-center gap-2"><Plus size={16} /> Add item</button>
-          <button onClick={seedFromRecipes} disabled={seeding} className="px-4 py-3 rounded-xl bg-indigo-50 text-indigo-700 font-bold text-sm hover:bg-indigo-100 flex items-center gap-2 disabled:opacity-60">{seeding ? <Loader2 size={16} className="animate-spin" /> : <PackagePlus size={16} />} Add recipe items</button>
-          {!!items.length && <button onClick={sortRecipeItems} disabled={sorting} className="px-4 py-3 rounded-xl bg-sky-50 text-sky-700 font-bold text-sm hover:bg-sky-100 flex items-center gap-2 disabled:opacity-60">{sorting ? <Loader2 size={16} className="animate-spin" /> : <Coffee size={16} />} Sort drink items</button>}
+          <button onClick={() => setShowAdd(true)} disabled={isFrozen} className="px-4 py-3 rounded-xl border border-slate-200 text-slate-700 font-bold text-sm hover:bg-slate-50 flex items-center gap-2 disabled:opacity-60"><Plus size={16} /> Add item</button>
+          <button onClick={seedFromRecipes} disabled={seeding || isFrozen} className="px-4 py-3 rounded-xl bg-indigo-50 text-indigo-700 font-bold text-sm hover:bg-indigo-100 flex items-center gap-2 disabled:opacity-60">{seeding ? <Loader2 size={16} className="animate-spin" /> : <PackagePlus size={16} />} Add recipe items</button>
+          {!!items.length && <button onClick={sortRecipeItems} disabled={sorting || isFrozen} className="px-4 py-3 rounded-xl bg-sky-50 text-sky-700 font-bold text-sm hover:bg-sky-100 flex items-center gap-2 disabled:opacity-60">{sorting ? <Loader2 size={16} className="animate-spin" /> : <Coffee size={16} />} Sort drink items</button>}
         </div>}
       </section>
 
@@ -468,7 +472,7 @@ const InventoryCount: React.FC<Props> = ({ user, dataOwnerId, userProfile }) => 
         </section>
       ) : (
         <>
-          {selectedCount && <section className="rounded-2xl bg-indigo-50 border border-indigo-100 px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2"><div><p className="font-black text-indigo-950">Viewing {selectedCount.month} {selectedCount.year} closing count — {getOutletName(selectedCount.outletId)}</p><p className="text-sm text-indigo-700 mt-0.5">The quantities below are the saved physical count for this date.</p></div><p className="font-black text-indigo-950">{money(countTotal(selectedCount.totals))}</p></section>}
+          {selectedCount && <section className={`rounded-2xl border px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2 ${isFrozen ? 'bg-slate-100 border-slate-200' : 'bg-indigo-50 border-indigo-100'}`}><div><p className="font-black text-slate-950">Viewing {selectedCount.month} {selectedCount.year} closing count — {getOutletName(selectedCount.outletId)}</p><p className="text-sm text-slate-700 mt-0.5">{isFrozen ? 'This count is frozen and is available for viewing only.' : 'The quantities below are the saved physical count for this date.'}</p></div><p className="font-black text-slate-950">{money(countTotal(selectedCount.totals))}</p></section>}
           <section className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             {BUCKETS.map(entry => <button key={entry.id} onClick={() => setBucket(bucket === entry.id ? 'ALL' : entry.id)} className={`text-left p-4 rounded-2xl border transition-all ${bucket === entry.id ? entry.activeClass : 'bg-white border-slate-100 hover:border-slate-200'}`}>
               <div className={`flex items-center gap-2 ${entry.iconClass}`}><span>{entry.icon}</span><span className="text-[10px] font-black uppercase tracking-wider">{entry.short}</span></div>
@@ -476,7 +480,7 @@ const InventoryCount: React.FC<Props> = ({ user, dataOwnerId, userProfile }) => 
               <p className="text-[10px] text-slate-400 font-semibold mt-1">Preview only</p>
             </button>)}
           </section>
-          {canManageItems && <details className="text-sm text-slate-500"><summary className="cursor-pointer font-bold text-slate-500 hover:text-slate-800">Admin import tools</summary><div className="mt-3 rounded-2xl border border-slate-100 bg-slate-50 p-4 flex flex-col sm:flex-row gap-3 sm:items-center justify-between"><p>Use this only to re-import the approved August 2026 sheet. It is not needed to open an existing count.</p><button onClick={importAugustCount} disabled={importingAugust} className="shrink-0 px-4 py-2.5 rounded-xl bg-white border border-slate-200 text-slate-700 font-bold text-sm hover:bg-slate-100 flex items-center gap-2 disabled:opacity-60">{importingAugust ? <Loader2 size={16} className="animate-spin" /> : <ClipboardCheck size={16} />} Re-import August count</button></div></details>}
+          {canManageItems && <details className="text-sm text-slate-500"><summary className="cursor-pointer font-bold text-slate-500 hover:text-slate-800">Admin import tools</summary><div className="mt-3 rounded-2xl border border-slate-100 bg-slate-50 p-4 flex flex-col sm:flex-row gap-3 sm:items-center justify-between"><p>Use this only to re-import the approved August 2026 sheet. It is not needed to open an existing count.</p><button onClick={importAugustCount} disabled={importingAugust || isFrozen} className="shrink-0 px-4 py-2.5 rounded-xl bg-white border border-slate-200 text-slate-700 font-bold text-sm hover:bg-slate-100 flex items-center gap-2 disabled:opacity-60">{importingAugust ? <Loader2 size={16} className="animate-spin" /> : <ClipboardCheck size={16} />} Re-import August count</button></div></details>}
 
           <section className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
             <div className="p-5 border-b border-slate-100 flex flex-col md:flex-row gap-3 justify-between md:items-center">
@@ -489,10 +493,10 @@ const InventoryCount: React.FC<Props> = ({ user, dataOwnerId, userProfile }) => 
                 <tbody className="divide-y divide-slate-50">
                   {shownLines.map(line => <tr key={line.inventoryItemId} className="hover:bg-slate-50/70">
                     <td className="px-5 py-3.5"><p className="font-bold text-sm text-slate-800">{line.name}</p></td>
-                    <td className="px-4 py-3.5">{canManageItems ? <select aria-label={`Group for ${line.name}`} value={line.bucket} onChange={event => void updateItemBucket(line.inventoryItemId, event.target.value as InventoryBucket)} className="text-[10px] font-black uppercase tracking-wide text-slate-600 border border-slate-200 rounded-lg px-2 py-1.5 bg-white"><option value="FOOD">Food</option><option value="DRINKS">Drinks</option><option value="FOOD SERVINGS">Food packaging</option><option value="DRINKS SERVINGS">Drink packaging</option></select> : <span className="text-[10px] font-black uppercase tracking-wide text-slate-500">{BUCKETS.find(entry => entry.id === line.bucket)?.short}</span>}</td>
-                    <td className="px-4 py-3.5"><input type="number" min="0" step="any" value={line.quantity || ''} onChange={event => updateLine(line.inventoryItemId, { quantity: Number(event.target.value) })} placeholder="0" className="w-28 ml-auto block text-right px-3 py-2 border border-slate-200 rounded-lg font-bold text-slate-800 focus:ring-2 focus:ring-indigo-200 outline-none" /></td>
+                    <td className="px-4 py-3.5">{canManageItems ? <select aria-label={`Group for ${line.name}`} value={line.bucket} disabled={isFrozen} onChange={event => void updateItemBucket(line.inventoryItemId, event.target.value as InventoryBucket)} className="text-[10px] font-black uppercase tracking-wide text-slate-600 border border-slate-200 rounded-lg px-2 py-1.5 bg-white disabled:opacity-60"><option value="FOOD">Food</option><option value="DRINKS">Drinks</option><option value="FOOD SERVINGS">Food packaging</option><option value="DRINKS SERVINGS">Drink packaging</option></select> : <span className="text-[10px] font-black uppercase tracking-wide text-slate-500">{BUCKETS.find(entry => entry.id === line.bucket)?.short}</span>}</td>
+                    <td className="px-4 py-3.5"><input type="number" min="0" step="any" disabled={isFrozen} value={line.quantity || ''} onChange={event => updateLine(line.inventoryItemId, { quantity: Number(event.target.value) })} placeholder="0" className="w-28 ml-auto block text-right px-3 py-2 border border-slate-200 rounded-lg font-bold text-slate-800 focus:ring-2 focus:ring-indigo-200 outline-none disabled:bg-slate-100 disabled:text-slate-500" /></td>
                     <td className="px-4 py-3.5 text-sm font-bold text-slate-500">{line.sourceUnit || MEASURE_UNITS[line.unit].label}</td>
-                    <td className="px-4 py-3.5"><input type="number" min="0" step="any" value={line.unitCost || ''} onChange={event => updateLine(line.inventoryItemId, { unitCost: Number(event.target.value) })} placeholder="0" className="w-28 ml-auto block text-right px-3 py-2 border border-slate-200 rounded-lg font-semibold text-slate-600 focus:ring-2 focus:ring-indigo-200 outline-none" /></td>
+                    <td className="px-4 py-3.5"><input type="number" min="0" step="any" disabled={isFrozen} value={line.unitCost || ''} onChange={event => updateLine(line.inventoryItemId, { unitCost: Number(event.target.value) })} placeholder="0" className="w-28 ml-auto block text-right px-3 py-2 border border-slate-200 rounded-lg font-semibold text-slate-600 focus:ring-2 focus:ring-indigo-200 outline-none disabled:bg-slate-100 disabled:text-slate-500" /></td>
                     <td className="px-5 py-3.5 text-right font-black text-slate-900">{money((line.quantity || 0) * (line.unitCost || 0))}</td>
                   </tr>)}
                 </tbody>
@@ -507,22 +511,22 @@ const InventoryCount: React.FC<Props> = ({ user, dataOwnerId, userProfile }) => 
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Physical quantity
-                      <input type="number" min="0" step="any" value={line.quantity || ''} onChange={event => updateLine(line.inventoryItemId, { quantity: Number(event.target.value) })} placeholder="0" className="mt-1.5 w-full px-3 py-3 border border-slate-200 rounded-xl text-lg font-black text-slate-800 focus:ring-2 focus:ring-indigo-200 outline-none" />
+                      <input type="number" min="0" step="any" disabled={isFrozen} value={line.quantity || ''} onChange={event => updateLine(line.inventoryItemId, { quantity: Number(event.target.value) })} placeholder="0" className="mt-1.5 w-full px-3 py-3 border border-slate-200 rounded-xl text-lg font-black text-slate-800 focus:ring-2 focus:ring-indigo-200 outline-none disabled:bg-slate-100 disabled:text-slate-500" />
                     </label>
                     <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Unit cost
-                      <input type="number" min="0" step="any" value={line.unitCost || ''} onChange={event => updateLine(line.inventoryItemId, { unitCost: Number(event.target.value) })} placeholder="0" className="mt-1.5 w-full px-3 py-3 border border-slate-200 rounded-xl text-lg font-bold text-slate-700 focus:ring-2 focus:ring-indigo-200 outline-none" />
+                      <input type="number" min="0" step="any" disabled={isFrozen} value={line.unitCost || ''} onChange={event => updateLine(line.inventoryItemId, { unitCost: Number(event.target.value) })} placeholder="0" className="mt-1.5 w-full px-3 py-3 border border-slate-200 rounded-xl text-lg font-bold text-slate-700 focus:ring-2 focus:ring-indigo-200 outline-none disabled:bg-slate-100 disabled:text-slate-500" />
                     </label>
                   </div>
-                  {canManageItems ? <select aria-label={`Group for ${line.name}`} value={line.bucket} onChange={event => void updateItemBucket(line.inventoryItemId, event.target.value as InventoryBucket)} className="w-full text-xs font-black uppercase tracking-wide text-slate-600 border border-slate-200 rounded-xl px-3 py-2.5 bg-white"><option value="FOOD">Food ingredients</option><option value="DRINKS">Drink ingredients</option><option value="FOOD SERVINGS">Food packaging</option><option value="DRINKS SERVINGS">Drink packaging</option></select> : <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">{BUCKETS.find(entry => entry.id === line.bucket)?.short}</p>}
+                  {canManageItems ? <select aria-label={`Group for ${line.name}`} value={line.bucket} disabled={isFrozen} onChange={event => void updateItemBucket(line.inventoryItemId, event.target.value as InventoryBucket)} className="w-full text-xs font-black uppercase tracking-wide text-slate-600 border border-slate-200 rounded-xl px-3 py-2.5 bg-white disabled:bg-slate-100 disabled:text-slate-500"><option value="FOOD">Food ingredients</option><option value="DRINKS">Drink ingredients</option><option value="FOOD SERVINGS">Food packaging</option><option value="DRINKS SERVINGS">Drink packaging</option></select> : <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">{BUCKETS.find(entry => entry.id === line.bucket)?.short}</p>}
                 </article>
               ))}
             </div>
             {!shownLines.length && <div className="py-12 text-center text-slate-400 text-sm font-semibold">No stock items match this filter.</div>}
           </section>
 
-          <section className="rounded-3xl border border-amber-100 bg-amber-50 p-5 flex flex-col md:flex-row gap-4 md:items-center justify-between">
-            <div className="flex gap-3"><AlertTriangle className="text-amber-600 shrink-0" size={20} /><div><p className="font-black text-amber-900">Review before using it in P&amp;L</p><p className="text-sm text-amber-800 mt-1">Saving this count creates an inventory record only. It does not change the current manual Closing Stock in P&amp;L Command.</p></div></div>
-            <div className="flex flex-wrap gap-2 shrink-0"><button onClick={() => saveCount('draft')} disabled={saving} className="px-4 py-3 bg-white border border-amber-200 text-amber-800 rounded-xl font-bold text-sm disabled:opacity-50 flex items-center gap-2">{saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} Save draft</button><button onClick={() => saveCount('reviewed')} disabled={saving} className="px-4 py-3 bg-amber-600 text-white rounded-xl font-bold text-sm disabled:opacity-50 flex items-center gap-2">{saving ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />} Mark reviewed</button></div>
+          <section className={`rounded-3xl border p-5 flex flex-col md:flex-row gap-4 md:items-center justify-between ${isFrozen ? 'border-slate-200 bg-slate-100' : 'border-amber-100 bg-amber-50'}`}>
+            <div className="flex gap-3"><AlertTriangle className={`shrink-0 ${isFrozen ? 'text-slate-600' : 'text-amber-600'}`} size={20} /><div><p className={`font-black ${isFrozen ? 'text-slate-900' : 'text-amber-900'}`}>{isFrozen ? 'This count is frozen' : 'Review before using it in P&L'}</p><p className={`text-sm mt-1 ${isFrozen ? 'text-slate-700' : 'text-amber-800'}`}>{isFrozen ? 'The recorded quantities, costs and groups are locked. It remains available here as a historical closing count.' : 'Saving this count creates an inventory record only. It does not change the current manual Closing Stock in P&L Command.'}</p></div></div>
+            {!isFrozen && <div className="flex flex-wrap gap-2 shrink-0"><button onClick={() => saveCount('draft')} disabled={saving} className="px-4 py-3 bg-white border border-amber-200 text-amber-800 rounded-xl font-bold text-sm disabled:opacity-50 flex items-center gap-2">{saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} Save draft</button><button onClick={() => saveCount('reviewed')} disabled={saving} className="px-4 py-3 bg-white border border-emerald-200 text-emerald-800 rounded-xl font-bold text-sm disabled:opacity-50 flex items-center gap-2">{saving ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />} Mark reviewed</button><button onClick={() => saveCount('frozen')} disabled={saving} className="px-4 py-3 bg-slate-900 text-white rounded-xl font-bold text-sm disabled:opacity-50 flex items-center gap-2">{saving ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />} Freeze count</button></div>}
           </section>
         </>
       )}
