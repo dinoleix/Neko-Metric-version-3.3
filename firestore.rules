@@ -668,6 +668,19 @@ service cloud.firestore {
           ((resource == null || managerCanAccessResourceOutlet()) &&
            (request.resource == null || managerCanAccessIncomingOutlet()));
       }
+      function isAdminUnfreezingInventoryCount() {
+        return collection == 'inventory_counts'
+          && resource != null
+          && request.resource != null
+          && resource.data.get('status', 'draft') == 'frozen'
+          && request.resource.data.get('status', '') == 'draft'
+          && isAdmin()
+          && request.resource.data.get('updatedBy', '') == request.auth.uid
+          && request.resource.data.get('unfrozenBy', '') == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'status', 'updatedAt', 'updatedBy', 'unfrozenAt', 'unfrozenBy'
+          ]);
+      }
       // resource == null allows getDoc() on a not-yet-existing doc (no data to leak);
       // without it, canRead() dereferences resource.data.userId on null and denies.
       allow read: if isGenericCollection() && (resource == null || (canRead() && genericManagerReadAllowed()));
@@ -685,9 +698,10 @@ service cloud.firestore {
       // Only the explicit rules above authorize user/profile group access.
       // A frozen closing count is accounting history. The UI also becomes
       // read-only, but this server-side guard prevents direct API writes,
-      // imports, deletes, and accidental overwrites after it is frozen.
+      // imports, deletes, and accidental overwrites after it is frozen. An
+      // administrator can make the one narrow, auditable transition to draft.
       allow write: if isGenericCollection()
-        && !(collection == 'inventory_counts' && resource != null && resource.data.get('status', 'draft') == 'frozen')
+        && (!(collection == 'inventory_counts' && resource != null && resource.data.get('status', 'draft') == 'frozen') || isAdminUnfreezingInventoryCount())
         && isTenantStaff() && genericManagerWriteAllowed() && (
         (
           (resource == null || resource.data.get('userId', '') == request.auth.uid) &&

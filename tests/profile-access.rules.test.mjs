@@ -202,13 +202,17 @@ test('unrelated working financial reads/writes and crew entry updates remain sup
   await assertSucceeds(updateDoc(doc(dbFor('crew'), 'crew_entries', 'entry'), { status: 'paid' }));
 });
 
-test('a frozen inventory count remains readable but cannot be overwritten or deleted', async () => {
+test('a frozen inventory count is view-only except for an auditable admin unfreeze', async () => {
   const frozen = doc(dbFor('owner'), 'inventory_counts', 'frozen-count');
   await assertSucceeds(getDoc(frozen));
-  await assertFails(updateDoc(frozen, { status: 'draft', updatedAt: 2 }));
+  await assertFails(updateDoc(frozen, { lines: [{ name: 'Changed' }] }));
   await assertFails(setDoc(frozen, { userId: 'owner', ownerId: 'owner', outletId: 'outlet-a', status: 'draft' }, { merge: true }));
   await assertFails(deleteDoc(frozen));
   await assertFails(updateDoc(doc(dbFor('manager-store'), 'inventory_counts', 'frozen-count'), { updatedAt: 2 }));
+  await assertFails(updateDoc(doc(dbFor('viewer'), 'inventory_counts', 'frozen-count'), { status: 'draft', updatedAt: 2 }));
+  await assertSucceeds(updateDoc(frozen, {
+    status: 'draft', updatedAt: 2, updatedBy: 'owner', unfrozenAt: 2, unfrozenBy: 'owner',
+  }));
 });
 
 test('store manager is restricted to the assigned outlet while HQ manager keeps all stores', async () => {

@@ -209,6 +209,7 @@ const InventoryCount: React.FC<Props> = ({ user, dataOwnerId, userProfile }) => 
   }, [allItems]);
   const countedItems = lines.filter(line => line.dirty).length;
   const isFrozen = status === 'frozen';
+  const canUnfreeze = userProfile?.role === 'admin';
   const shownLines = useMemo(() => {
     const needle = queryText.trim().toLowerCase();
     return lines.filter(line => (bucket === 'ALL' || line.bucket === bucket) && (!needle || line.name.toLowerCase().includes(needle)));
@@ -250,6 +251,25 @@ const InventoryCount: React.FC<Props> = ({ user, dataOwnerId, userProfile }) => 
     } catch (error) {
       console.error('Inventory count save failed', error);
       alert('Could not save this stock count. No P&L value was changed.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const unfreezeCount = async () => {
+    if (!selectedCount?.id || !canUnfreeze) return;
+    if (!window.confirm('Unfreeze this count and return it to draft? It can then be edited and frozen again.')) return;
+    setSaving(true);
+    try {
+      await updateDoc(doc(db, 'inventory_counts', selectedCount.id), {
+        status: 'draft', updatedAt: Date.now(), updatedBy: user.uid,
+        unfrozenAt: Date.now(), unfrozenBy: user.uid,
+      });
+      setStatus('draft');
+      setSavedCounts(current => current.map(count => count.id === selectedCount.id ? { ...count, status: 'draft', updatedAt: Date.now(), unfrozenAt: Date.now(), unfrozenBy: user.uid } : count));
+    } catch (error) {
+      console.error('Inventory count unfreeze failed', error);
+      alert('Could not unfreeze this count.');
     } finally {
       setSaving(false);
     }
@@ -430,7 +450,7 @@ const InventoryCount: React.FC<Props> = ({ user, dataOwnerId, userProfile }) => 
       </section>
 
       {!!savedCountCards.length && <section className="bg-white rounded-3xl border border-slate-100 shadow-sm p-5">
-        <div className="flex flex-col md:flex-row gap-2 md:items-end justify-between mb-4"><div><p className="text-[10px] font-black uppercase tracking-widest text-indigo-600">Saved stock counts</p><h2 className="font-black text-lg text-slate-900 mt-1">Open a month-end count</h2><p className="text-sm text-slate-500 mt-1">Choose the store and date first. The amount is the full closing-stock value for that count.</p></div><p className="text-xs text-slate-400 font-semibold">Frozen counts are permanently view-only.</p></div>
+        <div className="flex flex-col md:flex-row gap-2 md:items-end justify-between mb-4"><div><p className="text-[10px] font-black uppercase tracking-widest text-indigo-600">Saved stock counts</p><h2 className="font-black text-lg text-slate-900 mt-1">Open a month-end count</h2><p className="text-sm text-slate-500 mt-1">Choose the store and date first. The amount is the full closing-stock value for that count.</p></div><p className="text-xs text-slate-400 font-semibold">Frozen counts are view-only; only admins can unfreeze them.</p></div>
         <div className="grid md:grid-cols-2 gap-3">{savedCountCards.map(count => {
           const total = countTotal(count.totals);
           const isSelected = count.outletId === outletId && count.month === month && count.year === year;
@@ -526,6 +546,7 @@ const InventoryCount: React.FC<Props> = ({ user, dataOwnerId, userProfile }) => 
 
           <section className={`rounded-3xl border p-5 flex flex-col md:flex-row gap-4 md:items-center justify-between ${isFrozen ? 'border-slate-200 bg-slate-100' : 'border-amber-100 bg-amber-50'}`}>
             <div className="flex gap-3"><AlertTriangle className={`shrink-0 ${isFrozen ? 'text-slate-600' : 'text-amber-600'}`} size={20} /><div><p className={`font-black ${isFrozen ? 'text-slate-900' : 'text-amber-900'}`}>{isFrozen ? 'This count is frozen' : 'Review before using it in P&L'}</p><p className={`text-sm mt-1 ${isFrozen ? 'text-slate-700' : 'text-amber-800'}`}>{isFrozen ? 'The recorded quantities, costs and groups are locked. It remains available here as a historical closing count.' : 'Saving this count creates an inventory record only. It does not change the current manual Closing Stock in P&L Command.'}</p></div></div>
+            {isFrozen && canUnfreeze && <button onClick={unfreezeCount} disabled={saving} className="shrink-0 px-4 py-3 bg-white border border-slate-300 text-slate-800 rounded-xl font-bold text-sm disabled:opacity-50">{saving ? 'Unfreezing…' : 'Unfreeze count'}</button>}
             {!isFrozen && <div className="flex flex-wrap gap-2 shrink-0"><button onClick={() => saveCount('draft')} disabled={saving} className="px-4 py-3 bg-white border border-amber-200 text-amber-800 rounded-xl font-bold text-sm disabled:opacity-50 flex items-center gap-2">{saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} Save draft</button><button onClick={() => saveCount('reviewed')} disabled={saving} className="px-4 py-3 bg-white border border-emerald-200 text-emerald-800 rounded-xl font-bold text-sm disabled:opacity-50 flex items-center gap-2">{saving ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />} Mark reviewed</button><button onClick={() => saveCount('frozen')} disabled={saving} className="px-4 py-3 bg-slate-900 text-white rounded-xl font-bold text-sm disabled:opacity-50 flex items-center gap-2">{saving ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />} Freeze count</button></div>}
           </section>
         </>

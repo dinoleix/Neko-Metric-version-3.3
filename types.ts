@@ -718,6 +718,8 @@ export interface InventoryCount {
   updatedAt: number;
   frozenAt?: number;
   frozenBy?: string;
+  unfrozenAt?: number;
+  unfrozenBy?: string;
 }
 
 export interface SalesSummaryRecord {
