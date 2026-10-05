@@ -685,6 +685,8 @@ export interface InventoryItem {
   sourceUnit?: string;
   unitCost: number;
   recipeIngredientId?: string;
+  /** Stable normalized identity used to prevent spelling and re-import duplicates. */
+  canonicalKey?: string;
   active: boolean;
   createdAt: number;
   updatedAt: number;

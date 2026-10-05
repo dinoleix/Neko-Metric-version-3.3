@@ -37,6 +37,57 @@ const blankTotals = (): Record<InventoryBucket, number> => ({
 const money = (value: number) => `₹${Math.round(value).toLocaleString('en-IN')}`;
 const countTotal = (totals?: Partial<Record<InventoryBucket, number>>) => Object.values(totals || {}).reduce<number>((sum, value) => sum + (Number(value) || 0), 0);
 const keyFor = (name: string) => name.trim().toUpperCase().replace(/\s+/g, ' ');
+const compactKeyFor = (name: string) => keyFor(name).replace(/[^A-Z0-9]/g, '');
+// Item names are not a reliable identifier on their own. This intentionally
+// ignores word order, punctuation and case, so "Ajitama egg" and "EGG, AJITAMA"
+// refer to the same catalogue item. Unit price is deliberately excluded: it
+// belongs to each month's saved count line, not the catalogue record.
+const tokenKeyFor = (name: string) => keyFor(name).split(' ').filter(Boolean).sort().join(' ');
+const catalogIdentity = (item: Pick<InventoryItem, 'name' | 'unit'>) => [tokenKeyFor(item.name), item.unit].join('|');
+const inventoryDocId = (ownerId: string, name: string) => `${ownerId}_inventory_${compactKeyFor(tokenKeyFor(name)).slice(0, 120)}`;
+
+const editDistance = (a: string, b: string) => {
+  const previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= a.length; i++) {
+    let diagonal = previous[0];
+    previous[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const saved = previous[j];
+      previous[j] = Math.min(previous[j] + 1, previous[j - 1] + 1, diagonal + (a[i - 1] === b[j - 1] ? 0 : 1));
+      diagonal = saved;
+    }
+  }
+  return previous[b.length];
+};
+
+const closeNameMatch = (name: string, candidates: InventoryItem[]) => {
+  const compact = compactKeyFor(name);
+  const tokens = tokenKeyFor(name);
+  if (!compact) return undefined;
+  return candidates
+    .map(item => {
+      const candidate = compactKeyFor(item.name);
+      const distance = editDistance(compact, candidate);
+      const similarity = 1 - distance / Math.max(compact.length, candidate.length, 1);
+      return { item, exact: keyFor(item.name) === keyFor(name), compactExact: compact === candidate, reordered: tokenKeyFor(item.name) === tokens, similarity };
+    })
+    .filter(match => match.exact || match.compactExact || match.reordered || (compact.length >= 5 && match.similarity >= 0.88))
+    .sort((a, b) => Number(b.exact) - Number(a.exact) || Number(b.compactExact) - Number(a.compactExact) || Number(b.reordered) - Number(a.reordered) || b.similarity - a.similarity)[0];
+};
+
+const canonicalItems = (source: InventoryItem[]) => {
+  const byIdentity = new Map<string, InventoryItem>();
+  source.forEach(item => {
+    const identity = catalogIdentity(item);
+    const current = byIdentity.get(identity);
+    // Recipe-linked records remain the preferred canonical item. Otherwise the
+    // most recently maintained record wins, without changing any historical row.
+    if (!current || (!!item.recipeIngredientId && !current.recipeIngredientId) || (Boolean(item.recipeIngredientId) === Boolean(current.recipeIngredientId) && item.updatedAt > current.updatedAt)) {
+      byIdentity.set(identity, item);
+    }
+  });
+  return [...byIdentity.values()].sort((a, b) => a.name.localeCompare(b.name));
+};
 const unitForSheet = (sourceUnit: string): MeasureUnit => {
   const value = sourceUnit.trim().toLowerCase();
   if (value === 'kg' || value.includes('gm') || value.includes('grm')) return 'kg';
@@ -46,8 +97,12 @@ const unitForSheet = (sourceUnit: string): MeasureUnit => {
 };
 
 const bucketForIngredient = (ingredient: RecipeIngredient): InventoryBucket => {
-  const source = `${ingredient.category || ''} ${ingredient.name || ''}`.toLowerCase();
-  return /tea|coffee|espresso|latte|matcha|syrup|puree|juice|soda|milk|ice|cocoa|chocolate|vanilla|caramel|frappe|tonic|kombucha|water|double shot/.test(source) ? 'DRINKS' : 'FOOD';
+  const category = (ingredient.category || '').toLowerCase();
+  const name = (ingredient.name || '').toLowerCase();
+  if (/tea|coffee|syrup|puree/.test(category)) return 'DRINKS';
+  // Word boundaries matter: the former loose `ice` match classified Japanese
+  // Rice as a drink because the word "rice" ends in "ice".
+  return /\b(tea|coffee|espresso|latte|matcha|syrup|puree|juice|soda|milk|ice|cocoa|chocolate|vanilla|caramel|frappe|tonic|kombucha|water)\b|double[ -]?shot/.test(name) ? 'DRINKS' : 'FOOD';
 };
 
 const InventoryCount: React.FC<Props> = ({ user, dataOwnerId, userProfile }) => {
@@ -58,6 +113,7 @@ const InventoryCount: React.FC<Props> = ({ user, dataOwnerId, userProfile }) => 
   const [year, setYear] = useState(String(now.getFullYear()));
   const [outletId, setOutletId] = useState(scopedOutlet || '40543');
   const [items, setItems] = useState<InventoryItem[]>([]);
+  const [allItems, setAllItems] = useState<InventoryItem[]>([]);
   const [rentals, setRentals] = useState<StoreRental[]>([]);
   const [savedCounts, setSavedCounts] = useState<InventoryCountRecord[]>([]);
   const [lines, setLines] = useState<DraftLine[]>([]);
@@ -96,10 +152,12 @@ const InventoryCount: React.FC<Props> = ({ user, dataOwnerId, userProfile }) => 
       const itemSnap = itemResult.value;
       const rentalSnap = rentalResult.status === 'fulfilled' ? rentalResult.value : null;
       const countSnap = countResult.status === 'fulfilled' ? countResult.value : null;
-      const nextItems = itemSnap.docs
+      const rawItems = itemSnap.docs
         .map(d => ({ id: d.id, ...d.data() } as InventoryItem))
         .filter(item => item.active)
         .sort((a, b) => a.name.localeCompare(b.name));
+      const nextItems = canonicalItems(rawItems);
+      setAllItems(rawItems);
       setItems(nextItems);
       setRentals(rentalSnap?.docs.map(d => ({ id: d.id, ...d.data() } as StoreRental)) || []);
 
@@ -130,6 +188,25 @@ const InventoryCount: React.FC<Props> = ({ user, dataOwnerId, userProfile }) => 
   const totalValue = (Object.values(totals) as number[]).reduce((sum, value) => sum + value, 0);
   const selectedCount = savedCounts.find(count => count.outletId === outletId && count.month === month && count.year === year);
   const savedCountCards = useMemo(() => [...savedCounts].sort((a, b) => `${b.year}-${MONTH_NAMES.indexOf(b.month)}`.localeCompare(`${a.year}-${MONTH_NAMES.indexOf(a.month)}`)), [savedCounts]);
+  const catalogueHealth = useMemo(() => {
+    const groups = new Map<string, InventoryItem[]>();
+    allItems.forEach(item => {
+      const identity = catalogIdentity(item);
+      groups.set(identity, [...(groups.get(identity) || []), item]);
+    });
+    const duplicates = [...groups.values()].filter(group => group.length > 1);
+    const conflicts = duplicates.filter(group => new Set(group.map(item => item.bucket)).size > 1);
+    const safeDuplicates = duplicates.filter(group => new Set(group.map(item => item.bucket)).size === 1);
+    return {
+      activeItems: allItems.length,
+      uniqueItems: groups.size,
+      duplicateGroups: duplicates.length,
+      duplicateRows: duplicates.reduce((total, group) => total + group.length - 1, 0),
+      safeGroups: duplicates.length - conflicts.length,
+      safeRows: safeDuplicates.reduce((total, group) => total + group.length - 1, 0),
+      conflicts,
+    };
+  }, [allItems]);
   const countedItems = lines.filter(line => line.dirty).length;
   const shownLines = useMemo(() => {
     const needle = queryText.trim().toLowerCase();
@@ -178,20 +255,23 @@ const InventoryCount: React.FC<Props> = ({ user, dataOwnerId, userProfile }) => 
     const name = newItem.name.trim();
     const unitCost = Number(newItem.unitCost);
     if (!name || unitCost < 0) return;
-    if (items.some(item => keyFor(item.name) === keyFor(name))) {
-      alert('This stock item already exists. Use the existing row instead.');
+    const match = closeNameMatch(name, allItems);
+    if (match) {
+      const relation = match.exact ? 'already exists' : `looks like "${match.item.name}"`;
+      alert(`"${name}" ${relation}. Use the existing stock item instead of creating a duplicate.`);
       return;
     }
     setSaving(true);
     try {
-      const ref = doc(collection(db, 'inventory_items'));
+      const ref = doc(db, 'inventory_items', inventoryDocId(dataOwnerId, name));
       const record: InventoryItem = {
         id: ref.id, userId: dataOwnerId, ownerId: dataOwnerId, name,
-        unit: newItem.unit, unitCost, bucket: newItem.bucket, active: true,
+        unit: newItem.unit, unitCost, bucket: newItem.bucket, canonicalKey: tokenKeyFor(name), active: true,
         createdAt: Date.now(), updatedAt: Date.now(),
       };
       await setDoc(ref, record);
-      setItems(current => [...current, record].sort((a, b) => a.name.localeCompare(b.name)));
+      setAllItems(current => [...current, record]);
+      setItems(current => canonicalItems([...current, record]));
       setLines(current => [...current, { inventoryItemId: ref.id, name, bucket: record.bucket, unit: record.unit, sourceUnit: record.sourceUnit, quantity: 0, unitCost, total: 0 }]);
       setNewItem({ name: '', unit: 'kg', unitCost: '', bucket: 'FOOD' });
       setShowAdd(false);
@@ -208,26 +288,28 @@ const InventoryCount: React.FC<Props> = ({ user, dataOwnerId, userProfile }) => 
     setSeeding(true);
     try {
       const ingredientSnap = await getDocs(query(collection(db, 'fc_ingredients'), where('ownerId', '==', dataOwnerId)));
-      const existingNames = new Set(items.map(item => keyFor(item.name)));
+      const existingNames = new Set(allItems.map(item => catalogIdentity(item)));
       const ingredients = ingredientSnap.docs.map(d => ({ id: d.id, ...d.data() } as RecipeIngredient))
         .filter(ingredient => !/disposable|packaging/i.test(ingredient.category || ''))
-        .filter(ingredient => !existingNames.has(keyFor(ingredient.name)));
+        .filter(ingredient => !existingNames.has(`${tokenKeyFor(ingredient.name)}|${ingredient.purchaseUnit}`))
+        .filter(ingredient => !closeNameMatch(ingredient.name, allItems));
       if (!ingredients.length) { alert('All current recipe ingredients are already in the stock list.'); return; }
       const batch = writeBatch(db);
       const created: InventoryItem[] = [];
       ingredients.forEach(ingredient => {
-        const ref = doc(collection(db, 'inventory_items'));
+        const ref = doc(db, 'inventory_items', ingredient.id ? `${dataOwnerId}_recipe_inventory_${ingredient.id}` : inventoryDocId(dataOwnerId, ingredient.name));
         const item: InventoryItem = {
           id: ref.id, userId: dataOwnerId, ownerId: dataOwnerId, name: ingredient.name.trim(),
           unit: ingredient.purchaseUnit, unitCost: ingredient.purchaseSize > 0 ? ingredient.purchasePrice / ingredient.purchaseSize : 0,
-          bucket: bucketForIngredient(ingredient), recipeIngredientId: ingredient.id, active: true,
+          bucket: bucketForIngredient(ingredient), recipeIngredientId: ingredient.id, canonicalKey: tokenKeyFor(ingredient.name), active: true,
           createdAt: Date.now(), updatedAt: Date.now(),
         };
         batch.set(ref, item);
         created.push(item);
       });
       await batch.commit();
-      setItems(current => [...current, ...created].sort((a, b) => a.name.localeCompare(b.name)));
+      setAllItems(current => [...current, ...created]);
+      setItems(current => canonicalItems([...current, ...created]));
       setLines(current => [...current, ...created.map(item => ({ inventoryItemId: item.id!, name: item.name, bucket: item.bucket, unit: item.unit, sourceUnit: item.sourceUnit, quantity: 0, unitCost: item.unitCost, total: 0 }))]);
     } catch (error) {
       console.error('Inventory recipe seed failed', error);
@@ -243,6 +325,7 @@ const InventoryCount: React.FC<Props> = ({ user, dataOwnerId, userProfile }) => 
     try {
       await updateDoc(doc(db, 'inventory_items', itemId), { bucket: nextBucket, updatedAt: Date.now() });
       setItems(existing => existing.map(item => item.id === itemId ? { ...item, bucket: nextBucket } : item));
+      setAllItems(existing => existing.map(item => item.id === itemId ? { ...item, bucket: nextBucket } : item));
       setLines(existing => existing.map(line => line.inventoryItemId === itemId ? { ...line, bucket: nextBucket, dirty: true } : line));
     } catch (error) {
       console.error('Inventory item category update failed', error);
@@ -267,6 +350,7 @@ const InventoryCount: React.FC<Props> = ({ user, dataOwnerId, userProfile }) => 
       await batch.commit();
       const moved = new Map(updates.map(({ item, nextBucket }) => [item.id, nextBucket]));
       setItems(existing => existing.map(item => moved.has(item.id) ? { ...item, bucket: moved.get(item.id)! } : item));
+      setAllItems(existing => existing.map(item => moved.has(item.id) ? { ...item, bucket: moved.get(item.id)! } : item));
       setLines(existing => existing.map(line => moved.has(line.inventoryItemId) ? { ...line, bucket: moved.get(line.inventoryItemId)!, dirty: true } : line));
       alert(`${updates.length} item${updates.length === 1 ? '' : 's'} moved into the correct group.`);
     } catch (error) {
@@ -282,15 +366,15 @@ const InventoryCount: React.FC<Props> = ({ user, dataOwnerId, userProfile }) => 
     setImportingAugust(true);
     try {
       const batch = writeBatch(db);
-      const masterByKey = new Map<string, InventoryItem>(items.map(item => [`${item.bucket}|${keyFor(item.name)}|${item.sourceUnit || ''}|${item.unitCost}`, item]));
+      const masterByKey = new Map<string, InventoryItem>(allItems.map(item => [catalogIdentity(item), item]));
       const importedItems: InventoryItem[] = [];
       const rows = AUGUST_2026_STOCK_IMPORT.map(row => {
         const unit = unitForSheet(row.sourceUnit);
-        const key = `${row.bucket}|${keyFor(row.name)}|${row.sourceUnit}|${row.unitCost}`;
+        const key = `${tokenKeyFor(row.name)}|${unit}`;
         let item = masterByKey.get(key);
         if (!item) {
-          const ref = doc(collection(db, 'inventory_items'));
-          item = { id: ref.id, userId: dataOwnerId, ownerId: dataOwnerId, name: row.name, bucket: row.bucket, unit, sourceUnit: row.sourceUnit, unitCost: row.unitCost, active: true, createdAt: Date.now(), updatedAt: Date.now() };
+          const ref = doc(db, 'inventory_items', inventoryDocId(dataOwnerId, row.name));
+          item = { id: ref.id, userId: dataOwnerId, ownerId: dataOwnerId, name: row.name, bucket: row.bucket, unit, sourceUnit: row.sourceUnit, unitCost: row.unitCost, canonicalKey: tokenKeyFor(row.name), active: true, createdAt: Date.now(), updatedAt: Date.now() };
           masterByKey.set(key, item);
           importedItems.push(item);
           batch.set(ref, item);
@@ -309,7 +393,10 @@ const InventoryCount: React.FC<Props> = ({ user, dataOwnerId, userProfile }) => 
       batch.set(doc(db, 'inventory_counts', 'august-2026-40543'), countFor('40543', 'b6Quantity', 'b6Total'));
       batch.set(doc(db, 'inventory_counts', 'august-2026-40140'), countFor('40140', 'sdjQuantity', 'sdjTotal'));
       await batch.commit();
-      if (importedItems.length) setItems(current => [...current, ...importedItems].sort((a, b) => a.name.localeCompare(b.name)));
+      if (importedItems.length) {
+        setAllItems(current => [...current, ...importedItems]);
+        setItems(current => canonicalItems([...current, ...importedItems]));
+      }
       if (month === 'August') await load();
       alert('August closing counts imported as drafts for both stores. P&L was not changed.');
     } catch (error) {
@@ -359,6 +446,18 @@ const InventoryCount: React.FC<Props> = ({ user, dataOwnerId, userProfile }) => 
           {!!items.length && <button onClick={sortRecipeItems} disabled={sorting} className="px-4 py-3 rounded-xl bg-sky-50 text-sky-700 font-bold text-sm hover:bg-sky-100 flex items-center gap-2 disabled:opacity-60">{sorting ? <Loader2 size={16} className="animate-spin" /> : <Coffee size={16} />} Sort drink items</button>}
         </div>}
       </section>
+
+      {canManageItems && catalogueHealth.duplicateGroups > 0 && <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5">
+        <div className="flex gap-3">
+          <AlertTriangle className="mt-0.5 shrink-0 text-amber-700" size={20} />
+          <div className="min-w-0">
+            <p className="font-black text-amber-950">Catalogue cleanup is needed</p>
+            <p className="mt-1 text-sm leading-relaxed text-amber-900">There are {catalogueHealth.activeItems} active records but {catalogueHealth.uniqueItems} unique stock items. This screen now shows one row per item and unit, so different prices do not create repeated counting rows. Each month still keeps its own unit price in the saved closing count.</p>
+            <p className="mt-2 text-sm font-bold text-amber-900">{catalogueHealth.safeGroups} duplicate group{catalogueHealth.safeGroups === 1 ? '' : 's'} ({catalogueHealth.safeRows} extra record{catalogueHealth.safeRows === 1 ? '' : 's'}) can be consolidated safely. {catalogueHealth.conflicts.length ? `${catalogueHealth.conflicts.length} group${catalogueHealth.conflicts.length === 1 ? '' : 's'} also has conflicting categories and needs a manager decision before any cleanup.` : 'No category conflicts need a decision.'}</p>
+            {!!catalogueHealth.conflicts.length && <details className="mt-3 text-sm text-amber-950"><summary className="cursor-pointer font-bold">Review category conflicts</summary><ul className="mt-2 space-y-1 list-disc pl-5">{catalogueHealth.conflicts.map(group => <li key={catalogIdentity(group[0])}><b>{group.map(item => item.name).join(' / ')}</b> — currently {Array.from(new Set(group.map(item => BUCKETS.find(entry => entry.id === item.bucket)?.short || item.bucket))).join(', ')}</li>)}</ul></details>}
+          </div>
+        </div>
+      </section>}
 
       {!items.length ? (
         <section className="bg-white border border-slate-100 rounded-3xl shadow-sm p-12 text-center max-w-2xl mx-auto">
