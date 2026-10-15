@@ -34,7 +34,7 @@ export function resolveAllowedModules(
       'exec-dashboard', 'online-profit', 'waste-v2', 'cash-flow',
       'pnl-insights', 'data-control', 'bank-management',
       'category-settings', 'team', 'rentals', 'holidays',
-      'bank-audit', 'upload', 'partnership',
+      'bank-audit', 'upload', 'partnership', 'loyalty', 'customer-intelligence',
     ];
     hqOnly.forEach(id => allowed.delete(id));
     return allowed;

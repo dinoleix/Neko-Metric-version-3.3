@@ -1,6 +1,58 @@
 
 export type FileType = 'sales' | 'item' | 'expense' | 'purchase' | 'platform_item' | 'online_order' | 'customer_mapping' | 'bank_statement';
 
+/** A consent state is deliberately independent per marketing channel. */
+export type MarketingConsentStatus = 'unknown' | 'opted_in' | 'opted_out';
+
+/**
+ * A privacy-first loyalty customer record. Imported provider flags are retained
+ * as source evidence, but are never interpreted as marketing permission.
+ */
+export interface LoyaltyCustomer {
+  id?: string;
+  userId: string;
+  ownerId: string;
+  externalUserId: string;
+  source: 'limetray';
+  firstName: string;
+  lastName?: string;
+  phoneE164: string;
+  countryCode: string;
+  email?: string;
+  lifetime: {
+    transactions: number;
+    spend: number;
+    lastTransactionAt?: string;
+    lastLocationId?: string;
+    weekdayOrders: boolean;
+    weekendOrders: boolean;
+  };
+  loyalty: { importedOpeningBalance: number };
+  marketingConsent: {
+    whatsapp: MarketingConsentStatus;
+    sms: MarketingConsentStatus;
+    capturedAt?: number;
+  };
+  sourceStatus: Record<string, string>;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface LoyaltyImportSummary {
+  id?: string;
+  userId: string;
+  ownerId: string;
+  source: 'limetray';
+  status: 'processing' | 'completed' | 'failed';
+  importedCustomers: number;
+  totalOpeningPoints: number;
+  importedAt: number;
+  importedBy: string;
+  sourceFileName: string;
+  rejectedRows: number;
+  error?: string;
+}
+
 /**
  * admin   — everything, including user access and group management.
  * manager — can write operational data, but never touches user access. Exists so

@@ -6,6 +6,7 @@ import {
   Banknote, Sparkles, Handshake, BarChart3, ShieldHalf, ShieldCheck, Settings2, Users, Building2, Calendar, Wallet, Store,
   ChefHat, IndianRupee, PlusSquare,
   ClipboardCheck,
+  HeartHandshake, ContactRound,
 } from 'lucide-react';
 
 /**
@@ -49,6 +50,8 @@ const OnlineProfitCenter = lazy(() => import('./components/OnlineProfitCenter'))
 const RecipeCostLab = lazy(() => import('./components/RecipeCostLab'));
 const MenuPriceBoard = lazy(() => import('./components/MenuPriceBoard'));
 const InventoryCount = lazy(() => import('./components/InventoryCount'));
+const LoyaltyHub = lazy(() => import('./components/LoyaltyHub'));
+const CustomerIntelligence = lazy(() => import('./components/CustomerIntelligence'));
 
 export type ModuleId =
   | 'exec-dashboard' | 'sales' | 'expenses' | 'items' | 'online-profit' | 'waste-v2'
@@ -56,7 +59,7 @@ export type ModuleId =
   | 'crew-terminal' | 'crew-reports' | 'users' | 'data-control' | 'category-settings'
   | 'team' | 'rentals' | 'holidays'
   | 'bank-management' | 'bank-audit' | 'vendor-management' | 'recipe-costing'
-  | 'menu-prices' | 'inventory-count' | 'upload';
+  | 'menu-prices' | 'inventory-count' | 'loyalty' | 'customer-intelligence' | 'upload';
 
 export type ModuleSection = 'Executive' | 'Intelligence' | 'Crew Terminal' | 'Operations' | 'Inputs';
 
@@ -176,6 +179,11 @@ export const MODULES: AppModule[] = [
     section: 'Intelligence', Component: PartnershipModel,
     defaultRoles: ['admin', 'manager', 'viewer'], suppressReadOnlyBanner: true,
   },
+  {
+    id: 'customer-intelligence', label: 'Customer Intelligence', icon: <ContactRound size={18} />,
+    section: 'Intelligence', Component: CustomerIntelligence, defaultRoles: ['admin', 'manager'], sensitive: true,
+    render: ctx => <CustomerIntelligence user={ctx.user} dataOwnerId={ctx.dataOwnerId} />,
+  },
 
   // ---- Crew Terminal ----
   {
@@ -244,6 +252,11 @@ export const MODULES: AppModule[] = [
   {
     id: 'menu-prices', label: 'Menu Prices', icon: <IndianRupee size={18} />,
     section: 'Operations', Component: MenuPriceBoard, defaultRoles: ['admin', 'manager'],
+  },
+  {
+    id: 'loyalty', label: 'Loyalty & Customers', icon: <HeartHandshake size={18} />,
+    section: 'Operations', Component: LoyaltyHub, defaultRoles: ['admin', 'manager'], sensitive: true,
+    render: ctx => <LoyaltyHub user={ctx.user} dataOwnerId={ctx.dataOwnerId} />,
   },
 
   // ---- Inputs ----
