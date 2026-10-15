@@ -45,6 +45,10 @@ export interface LoyaltyImportSummary {
   source: 'limetray';
   status: 'processing' | 'completed' | 'failed';
   importedCustomers: number;
+  createdCustomers?: number;
+  updatedCustomers?: number;
+  unchangedCustomers?: number;
+  pointsUpdatedCustomers?: number;
   totalOpeningPoints: number;
   importedAt: number;
   importedBy: string;
