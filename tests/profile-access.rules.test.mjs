@@ -78,6 +78,10 @@ beforeEach(async () => {
     batch.set(doc(db, 'products', 'product'), { userId: 'crew', ownerId: 'owner', name: 'Rice' });
     batch.set(doc(db, 'fc_ingredients', 'ingredient'), { userId: 'manager', ownerId: 'owner', name: 'Rice' });
     batch.set(doc(db, 'fc_recipes', 'recipe'), { userId: 'manager', ownerId: 'owner', name: 'Bowl' });
+    batch.set(doc(db, 'loyalty_customers', 'customer'), {
+      userId: 'owner', ownerId: 'owner', externalUserId: 'customer-1', firstName: 'Customer',
+      phoneE164: '+919999999999', loyalty: { importedOpeningBalance: 50 },
+    });
     await batch.commit();
   });
 });
@@ -204,6 +208,19 @@ test('unrelated working financial reads/writes and crew entry updates remain sup
   await assertSucceeds(getDoc(doc(dbFor('viewer'), 'sales_snapshots', 'sales')));
   await assertFails(updateDoc(doc(dbFor('viewer'), 'sales_snapshots', 'sales'), { total: 0 }));
   await assertSucceeds(updateDoc(doc(dbFor('crew'), 'crew_entries', 'entry'), { status: 'paid' }));
+});
+
+test('loyalty customer data can be listed only by tenant staff', async () => {
+  for (const uid of ['owner', 'admin', 'manager']) {
+    await assertSucceeds(getDocs(query(
+      collection(dbFor(uid), 'loyalty_customers'), where('ownerId', '==', 'owner'),
+    )));
+  }
+  for (const uid of ['viewer', 'crew', 'other-admin']) {
+    await assertFails(getDocs(query(
+      collection(dbFor(uid), 'loyalty_customers'), where('ownerId', '==', 'owner'),
+    )));
+  }
 });
 
 test('a frozen inventory count is view-only except for an auditable admin unfreeze', async () => {

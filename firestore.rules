@@ -308,6 +308,47 @@ service cloud.firestore {
       allow delete: if isTenantStaff() && ownerOrStaffDocument();
     }
 
+    // Loyalty data contains direct customer contact and purchase-history data.
+    // Keep it out of the generic rule so only tenant staff can read it, and so
+    // list queries explicitly prove the requested ownerId is the caller's
+    // business. Viewers and crew never receive this data.
+    match /loyalty_customers/{customerId} {
+      allow read: if isTenantStaff() && ownerFieldBelongsToCallerTenant();
+      allow create: if isTenantStaff() && incomingOwnerFieldBelongsToCallerTenant() &&
+        request.resource.data.userId == callerTenant();
+      allow update: if isTenantStaff() && ownerFieldBelongsToCallerTenant() &&
+        ownerFieldIdentityUnchanged();
+      allow delete: if isTenantStaff() && ownerFieldBelongsToCallerTenant();
+    }
+
+    // Import status and point opening balances follow the same tenant boundary.
+    match /loyalty_imports/{importId} {
+      allow read: if isTenantStaff() && ownerFieldBelongsToCallerTenant();
+      allow create: if isTenantStaff() && incomingOwnerFieldBelongsToCallerTenant() &&
+        request.resource.data.userId == callerTenant();
+      allow update: if isTenantStaff() && ownerFieldBelongsToCallerTenant() &&
+        ownerFieldIdentityUnchanged();
+      allow delete: if isTenantStaff() && ownerFieldBelongsToCallerTenant();
+    }
+
+    match /loyalty_opening_balances/{balanceId} {
+      allow read: if isTenantStaff() && ownerFieldBelongsToCallerTenant();
+      allow create: if isTenantStaff() && incomingOwnerFieldBelongsToCallerTenant() &&
+        request.resource.data.userId == callerTenant();
+      allow update: if isTenantStaff() && ownerFieldBelongsToCallerTenant() &&
+        ownerFieldIdentityUnchanged();
+      allow delete: if isTenantStaff() && ownerFieldBelongsToCallerTenant();
+    }
+
+    match /loyalty_campaign_drafts/{draftId} {
+      allow read: if isTenantStaff() && ownerFieldBelongsToCallerTenant();
+      allow create: if isTenantStaff() && incomingOwnerFieldBelongsToCallerTenant() &&
+        request.resource.data.userId == callerTenant();
+      allow update: if isTenantStaff() && ownerFieldBelongsToCallerTenant() &&
+        ownerFieldIdentityUnchanged();
+      allow delete: if isTenantStaff() && ownerFieldBelongsToCallerTenant();
+    }
+
     // Viewers can inspect balances. Crew see only their assigned outlet and may
     // move balances, but cannot rename/reassign accounts or change metadata.
     match /bank_accounts/{accountId} {
@@ -646,6 +687,7 @@ service cloud.firestore {
         return !(collection in [
           'users', 'user_groups', 'category_settings', 'online_order_details',
           'online_customers', 'bank_accounts', 'daily_sales_logs', 'sales_ledger',
+          'loyalty_customers', 'loyalty_imports', 'loyalty_opening_balances', 'loyalty_campaign_drafts',
           'bank_transactions', 'vendors', 'products', 'fc_ingredients', 'fc_recipes',
           'inventory_items',
           'menu_prices', 'crew_categories', 'crew_entries', 'waste_entries',
