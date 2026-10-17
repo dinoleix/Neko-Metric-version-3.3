@@ -6,6 +6,7 @@ import {
   Banknote, Sparkles, Handshake, BarChart3, ShieldHalf, ShieldCheck, Settings2, Users, Building2, Calendar, Wallet, Store,
   ChefHat, IndianRupee, PlusSquare,
   ClipboardCheck,
+  Scale,
   HeartHandshake, ContactRound,
 } from 'lucide-react';
 
@@ -50,6 +51,7 @@ const OnlineProfitCenter = lazy(() => import('./components/OnlineProfitCenter'))
 const RecipeCostLab = lazy(() => import('./components/RecipeCostLab'));
 const MenuPriceBoard = lazy(() => import('./components/MenuPriceBoard'));
 const InventoryCount = lazy(() => import('./components/InventoryCount'));
+const IngredientControl = lazy(() => import('./components/IngredientControl'));
 const LoyaltyHub = lazy(() => import('./components/LoyaltyHub'));
 const CustomerIntelligence = lazy(() => import('./components/CustomerIntelligence'));
 
@@ -59,7 +61,7 @@ export type ModuleId =
   | 'crew-terminal' | 'crew-reports' | 'users' | 'data-control' | 'category-settings'
   | 'team' | 'rentals' | 'holidays'
   | 'bank-management' | 'bank-audit' | 'vendor-management' | 'recipe-costing'
-  | 'menu-prices' | 'inventory-count' | 'loyalty' | 'customer-intelligence' | 'upload';
+  | 'menu-prices' | 'inventory-count' | 'ingredient-control' | 'loyalty' | 'customer-intelligence' | 'upload';
 
 export type ModuleSection = 'Executive' | 'Intelligence' | 'Crew Terminal' | 'Operations' | 'Inputs';
 
@@ -248,6 +250,12 @@ export const MODULES: AppModule[] = [
     section: 'Operations', Component: InventoryCount, defaultRoles: ['admin', 'manager'],
     sensitive: true,
     render: ctx => <InventoryCount user={ctx.user} dataOwnerId={ctx.dataOwnerId} userProfile={ctx.userProfile} />,
+  },
+  {
+    id: 'ingredient-control', label: 'Ingredient Control', icon: <Scale size={18} />,
+    section: 'Operations', Component: IngredientControl, defaultRoles: ['admin', 'manager'],
+    sensitive: true,
+    render: ctx => <IngredientControl user={ctx.user} dataOwnerId={ctx.dataOwnerId} userProfile={ctx.userProfile} />,
   },
   {
     id: 'menu-prices', label: 'Menu Prices', icon: <IndianRupee size={18} />,

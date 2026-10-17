@@ -778,6 +778,42 @@ export interface InventoryCount {
   unfrozenBy?: string;
 }
 
+/**
+ * Connects one Recipe Costing ingredient to its physical Stock Count item.
+ * This is operational control data only: it never changes the P&L inventory
+ * valuation or a recipe's published cost.
+ */
+export interface IngredientControlProfile {
+  id?: string;
+  userId: string;
+  ownerId: string;
+  ingredientId: string;
+  inventoryItemId: string;
+  purchaseAliases?: string[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type IngredientMovementType = 'purchase' | 'waste' | 'transfer_in' | 'transfer_out' | 'adjustment';
+
+/** A measured physical movement for one controlled ingredient. */
+export interface IngredientMovement {
+  id?: string;
+  userId: string;
+  ownerId: string;
+  profileId: string;
+  outletId: string;
+  date: string;
+  type: IngredientMovementType;
+  quantity: number;
+  unit: MeasureUnit;
+  /** Actual price paid for one entered unit. Optional for non-purchase movements. */
+  unitCost?: number;
+  note?: string;
+  createdAt: number;
+  createdBy: string;
+}
+
 export interface SalesSummaryRecord {
   id?: string;
   date: string;
