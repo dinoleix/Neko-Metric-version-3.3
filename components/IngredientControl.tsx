@@ -62,10 +62,12 @@ const IngredientControl: React.FC<Props> = ({ user, dataOwnerId, userProfile }) 
         getDocs(query(collection(db, 'fc_ingredients'), where('ownerId', '==', dataOwnerId))),
         getDocs(query(collection(db, 'fc_recipes'), where('ownerId', '==', dataOwnerId))),
         getDocs(query(collection(db, 'inventory_items'), where('ownerId', '==', dataOwnerId))),
-        getDocs(query(collection(db, 'ingredient_controls'), where('ownerId', '==', dataOwnerId))),
-        getDocs(query(collection(db, 'ingredient_movements'), where('ownerId', '==', dataOwnerId))),
+        getDocs(query(collection(db, 'ingredient_controls'), where('userId', '==', dataOwnerId))),
+        getDocs(query(collection(db, 'ingredient_movements'), where('userId', '==', dataOwnerId))),
         getDocs(query(collection(db, 'inventory_counts'), where('ownerId', '==', dataOwnerId), where('userId', '==', dataOwnerId))),
-        getDocs(query(collection(db, 'item_snapshots'), where('userId', '==', dataOwnerId), where('year', '==', year), where('month', '==', month))),
+        // Fetching the tenant's monthly snapshots and filtering locally avoids a
+        // new composite-index dependency for this pilot screen.
+        getDocs(query(collection(db, 'item_snapshots'), where('userId', '==', dataOwnerId))),
         getDocs(query(collection(db, 'rentals'), where('userId', '==', dataOwnerId))),
       ]);
       const nextProfiles = profileSnap.docs.map(row => ({ id: row.id, ...row.data() } as IngredientControlProfile));
@@ -75,7 +77,7 @@ const IngredientControl: React.FC<Props> = ({ user, dataOwnerId, userProfile }) 
       setProfiles(nextProfiles);
       setMovements(movementSnap.docs.map(row => ({ id: row.id, ...row.data() } as IngredientMovement)));
       setCounts(countSnap.docs.map(row => ({ id: row.id, ...row.data() } as InventoryCount)));
-      setSnapshots(snapshotSnap.docs.map(row => ({ id: row.id, ...row.data() } as ItemMonthlySnapshot)));
+      setSnapshots(snapshotSnap.docs.map(row => ({ id: row.id, ...row.data() } as ItemMonthlySnapshot)).filter(snapshot => snapshot.year === year && snapshot.month === month));
       setRentals(rentalSnap.docs.map(row => ({ id: row.id, ...row.data() } as StoreRental)));
       setSelectedProfileId(current => current || nextProfiles.find(profile => /chicken/i.test(ingredientSnap.docs.find(row => row.id === profile.ingredientId)?.data().name || ''))?.id || nextProfiles[0]?.id || '');
     } catch (error) {
