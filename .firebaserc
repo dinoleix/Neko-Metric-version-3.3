@@ -1,5 +1,7 @@
 {
   "projects": {
-    "default": "nekometrics-b38b9"
+    "default": "nekometrics-mt-dev-2026",
+    "multitenant-dev": "nekometrics-mt-dev-2026",
+    "production": "nekometrics-b38b9"
   }
 }
