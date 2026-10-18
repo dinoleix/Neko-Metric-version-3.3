@@ -10,6 +10,7 @@
     "build:multitenant": "vite build --mode multitenant-dev",
     "preview": "vite preview",
     "lint": "tsc --noEmit",
+    "test:multitenant-rules": "firebase emulators:exec --only firestore --project demo-neko-multitenant --config firebase.multitenant-dev.json \"node --test tests/multitenant.rules.test.mjs\"",
     "test:rules": "firebase emulators:exec --only firestore --project demo-neko-rules --config firebase.test.json \"node --test tests/*.rules.test.mjs\""
   },
   "dependencies": {

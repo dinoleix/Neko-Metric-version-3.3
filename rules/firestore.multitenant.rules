@@ -1,0 +1,36 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function membershipPath(tenantId) { return /databases/$(database)/documents/tenant_memberships/$(tenantId + '_' + request.auth.uid); }
+    function isMember(tenantId) { return signedIn() && exists(membershipPath(tenantId)) && get(membershipPath(tenantId)).data.status == 'active'; }
+    function membership(tenantId) { return get(membershipPath(tenantId)).data; }
+    function isOwner(tenantId) { return isMember(tenantId) && membership(tenantId).role == 'owner'; }
+    function canUseOutlet(tenantId, outletId) { return isMember(tenantId) && (isOwner(tenantId) || (membership(tenantId).role == 'manager' && membership(tenantId).outletIds.hasAny(['*'])) || membership(tenantId).outletIds.hasAny([outletId])); }
+    function tenantStable() { return request.resource.data.tenantId == resource.data.tenantId; }
+
+    match /tenants/{tenantId} {
+      allow create: if signedIn() && request.resource.data.ownerUserId == request.auth.uid && request.resource.data.createdBy == request.auth.uid && request.resource.data.status == 'active';
+      allow read: if isMember(tenantId);
+      allow update: if isOwner(tenantId) && request.resource.data.ownerUserId == resource.data.ownerUserId;
+      allow delete: if false;
+    }
+    match /tenant_memberships/{membershipId} {
+      allow read: if isMember(resource.data.tenantId);
+      allow create: if signedIn() && request.resource.data.userId == request.auth.uid && request.resource.data.role == 'owner' && request.resource.data.status == 'active' && getAfter(/databases/$(database)/documents/tenants/$(request.resource.data.tenantId)).data.ownerUserId == request.auth.uid;
+      allow update, delete: if isOwner(resource.data.tenantId);
+    }
+    match /outlets/{outletId} {
+      allow read: if isMember(resource.data.tenantId);
+      allow create: if isOwner(request.resource.data.tenantId);
+      allow update: if isOwner(resource.data.tenantId) && tenantStable();
+      allow delete: if false;
+    }
+    match /tenant_test_records/{recordId} {
+      allow read: if isMember(resource.data.tenantId) && canUseOutlet(resource.data.tenantId, resource.data.outletId);
+      allow create: if canUseOutlet(request.resource.data.tenantId, request.resource.data.outletId);
+      allow update: if canUseOutlet(resource.data.tenantId, resource.data.outletId) && tenantStable() && request.resource.data.outletId == resource.data.outletId;
+      allow delete: if isOwner(resource.data.tenantId);
+    }
+  }
+}
