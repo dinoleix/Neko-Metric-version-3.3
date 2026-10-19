@@ -12,6 +12,8 @@ import {
   MODULES, MODULE_BY_ID, MODULE_SECTIONS, ModuleId, AppModule, landingModule,
 } from './moduleRegistry';
 import { resolveAllowedModules } from './moduleAccess';
+import { resolveTenantSession, type TenantSession } from './multitenantRuntime';
+import MultiTenantHome from './components/MultiTenantHome';
 import {
   LogOut,
   Cat,
@@ -27,6 +29,7 @@ import {
 } from 'lucide-react';
 
 const CrewTerminalComponent = MODULE_BY_ID.get('crew-terminal')!.Component;
+const MULTI_TENANT_BUILD = import.meta.env.MODE === 'multitenant-dev';
 
 const TabLoader: React.FC = () => (
   <div className="flex items-center justify-center py-24">
@@ -131,6 +134,9 @@ const App: React.FC = () => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [primaryCashAccount, setPrimaryCashAccount] = useState<BankAccount | null>(null);
   const [primaryTenKAccount, setPrimaryTenKAccount] = useState<BankAccount | null>(null);
+  const [tenantSession, setTenantSession] = useState<TenantSession | null>(null);
+  const [tenantError, setTenantError] = useState<string | null>(null);
+  const authResolution = useRef(0);
 
   const INACTIVE_MS = userProfile?.role === 'crew' ? 14 * 60 * 60 * 1000 : 15 * 60 * 1000;
   const WARN_MS = userProfile?.role === 'crew' ? (14 * 60 * 60 - 5 * 60) * 1000 : 14 * 60 * 1000;
@@ -168,6 +174,35 @@ const App: React.FC = () => {
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (u) => {
+      const resolution = ++authResolution.current;
+      if (MULTI_TENANT_BUILD) {
+        if (!u) {
+          clearLoginActivitySession();
+          setUser(null);
+          setTenantSession(null);
+          setTenantError(null);
+          setLoading(false);
+          return;
+        }
+
+        setUser(u);
+        setTenantSession(null);
+        setTenantError(null);
+        setLoading(true);
+        try {
+          const session = await resolveTenantSession(u.uid);
+          if (authResolution.current === resolution) setTenantSession(session);
+        } catch (err) {
+          console.error('[tenant] could not resolve signed-in account:', err);
+          if (authResolution.current === resolution) {
+            setTenantError(err instanceof Error ? err.message : 'Could not load restaurant access. Please try again.');
+          }
+        } finally {
+          if (authResolution.current === resolution) setLoading(false);
+        }
+        return;
+      }
+
       if (u) {
         setUser(u);
         try {
@@ -271,6 +306,10 @@ const App: React.FC = () => {
         </div>
       </div>
     );
+  }
+
+  if (MULTI_TENANT_BUILD && user) {
+    return <MultiTenantHome user={user} session={tenantSession} error={tenantError} onSignOut={handleSignOut} />;
   }
 
   if (!user || !userProfile) return <Login />;

@@ -12,6 +12,7 @@ import { Mail, Lock, LogIn } from 'lucide-react';
 import ThemeToggle from './ThemeToggle';
 
 const Login: React.FC = () => {
+  const multiTenantBuild = import.meta.env.MODE === 'multitenant-dev';
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -121,13 +122,13 @@ const Login: React.FC = () => {
             </button>
           </form>
 
-          <div className="mt-8 flex items-center gap-4 text-slate-400">
+          {!multiTenantBuild && <div className="mt-8 flex items-center gap-4 text-slate-400">
             <div className="flex-1 h-px bg-slate-200"></div>
             <span className="text-xs font-medium uppercase tracking-wider">or continue with</span>
             <div className="flex-1 h-px bg-slate-200"></div>
-          </div>
+          </div>}
 
-          <div className="mt-6 flex gap-3">
+          {!multiTenantBuild && <div className="mt-6 flex gap-3">
             <button 
               onClick={loginWithGoogle}
               className="flex-1 border border-slate-200 py-3 rounded-xl font-medium hover:bg-slate-50 transition-colors flex items-center justify-center gap-2"
@@ -140,7 +141,7 @@ const Login: React.FC = () => {
               </svg>
               Google
             </button>
-          </div>
+          </div>}
         </div>
       </div>
     </div>

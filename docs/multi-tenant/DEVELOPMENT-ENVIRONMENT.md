@@ -1,40 +1,41 @@
 # Isolated multi-tenant development environment
 
-Created on 18 October 2026. This environment is for multi-tenant development only. It has no production Green Neko data, user accounts, rules, or deployment traffic.
+Created on 18 October 2026 and rechecked on 19 October 2026. This environment serves the isolated multi-tenant development app and uses no Green Neko production data, user accounts, or rules.
 
 | Resource | Development value | Production impact |
 | --- | --- | --- |
 | Firebase project | `nekometrics-mt-dev-2026` | None |
 | Firebase web app | `NekoMetrics Multi-Tenant Dev Web` | None |
-| Firestore database | Pending API enablement and initial provisioning | None |
-| Vercel project | `neko-metrics-multitenant-dev` | None |
+| Firestore database | Default database provisioned in `nam5`; two synthetic tenants, owner memberships, and outlets seeded | None |
+| Firestore rules | Multi-tenant starter rules published | None |
+| Firebase Authentication | Email/Password enabled for isolated test accounts | None |
+| Vercel project | `neko-metrics-multitenant-dev`; connected to `dinoleix/Neko-Metric-version-3.3`; first Production deployment from the isolated branch succeeded | None |
+| Vercel Firebase configuration | Six isolated `VITE_FIREBASE_*` variables scoped to Production and Preview | None |
 | Git branch | `codex/multitenant-foundation` | Separate from `main` |
 
 ## Branch behaviour
 
 - `main` remains the production branch and continues to deploy the existing NekoMetrics site.
-- `codex/multitenant-foundation` is the development branch.
-- The separate Vercel project is configured to use `npm run build:multitenant`, which loads the `multitenant-dev` Firebase environment.
+- `codex/multitenant-foundation` is the development branch and the Production branch for the separate Vercel development project.
+- The separate Vercel project is connected to the repository and its build command is `npm run build:multitenant`. Its first Production deployment succeeded at `neko-metrics-multitenant-dev.vercel.app`.
 - The existing production Vercel project and production Firebase project are not relinked or changed.
 
-## Remaining one-time setup
+## Synthetic acceptance fixtures
 
-### Firebase
+| Tenant | Tenant ID | Owner test account | Outlet ID |
+| --- | --- | --- | --- |
+| Green Neko Demo | `tn_7f3e2a1c9b4d` | `green-neko-demo-owner@nekometrics-mt-dev.test` | `out_1a5c9f4e` |
+| Separate Demo Restaurant | `tn_c4b51d8e2a76` | `demo-restaurant-owner@nekometrics-mt-dev.test` | `out_6b0d8e31` |
 
-1. In the Firebase or Google Cloud console for `nekometrics-mt-dev-2026`, enable the **Cloud Firestore API**.
-2. Create the default Firestore database using:
-   - Edition: **Standard**
-   - Region: **nam5**
-   - Delete protection: **Disabled** for disposable development data
-3. Enable the intended sign-in methods in Firebase Authentication for test users. Start with Email/Password; enable Google only if required for acceptance testing.
-4. Do not import Green Neko production data. The initial tenant tests use synthetic data only.
+Both owners have active `owner` memberships. The accounts and all records above are synthetic and exist only in the isolated Firebase project. Passwords are user-chosen and are not stored in this repository. Do not import Green Neko production data.
 
-### Vercel
+## Remaining multi-tenant application work
 
-1. Complete the Vercel account-security choice currently displayed for the logged-in account.
-2. In `neko-metrics-multitenant-dev` → Settings → Git, connect the GitHub repository `dinoleix/Neko-Metric-version-3-3`.
-3. Set `codex/multitenant-foundation` as the production branch of this *development project*. This does not change the production NekoMetrics project.
-4. Confirm preview deployments are created only from non-production branches.
+The isolated app now has a runtime tenant entry path: it resolves the signed-in account's active membership, tenant, and accessible outlets, and renders a tenant-scoped preview. The isolated login path does not create legacy `users` profiles or expose Google sign-in. Existing business modules remain outside this path until their reads and writes are migrated to tenant-scoped collections.
+
+The source rules now let a signed-in user discover only their own membership before loading the tenant. Those updated rules still need to be published to the isolated Firebase project before the deployed preview can resolve tenant access. Do not publish them to the production Firebase project.
+
+Remaining work includes tenant-scoping the business collections and their queries/writes, migrating user/role and outlet authorization to tenant memberships, then running the two-tenant isolation acceptance against the isolated Firebase project.
 
 ## Local development
 
