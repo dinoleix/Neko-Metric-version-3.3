@@ -20,6 +20,10 @@ This is the source-review inventory for the current shared Firestore collections
 
 These records must carry `tenantId`. Where a master record is outlet-specific, it must also carry `outletId`; otherwise it applies to all outlets in that tenant.
 
+### First module slice: `products`
+
+The isolated tenant preview now loads and writes Product Catalog records using `tenantId`; owner membership is required for catalog changes. The existing single-business Product Catalog keeps its `ownerId` query and write shape. The preview integration is available for review, while live acceptance remains pending until the updated isolated rules are published and checked against both demo tenants.
+
 ## Outlet and operational records
 
 | Collections |

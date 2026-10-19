@@ -1,8 +1,9 @@
-import React from 'react';
+import React, { useState } from 'react';
 import type { User } from 'firebase/auth';
-import { LogOut, MapPin, Store } from 'lucide-react';
+import { LogOut, MapPin, Package, Store } from 'lucide-react';
 import type { TenantSession } from '../multitenantRuntime';
 import TenantDataProbe from './TenantDataProbe';
+import ProductCatalog from './ProductCatalog';
 import ThemeToggle from './ThemeToggle';
 
 type Props = {
@@ -12,8 +13,10 @@ type Props = {
   onSignOut: () => void;
 };
 
-const MultiTenantHome: React.FC<Props> = ({ user, session, error, onSignOut }) => (
-  <div className="min-h-screen bg-slate-950 text-white">
+const MultiTenantHome: React.FC<Props> = ({ user, session, error, onSignOut }) => {
+  const [showProductCatalog, setShowProductCatalog] = useState(false);
+
+  return <div className="min-h-screen bg-slate-950 text-white">
     <header className="flex items-center justify-between border-b border-white/10 px-5 py-4 sm:px-8">
       <div className="flex items-center gap-3">
         <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-400/15 text-emerald-300"><Store size={20} /></div>
@@ -69,11 +72,24 @@ const MultiTenantHome: React.FC<Props> = ({ user, session, error, onSignOut }) =
             ) : <p className="mt-4 text-sm text-slate-400">No active outlets are assigned to this account.</p>}
           </section>
 
+          {session.membership.role === 'owner' && (
+            <section className="mt-8 flex flex-col gap-4 rounded-3xl border border-white/10 bg-white/[0.03] p-6 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <div className="flex items-center gap-2"><Package size={16} className="text-indigo-300" /><h2 className="font-black">Product catalog</h2></div>
+                <p className="mt-2 text-sm text-slate-400">Manage products for this restaurant. Catalog records are scoped to the active tenant.</p>
+              </div>
+              <button onClick={() => setShowProductCatalog(true)} className="rounded-xl bg-indigo-500 px-4 py-3 text-sm font-bold text-white hover:bg-indigo-400">Open product catalog</button>
+            </section>
+          )}
+
           <TenantDataProbe user={user} session={session} />
         </>
       )}
     </main>
-  </div>
-);
+    {showProductCatalog && session && (
+      <ProductCatalog user={user} tenantId={session.tenant.id} onClose={() => setShowProductCatalog(false)} />
+    )}
+  </div>;
+};
 
 export default MultiTenantHome;

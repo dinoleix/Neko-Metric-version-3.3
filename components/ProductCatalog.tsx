@@ -11,12 +11,15 @@ const ALL_PRODUCT_CATEGORIES = Array.from(
 
 interface Props {
   user: User;
-  ownerId: string;
+  /** Legacy owner scope used by the existing single-business app. */
+  ownerId?: string;
+  /** Active tenant scope used by the isolated multi-tenant app. */
+  tenantId?: string;
   onSelect?: (product: Product) => void;
   onClose: () => void;
 }
 
-const ProductCatalog: React.FC<Props> = ({ user, ownerId, onSelect, onClose }) => {
+const ProductCatalog: React.FC<Props> = ({ user, ownerId, tenantId, onSelect, onClose }) => {
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -40,7 +43,10 @@ const ProductCatalog: React.FC<Props> = ({ user, ownerId, onSelect, onClose }) =
   const loadProducts = async () => {
     setLoading(true);
     try {
-      const snap = await getDocs(query(collection(db, 'products'), where('ownerId', '==', ownerId)));
+      const scopeField = tenantId ? 'tenantId' : 'ownerId';
+      const scopeId = tenantId || ownerId;
+      if (!scopeId) throw new Error('A tenant or owner scope is required to load products.');
+      const snap = await getDocs(query(collection(db, 'products'), where(scopeField, '==', scopeId)));
       setProducts(
         snap.docs
           .map(d => ({ id: d.id, ...d.data() } as Product))
@@ -78,23 +84,27 @@ const ProductCatalog: React.FC<Props> = ({ user, ownerId, onSelect, onClose }) =
     }
     setSaving(true);
     try {
-      const data = {
+      const sharedData = {
         name: fName.trim().toUpperCase(),
         category: fCategory,
         pricePerUnit: fPrice ? parseFloat(fPrice) : null,
         quantity: fQty ? parseFloat(fQty) : null,
         unit: fUnit.trim() || null,
-        ownerId,
         userId: user.uid,
-        createdAt: Date.now(),
       };
       if (editingProduct?.id) {
+        const data = tenantId
+          ? { ...sharedData, tenantId, updatedBy: user.uid, updatedAt: Date.now() }
+          : { ...sharedData, ownerId: ownerId!, createdAt: editingProduct.createdAt };
         await updateDoc(doc(db, 'products', editingProduct.id), data);
         setProducts(prev =>
           prev.map(p => p.id === editingProduct.id ? { ...data, id: editingProduct.id } as Product : p)
             .sort((a, b) => a.name.localeCompare(b.name))
         );
       } else {
+        const data = tenantId
+          ? { ...sharedData, tenantId, createdBy: user.uid, updatedBy: user.uid, createdAt: Date.now(), updatedAt: Date.now() }
+          : { ...sharedData, ownerId: ownerId!, createdAt: Date.now() };
         const ref = await addDoc(collection(db, 'products'), data);
         setProducts(prev =>
           [...prev, { ...data, id: ref.id } as Product].sort((a, b) => a.name.localeCompare(b.name))

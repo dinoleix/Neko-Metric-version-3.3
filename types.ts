@@ -569,8 +569,13 @@ export interface Product {
   pricePerUnit?: number;
   quantity?: number;
   unit?: string;
-  ownerId: string;
+  /** Legacy single-business owner field; tenant records use tenantId instead. */
+  ownerId?: string;
+  tenantId?: string;
   userId: string;
+  createdBy?: string;
+  updatedBy?: string;
+  updatedAt?: number;
   createdAt: number;
 }
 
