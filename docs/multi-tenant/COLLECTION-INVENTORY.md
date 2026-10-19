@@ -22,7 +22,7 @@ These records must carry `tenantId`. Where a master record is outlet-specific, i
 
 ### First module slice: `products`
 
-The isolated tenant preview now loads and writes Product Catalog records using `tenantId`; owner membership is required for catalog changes. The existing single-business Product Catalog keeps its `ownerId` query and write shape. The preview integration is available for review, while live acceptance remains pending until the updated isolated rules are published and checked against both demo tenants.
+The isolated tenant preview now loads and writes Product Catalog records using `tenantId`; owner membership is required for catalog changes. The matching rules are published to the isolated Firebase project. The existing single-business Product Catalog keeps its `ownerId` query and write shape. Live acceptance remains pending until catalog reads and writes are checked with both demo tenants.
 
 ## Outlet and operational records
 
