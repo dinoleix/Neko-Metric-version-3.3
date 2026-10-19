@@ -2,6 +2,7 @@ import React from 'react';
 import type { User } from 'firebase/auth';
 import { LogOut, MapPin, Store } from 'lucide-react';
 import type { TenantSession } from '../multitenantRuntime';
+import TenantDataProbe from './TenantDataProbe';
 import ThemeToggle from './ThemeToggle';
 
 type Props = {
@@ -67,6 +68,8 @@ const MultiTenantHome: React.FC<Props> = ({ user, session, error, onSignOut }) =
               </ul>
             ) : <p className="mt-4 text-sm text-slate-400">No active outlets are assigned to this account.</p>}
           </section>
+
+          <TenantDataProbe user={user} session={session} />
         </>
       )}
     </main>

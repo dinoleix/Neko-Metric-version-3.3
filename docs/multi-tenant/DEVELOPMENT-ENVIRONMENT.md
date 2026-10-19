@@ -31,7 +31,7 @@ Both owners have active `owner` memberships. The accounts and all records above 
 
 ## Remaining multi-tenant application work
 
-The isolated app now has a runtime tenant entry path: it resolves the signed-in account's active membership, tenant, and accessible outlets, and renders a tenant-scoped preview. The isolated login path does not create legacy `users` profiles or expose Google sign-in. Existing business modules remain outside this path until their reads and writes are migrated to tenant-scoped collections.
+The isolated app now has a runtime tenant entry path: it resolves the signed-in account's active membership, tenant, and accessible outlets, and renders a tenant-scoped preview. A dev-only data probe writes and reads synthetic notes scoped to the active tenant and outlet so the two demo accounts can be compared manually. The isolated login path does not create legacy `users` profiles or expose Google sign-in. Existing business modules remain outside this path until their reads and writes are migrated to tenant-scoped collections.
 
 The membership-discovery rule is published to `nekometrics-mt-dev-2026`; it lets a signed-in user discover only their own membership before loading the tenant. This rules update applies only to the isolated Firebase project. The latest preview deployment is Ready at `neko-metrics-multitenant-dev.vercel.app`.
 
