@@ -35,14 +35,15 @@ The migration must be a trusted, resumable, idempotent job. It should:
 3. Process one source collection at a time in small batches.
 4. Add `tenantId` and preserve legacy fields unchanged.
 5. Record a migration manifest: source collection, document ID, status, attempt count, checksum/version and timestamps.
-6. Skip documents already migrated with the same migration version.
+6. Skip documents already migrated with the same migration version only after verifying the stored source and transformed-target checksums.
 7. Produce an exceptions report instead of silently guessing a missing outlet or ownership mapping.
+8. Refuse to overwrite an untracked target or change the source record during the first pass.
 
 No migration may delete, rename or overwrite original production documents during its first pass.
 
 ### Current synthetic safeguard
 
-Run `npm run rehearse:multitenant-migration` to exercise additive migration, immutable legacy fields, outlet mapping, checksums, retry manifests, exception reporting, replay idempotency and count/amount reconciliation against synthetic data. The script requires the local Firestore emulator and the exact `demo-neko-migration-rehearsal` project ID; it refuses to run against a live Firebase project. Its `rehearsal_source_*`, `rehearsal_target_*` and `rehearsal_manifest_*` collections are disposable emulator fixtures. This validates the safety mechanics only; collection-specific mappings and a production credentialed migration job still need review against an approved synthetic export.
+Run `npm run rehearse:multitenant-migration` to exercise additive migration, immutable legacy fields, outlet mapping, source and target checksums, retry manifests, exception reporting, replay idempotency, target collision protection and count/amount reconciliation against synthetic data. The current fixture spans 20 records across 19 collection shapes: 19 records migrate, one unknown outlet is reported, and replay adds no duplicates. The rehearsal also injects a target collision and target checksum tampering to prove both are detected without being overwritten. The script requires the local Firestore emulator and the exact `demo-neko-migration-rehearsal` project ID; it refuses to run against a live Firebase project. Its `rehearsal_source_*`, `rehearsal_target_*` and `rehearsal_manifest_*` collections are disposable emulator fixtures. This validates the safety mechanics only; collection-specific mappings and a production credentialed migration job still need review against an approved synthetic export.
 
 ## 4. Reconciliation gates
 
