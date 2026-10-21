@@ -76,6 +76,26 @@ test('business collections agree across the runtime boundary, rules and inventor
   assert.deepEqual(undocumentedRuntimeCollections, []);
 });
 
+test('every tenant-scoped collection rejects cross-tenant reads and writes', async () => {
+  const runtimeSource = await readFile(new URL('../tenantFirestore.ts', import.meta.url), 'utf8');
+  const runtimeBlock = runtimeSource.match(/const TENANT_COLLECTIONS = new Set\(\[([\s\S]*?)\]\);/)?.[1];
+  assert.ok(runtimeBlock, 'tenant runtime collection manifest must exist');
+  const collections = [...new Set([...runtimeBlock.matchAll(/'([^']+)'/g)].map(match => match[1]))];
+  const ownerDb = dbFor('owner-a');
+  const otherOwnerDb = dbFor('owner-b');
+
+  for (const [index, collectionName] of collections.entries()) {
+    const documentId = `scope-check-${index}`;
+    const payload = {
+      tenantId: 'a', outletId: 'a1', userId: 'owner-a', ownerId: 'owner-a',
+      createdBy: 'owner-a', updatedBy: 'owner-a', status: 'active', name: 'Scope fixture',
+    };
+    await assertSucceeds(setDoc(doc(ownerDb, collectionName, documentId), payload), `${collectionName} should allow its owner to create tenant data`);
+    await assertFails(getDoc(doc(otherOwnerDb, collectionName, documentId)), `${collectionName} must deny another tenant's read`);
+    await assertFails(setDoc(doc(ownerDb, collectionName, `${documentId}-cross`), { ...payload, tenantId: 'b', outletId: 'b1' }), `${collectionName} must deny a cross-tenant write`);
+  }
+});
+
 test('outlet managers, crew and viewers are restricted to assigned outlets', async () => {
   for (const uid of ['manager-a1', 'crew', 'viewer']) {
     await assertSucceeds(getDoc(doc(dbFor(uid), 'tenant_test_records', 'a1-record')));
