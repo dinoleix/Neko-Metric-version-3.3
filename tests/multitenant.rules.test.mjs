@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, test } from 'node:test';
 import { initializeTestEnvironment, assertFails, assertSucceeds } from '@firebase/rules-unit-testing';
-import { collection, deleteDoc, doc, getDoc, getDocs, query, setDoc, where, writeBatch } from 'firebase/firestore';
+import { collection, deleteDoc, doc, getDoc, getDocs, query, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
 
 const projectId = 'demo-neko-multitenant';
 let env;
@@ -139,6 +139,27 @@ test('a user can discover and open each of their own tenant memberships', async 
   await assertSucceeds(getDoc(doc(db, 'outlets', 'b1')));
 });
 
+test('tenant owners can add an existing identity to their own tenant memberships', async () => {
+  const existingUid = 'existing-member';
+  await assertSucceeds(setDoc(doc(dbFor('owner-a'), 'tenant_memberships', `a_${existingUid}`), {
+    ...membership('a', existingUid, 'viewer', ['a1']), email: 'member@example.test',
+  }));
+  await assertSucceeds(setDoc(doc(dbFor('owner-b'), 'tenant_memberships', `b_${existingUid}`), {
+    ...membership('b', existingUid, 'manager', ['*']), email: 'member@example.test',
+  }));
+  await assertFails(setDoc(doc(dbFor('owner-b'), 'tenant_memberships', 'a_wrong-tenant'), {
+    ...membership('a', 'wrong-tenant', 'viewer', ['a1']), email: 'wrong@example.test',
+  }));
+
+  const db = dbFor(existingUid);
+  const memberships = await getDocs(query(collection(db, 'tenant_memberships'), where('userId', '==', existingUid)));
+  assert.equal(memberships.size, 2);
+  await assertSucceeds(getDoc(doc(db, 'tenants', 'a')));
+  await assertSucceeds(getDoc(doc(db, 'tenants', 'b')));
+  await assertSucceeds(getDoc(doc(db, 'outlets', 'a1')));
+  await assertSucceeds(getDoc(doc(db, 'outlets', 'b1')));
+});
+
 test('viewers are read-only and crew can only create records at an assigned outlet', async () => {
   await assertFails(setDoc(doc(dbFor('viewer'), 'expenses', 'viewer-expense'), { tenantId: 'a', outletId: 'a1', amount: 2 }));
   await assertSucceeds(setDoc(doc(dbFor('crew'), 'crew_entries', 'crew-entry'), { tenantId: 'a', outletId: 'a1', userId: 'crew', createdBy: 'crew' }));
@@ -146,11 +167,17 @@ test('viewers are read-only and crew can only create records at an assigned outl
   await assertFails(setDoc(doc(dbFor('crew'), 'products', 'crew-product'), { tenantId: 'a', name: 'Forbidden' }));
 });
 
-test('a tenant owner can provision and update member roles but cannot create another owner', async () => {
+test('owners manage non-owner memberships but cannot create another owner', async () => {
   const db = dbFor('owner-a');
   const memberRef = doc(db, 'tenant_memberships', 'a_new-manager');
   await assertSucceeds(setDoc(memberRef, { ...membership('a', 'new-manager', 'manager', ['*']), email: 'manager@example.test' }));
   await assertSucceeds(setDoc(memberRef, { ...membership('a', 'new-manager', 'crew', ['a1']), email: 'manager@example.test' }));
+  await assertSucceeds(updateDoc(memberRef, { status: 'suspended' }));
+  await assertFails(getDoc(doc(dbFor('new-manager'), 'tenants', 'a')));
+  await assertSucceeds(updateDoc(memberRef, { status: 'active' }));
+  await assertSucceeds(getDoc(doc(dbFor('new-manager'), 'tenants', 'a')));
+  await assertSucceeds(deleteDoc(memberRef));
+  await assertFails(getDoc(doc(dbFor('new-manager'), 'tenants', 'a')));
   await assertFails(setDoc(doc(db, 'tenant_memberships', 'a_attacker'), membership('a', 'attacker', 'owner', ['*'])));
 });
 

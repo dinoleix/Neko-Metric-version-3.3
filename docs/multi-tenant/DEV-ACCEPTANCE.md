@@ -14,6 +14,7 @@ Record each result as pass/fail with the test account role and a short note. Nev
 | Tenant B owner signs in | Opens only the Separate Demo Restaurant tenant and its outlets | Pending |
 | A member belonging to both tenants signs in | Chooses an active tenant and can switch; each switch refreshes scoped app state | Pending |
 | Owner provisions manager, crew, and viewer accounts in Tenant A | Memberships have the intended role and outlet assignment | Pending |
+| Tenant B owner adds an existing account already in Tenant A | Account keeps its existing login and appears in the tenant picker with only the assigned scope in each tenant | Pending |
 | HQ manager reads Tenant A records | Can read all Tenant A outlets, cannot access Tenant B | Pending |
 | Outlet manager and crew read assigned outlet | Cannot read another outlet or tenant, even when given a document ID | Pending |
 | Viewer reads assigned scope and attempts a write | Reads allowed records; writes are denied | Pending |

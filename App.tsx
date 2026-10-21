@@ -139,6 +139,7 @@ const AppSidebar: React.FC<{
             {isReadOnly && <Eye size={10} className="text-emerald-400" />}
           </div>
           <p className="text-xs font-bold truncate text-slate-200">{user.email}</p>
+          <p className="mt-1 truncate font-mono text-[9px] text-slate-500" title={`Account ID: ${user.uid}`}>{user.uid}</p>
           {role === 'manager' && (
             <p className="mt-1 text-[9px] font-black uppercase tracking-wider text-indigo-300">
               {userProfile.assignedOutlet ? `${getOutletName(userProfile.assignedOutlet)} Store` : 'HQ · All Stores'}
@@ -486,9 +487,10 @@ const App: React.FC = () => {
               {tenantSessions.length > 1 && <button onClick={beginTenantSwitch} className="flex items-center gap-2 px-4 py-3 bg-emerald-500/10 text-emerald-300 rounded-2xl font-black text-[11px] uppercase tracking-widest border border-emerald-500/20 transition-all hover:bg-emerald-500 hover:text-white">
                 <Store size={16} /> Switch Restaurant
               </button>}
-              <div className="hidden lg:block text-right">
+              <div className="min-w-0 max-w-[180px] text-right lg:max-w-none">
                  <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1">Authenticated As</p>
-                 <p className="text-xs font-bold text-slate-300">{user.email}</p>
+                 <p className="truncate text-xs font-bold text-slate-300">{user.email}</p>
+                 <p className="truncate font-mono text-[9px] text-slate-500" title={`Account ID: ${user.uid}`}>{user.uid}</p>
               </div>
               <button
                 onClick={handleSignOut}

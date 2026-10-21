@@ -23,6 +23,7 @@ const MultiTenantHome: React.FC<Props> = ({ user, session, error, onSignOut }) =
         <div>
           <p className="text-xs font-black uppercase tracking-[0.2em] text-emerald-300">NekoMetrics · Tenant Preview</p>
           <p className="mt-1 text-xs text-slate-400">{user.email}</p>
+          <p className="mt-1 font-mono text-[10px] text-slate-500">Account ID: {user.uid}</p>
         </div>
       </div>
       <div className="flex items-center gap-3">
