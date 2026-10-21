@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, test } from 'node:test';
 import { initializeTestEnvironment, assertFails, assertSucceeds } from '@firebase/rules-unit-testing';
-import { collection, doc, getDoc, getDocs, query, setDoc, where, writeBatch } from 'firebase/firestore';
+import { collection, deleteDoc, doc, getDoc, getDocs, query, setDoc, where, writeBatch } from 'firebase/firestore';
 
 const projectId = 'demo-neko-multitenant';
 let env;
@@ -53,6 +53,27 @@ beforeEach(async () => {
 test('tenant owners and HQ managers can read records within their tenant', async () => {
   await assertSucceeds(getDoc(doc(dbFor('owner-a'), 'tenant_test_records', 'a1-record')));
   await assertSucceeds(getDoc(doc(dbFor('manager'), 'tenant_test_records', 'a2-record')));
+});
+
+test('business collections agree across the runtime boundary, rules and inventory', async () => {
+  const [runtimeSource, rulesSource, inventorySource] = await Promise.all([
+    readFile(new URL('../tenantFirestore.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../rules/firestore.multitenant.rules', import.meta.url), 'utf8'),
+    readFile(new URL('../docs/multi-tenant/COLLECTION-INVENTORY.md', import.meta.url), 'utf8'),
+  ]);
+  const runtimeBlock = runtimeSource.match(/const TENANT_COLLECTIONS = new Set\(\[([\s\S]*?)\]\);/)?.[1];
+  const rulesBlock = rulesSource.match(/function businessCollection\(collectionName\)[\s\S]*?return \{([\s\S]*?)\}\.get\(collectionName, false\);/)?.[1];
+  assert.ok(runtimeBlock, 'tenant runtime collection manifest must exist');
+  assert.ok(rulesBlock, 'Firestore business collection manifest must exist');
+  const runtimeCollections = new Set([...runtimeBlock.matchAll(/'([^']+)'/g)].map(match => match[1]));
+  const specialRulesCollections = new Set(['tenant_settings', 'tenant_test_records', 'login_activity']);
+  const genericRuntimeCollections = [...runtimeCollections].filter(name => !specialRulesCollections.has(name)).sort();
+  const ruleCollections = [...rulesBlock.matchAll(/'([^']+)'\s*:/g)].map(match => match[1]).sort();
+  const documentedCollections = new Set([...inventorySource.matchAll(/`([a-z_]+)`/g)].map(match => match[1]));
+  const undocumentedRuntimeCollections = [...runtimeCollections]
+    .filter(name => name !== 'tenant_test_records' && !documentedCollections.has(name)).sort();
+  assert.deepEqual(ruleCollections, genericRuntimeCollections);
+  assert.deepEqual(undocumentedRuntimeCollections, []);
 });
 
 test('outlet managers, crew and viewers are restricted to assigned outlets', async () => {
@@ -146,4 +167,27 @@ test('customer name mappings are tenant-isolated and owner-only', async () => {
   await assertFails(setDoc(doc(dbFor('manager'), 'customer_name_mappings', 'manager-map'), {
     tenantId: 'a', userId: 'owner-a', name: 'Not allowed',
   }));
+});
+
+test('login activity is private to each member and the tenant owner', async () => {
+  const ownerDb = dbFor('owner-a');
+  const managerDb = dbFor('manager');
+  const ownerActivity = doc(ownerDb, 'login_activity', 'owner-event');
+  const managerActivity = doc(managerDb, 'login_activity', 'manager-event');
+
+  await assertSucceeds(setDoc(ownerActivity, {
+    tenantId: 'a', userId: 'owner-a', email: 'owner@example.test', latitude: 28.5,
+  }));
+  await assertSucceeds(setDoc(managerActivity, {
+    tenantId: 'a', userId: 'manager', email: 'manager@example.test', latitude: 28.6,
+  }));
+  await assertFails(setDoc(doc(managerDb, 'login_activity', 'spoofed-event'), {
+    tenantId: 'a', userId: 'owner-a', email: 'owner@example.test', latitude: 28.5,
+  }));
+  await assertSucceeds(getDoc(managerActivity));
+  await assertFails(getDoc(doc(managerDb, 'login_activity', 'owner-event')));
+  await assertFails(getDoc(doc(dbFor('owner-b'), 'login_activity', 'manager-event')));
+  await assertSucceeds(getDoc(doc(ownerDb, 'login_activity', 'manager-event')));
+  await assertFails(deleteDoc(managerActivity));
+  await assertSucceeds(deleteDoc(doc(ownerDb, 'login_activity', 'manager-event')));
 });

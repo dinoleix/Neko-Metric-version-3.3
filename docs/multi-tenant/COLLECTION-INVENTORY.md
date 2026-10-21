@@ -20,15 +20,15 @@ This is the source-review inventory for the current shared Firestore collections
 
 These records must carry `tenantId`. Where a master record is outlet-specific, it must also carry `outletId`; otherwise it applies to all outlets in that tenant.
 
-### First module slice: `products`
+### Tenant-aware runtime coverage
 
-The isolated tenant preview now loads and writes Product Catalog records using `tenantId`; owner membership is required for catalog changes. The matching rules are published to the isolated Firebase project. The existing single-business Product Catalog keeps its `ownerId` query and write shape. Live acceptance remains pending until catalog reads and writes are checked with both demo tenants.
+The isolated build routes business Firestore reads and writes through the tenant-aware adapter. Its collection list and the Firestore business-collection rule list currently match; source review found no business collection call that bypasses the adapter. The Product Catalog additionally has owner-only create/update/delete rules. The existing single-business build keeps its `ownerId` query and write shape. Emulator authorization tests pass, but live acceptance with both demo tenants and restricted roles remains pending.
 
 ## Outlet and operational records
 
 | Collections |
 | --- |
-| `purchases`, `expenses`, `crew_entries`, `waste_entries`, `daily_sales_logs`, `sales_ledger`, `sales_summary`, `sales_snapshots`, `expense_snapshots`, `item_sales`, `item_snapshots`, `inventory_counts`, `ingredient_controls`, `ingredient_movements`, `cogs_adjustments`, `cash_flow_snapshots`, `cash_obligations`, `bank_accounts`, `bank_transactions`, `bank_statement_imports`, `bill_counters`, `monthly_payrolls`, `events`, `weather` |
+| `purchases`, `expenses`, `crew_entries`, `waste_entries`, `daily_sales_logs`, `sales_ledger`, `sales_summary`, `sales_snapshots`, `expense_snapshots`, `item_sales`, `item_snapshots`, `pnl_snapshots`, `sales_analytics`, `inventory_counts`, `ingredient_controls`, `ingredient_movements`, `cogs_adjustments`, `cash_flow_snapshots`, `cash_obligations`, `bank_accounts`, `bank_transactions`, `bank_statement_imports`, `bill_counters`, `monthly_payrolls`, `events`, `weather` |
 
 These records must carry both `tenantId` and `outletId` unless documented as a tenant-wide consolidated record. A consolidated record must state its aggregation scope explicitly (`scope: 'tenant'` or `scope: 'outlet'`) so an outlet result cannot be mistaken for a business total.
 
@@ -39,6 +39,12 @@ These records must carry both `tenantId` and `outletId` unless documented as a t
 | `online_customers`, `online_order_details`, `customer_name_mappings`, `loyalty_customers`, `loyalty_imports`, `loyalty_opening_balances`, `loyalty_campaign_drafts`, `files` |
 
 These records are tenant-owned. Add `outletId` only when the source or campaign is genuinely store-specific. Customer identity matching must occur only within the same tenant.
+
+## Tenant audit records
+
+| Collection | Scope and access |
+| --- | --- |
+| `login_activity` | Tenant-scoped security history. A member may create and read only their own activity; only the tenant owner may review other members' records or clear the history. Records can contain email and location coordinates. |
 
 ## Existing identifiers that need conversion
 

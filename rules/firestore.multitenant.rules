@@ -27,9 +27,6 @@ service cloud.firestore {
           || tenantMembership.role == 'manager' && tenantMembership.outletIds.hasAny(['*'])
           || tenantMembership.outletIds.hasAny([outletId]));
     }
-    function hasAllOutlets(tenantId) {
-      return isManager(tenantId) && membership(tenantId).outletIds.hasAny(['*']);
-    }
     function canAccessRecord(data) {
       let tenantMembership = membership(data.tenantId);
       let outletId = data.get('outletId', null);
@@ -68,7 +65,7 @@ service cloud.firestore {
         'fc_recipes': true, 'files': true, 'holidays': true, 'ingredient_controls': true,
         'ingredient_movements': true, 'inventory_counts': true, 'inventory_items': true,
         'item_costs': true, 'item_sales': true, 'item_snapshots': true, 'loan_profiles': true,
-        'login_activity': true, 'loyalty_campaign_drafts': true, 'loyalty_customers': true,
+        'loyalty_campaign_drafts': true, 'loyalty_customers': true,
         'loyalty_imports': true, 'loyalty_opening_balances': true, 'menu_normalization': true,
         'menu_prices': true, 'monthly_payrolls': true, 'online_customers': true,
         'online_order_details': true, 'pnl_snapshots': true, 'products': true, 'purchases': true,
@@ -201,6 +198,19 @@ service cloud.firestore {
         || crewCanCreate('tenant_test_records', request.resource.data);
       allow update: if tenantStable() && canAccessRecord(resource.data)
         && (isOwner(resource.data.tenantId) || isManager(resource.data.tenantId));
+      allow delete: if isOwner(resource.data.tenantId);
+    }
+
+    // Login events may contain an email address and precise location. Each
+    // member may append and read their own record; only the tenant owner may
+    // review other members' history or clear it.
+    match /login_activity/{activityId} {
+      allow read: if isOwner(resource.data.tenantId)
+        || isMember(resource.data.tenantId) && resource.data.userId == request.auth.uid;
+      allow create: if request.resource.data.tenantId is string
+        && isMember(request.resource.data.tenantId)
+        && request.resource.data.userId == request.auth.uid;
+      allow update: if false;
       allow delete: if isOwner(resource.data.tenantId);
     }
 
