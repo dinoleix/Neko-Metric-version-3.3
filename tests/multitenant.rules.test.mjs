@@ -115,3 +115,15 @@ test('product catalog is readable by tenant members but writable by its owner on
   await assertSucceeds(setDoc(doc(dbFor('owner-a'), 'products', 'new-product'), { tenantId: 'a', name: 'New', createdBy: 'owner-a', updatedBy: 'owner-a' }));
   await assertFails(setDoc(doc(dbFor('owner-a'), 'products', 'wrong-creator'), { tenantId: 'a', name: 'Nope', createdBy: 'attacker', updatedBy: 'attacker' }));
 });
+
+test('customer name mappings are tenant-isolated and owner-only', async () => {
+  const ownerDb = dbFor('owner-a');
+  await assertSucceeds(setDoc(doc(ownerDb, 'customer_name_mappings', 'a-map'), {
+    tenantId: 'a', userId: 'owner-a', name: 'Customer A',
+  }));
+  await assertSucceeds(getDoc(doc(ownerDb, 'customer_name_mappings', 'a-map')));
+  await assertFails(getDoc(doc(dbFor('owner-b'), 'customer_name_mappings', 'a-map')));
+  await assertFails(setDoc(doc(dbFor('manager'), 'customer_name_mappings', 'manager-map'), {
+    tenantId: 'a', userId: 'owner-a', name: 'Not allowed',
+  }));
+});

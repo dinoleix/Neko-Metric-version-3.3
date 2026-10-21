@@ -13,7 +13,7 @@ import {
   getDoc,
   updateDoc,
   increment 
-} from '@firebase/firestore';
+} from '../tenantFirestore';
 import { ref, getDownloadURL, deleteObject } from '../tenantStorage';
 import { db, storage } from '../firebase';
 import { 

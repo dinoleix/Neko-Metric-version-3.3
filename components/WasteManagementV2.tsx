@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import type { User } from 'firebase/auth';
-import { collection, query, getDocs, where, doc, getDoc } from '../tenantFirestore';
+import { collection, query, getDocs, where, doc, getDoc, deleteDoc } from '../tenantFirestore';
 import { db } from '../firebase';
 import { closingByBucket, openingByBucket, cogsBucketsOf } from '../pnlService';
 import { getCachedCollection } from '../referenceCache';
@@ -316,8 +316,7 @@ const WasteManagementV2: React.FC<{ user: User; dataOwnerId: string }> = ({ user
     if (!confirm('Delete this waste entry?')) return;
     setSwDeleting(id);
     try {
-      const { deleteDoc, doc: firestoreDoc } = await import('firebase/firestore');
-      await deleteDoc(firestoreDoc(db, 'waste_entries', id));
+      await deleteDoc(doc(db, 'waste_entries', id));
       setSwEntries(prev => prev.filter(e => e.id !== id));
     } catch (err) { console.error(err); }
     finally { setSwDeleting(null); }

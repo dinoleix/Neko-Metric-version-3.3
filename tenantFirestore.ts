@@ -34,7 +34,7 @@ export function getTenantFirestoreScope(): TenantFirestoreScope | null {
 // platform collections intentionally stay outside the tenant data wrapper.
 const TENANT_COLLECTIONS = new Set([
   'bank_accounts', 'bank_statement_imports', 'bank_transactions', 'bill_counters',
-  'cash_flow_snapshots', 'cash_obligations', 'categorization_rules', 'category_settings',
+  'cash_flow_snapshots', 'cash_obligations', 'categorization_rules', 'category_settings', 'customer_name_mappings',
   'cogs_adjustments', 'crew_categories', 'crew_entries', 'daily_sales_logs',
   'employees', 'events', 'expense_snapshots', 'expenses', 'fc_ingredients', 'fc_recipes',
   'files', 'holidays', 'ingredient_controls', 'ingredient_movements', 'inventory_counts',

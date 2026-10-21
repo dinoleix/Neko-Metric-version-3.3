@@ -60,7 +60,7 @@ service cloud.firestore {
       return {
         'bank_accounts': true, 'bank_statement_imports': true, 'bank_transactions': true,
         'bill_counters': true, 'cash_flow_snapshots': true, 'cash_obligations': true,
-        'categorization_rules': true, 'category_settings': true, 'cogs_adjustments': true,
+        'categorization_rules': true, 'category_settings': true, 'customer_name_mappings': true, 'cogs_adjustments': true,
         'crew_categories': true, 'crew_entries': true, 'daily_sales_logs': true, 'employees': true,
         'events': true, 'expense_snapshots': true, 'expenses': true, 'fc_ingredients': true,
         'fc_recipes': true, 'files': true, 'holidays': true, 'ingredient_controls': true,
@@ -79,6 +79,7 @@ service cloud.firestore {
     function ownerOnlyCollection(collectionName) {
       return {
         'bank_accounts': true, 'bank_statement_imports': true, 'category_settings': true,
+        'customer_name_mappings': true,
         'categorization_rules': true, 'crew_categories': true, 'employees': true,
         'fc_ingredients': true, 'fc_recipes': true, 'files': true, 'holidays': true,
         'loan_profiles': true, 'loyalty_campaign_drafts': true, 'loyalty_imports': true,

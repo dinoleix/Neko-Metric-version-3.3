@@ -36,7 +36,7 @@ These records must carry both `tenantId` and `outletId` unless documented as a t
 
 | Collections |
 | --- |
-| `online_customers`, `online_order_details`, `loyalty_customers`, `loyalty_imports`, `loyalty_opening_balances`, `loyalty_campaign_drafts`, `files` |
+| `online_customers`, `online_order_details`, `customer_name_mappings`, `loyalty_customers`, `loyalty_imports`, `loyalty_opening_balances`, `loyalty_campaign_drafts`, `files` |
 
 These records are tenant-owned. Add `outletId` only when the source or campaign is genuinely store-specific. Customer identity matching must occur only within the same tenant.
 
