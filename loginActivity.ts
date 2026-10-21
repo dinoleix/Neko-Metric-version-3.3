@@ -18,6 +18,7 @@ export const recordLoginActivity = async (user: User, profile: UserProfile): Pro
   const base = {
     userId: user.uid,
     ownerId,
+    ...(profile.tenantId ? { tenantId: profile.tenantId } : {}),
     email: user.email || profile.email || '',
     role: profile.role,
     ...(profile.assignedOutlet ? { assignedOutlet: profile.assignedOutlet } : {}),
