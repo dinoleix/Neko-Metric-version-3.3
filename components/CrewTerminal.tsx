@@ -1,8 +1,8 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import type { User } from 'firebase/auth';
-import { collection, query, getDocs, getDoc, where, addDoc, doc, deleteDoc, updateDoc, setDoc, orderBy, increment, runTransaction } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { collection, query, getDocs, getDoc, where, addDoc, doc, deleteDoc, updateDoc, setDoc, orderBy, increment, runTransaction } from '../tenantFirestore';
+import { ref, uploadBytes, getDownloadURL, getBlob } from '../tenantStorage';
 import { db, storage } from '../firebase';
 import { getCachedCollection, invalidateCached } from '../referenceCache';
 import { rebuildCrewSnapshot } from '../crewSnapshotService';
@@ -284,6 +284,8 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const [receiptPreview, setReceiptPreview] = useState<string | null>(null);
   const [existingReceiptUrl, setExistingReceiptUrl] = useState<string | null>(null);
+  const [existingReceiptPath, setExistingReceiptPath] = useState<string | null>(null);
+  const [viewingReceiptUrl, setViewingReceiptUrl] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -671,6 +673,25 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
 
   const billTotal = useMemo(() => billItems.reduce((s, i) => s + i.amount, 0), [billItems]);
 
+  useEffect(() => {
+    let objectUrl: string | null = null;
+    const path = viewingEntry?.receiptPath;
+    if (!path) {
+      setViewingReceiptUrl(null);
+      return;
+    }
+    getBlob(ref(storage, path)).then(blob => {
+      objectUrl = URL.createObjectURL(blob);
+      setViewingReceiptUrl(objectUrl);
+    }).catch(error => {
+      console.error('[tenant receipt] could not load protected receipt', error);
+      setViewingReceiptUrl(null);
+    });
+    return () => {
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [viewingEntry]);
+
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -693,7 +714,10 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     setDate(entry.date);
     setOutletId(entry.outletId);
     setExistingReceiptUrl(entry.receiptUrl || null);
-    setReceiptPreview(entry.receiptUrl || null);
+    setExistingReceiptPath(entry.receiptPath || null);
+    if (entry.receiptPath) {
+      getBlob(ref(storage, entry.receiptPath)).then(blob => setReceiptPreview(URL.createObjectURL(blob))).catch(() => setReceiptPreview(null));
+    } else setReceiptPreview(entry.receiptUrl || null);
     setSelectedVendorId(entry.vendorId || '');
     setSelectedProductId('');
     setActiveMode('edit');
@@ -759,13 +783,20 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     setSaving(true);
     try {
       let finalReceiptUrl = existingReceiptUrl;
+      let finalReceiptPath = existingReceiptPath;
 
       if (receiptFile) {
         const compressedBlob = await compressImage(receiptFile);
-        const fileName = `receipts/${user.uid}/${Date.now()}.jpg`;
+        const fileName = `outlets/${outletId}/receipts/${user.uid}/${Date.now()}.jpg`;
         const storageRef = ref(storage, fileName);
         await uploadBytes(storageRef, compressedBlob);
-        finalReceiptUrl = await getDownloadURL(storageRef);
+        if (import.meta.env.MODE === 'multitenant-dev') {
+          finalReceiptPath = fileName;
+          finalReceiptUrl = null;
+        } else {
+          finalReceiptUrl = await getDownloadURL(storageRef);
+          finalReceiptPath = null;
+        }
       }
 
       // For new entries generate a bill number; for edits preserve the existing one
@@ -800,6 +831,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
         status,
         paidFrom: entryType === 'expense' ? paidFrom : null,
         receiptUrl: finalReceiptUrl || null,
+        receiptPath: finalReceiptPath || null,
         billNumber: billNumber || null,
         vendorId: selectedVendorId || null,
         vendorName: vendors.find(v => v.id === selectedVendorId)?.name || null,
@@ -1203,6 +1235,7 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
     setReceiptPreview(null);
     setEditingId(null);
     setExistingReceiptUrl(null);
+      setExistingReceiptPath(null);
     setSelectedVendorId('');
     setSelectedProductId('');
     setBillItems([]);
@@ -3498,15 +3531,15 @@ const CrewTerminal: React.FC<{ user: User, profile: UserProfile }> = ({ user, pr
                   </div>
                 )}
 
-                {viewingEntry.receiptUrl ? (
+                {(viewingEntry.receiptPath ? viewingReceiptUrl : viewingEntry.receiptUrl) ? (
                   <div className="space-y-3">
                     <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Receipt</p>
                     <div className="rounded-[1.5rem] overflow-hidden border border-slate-100 shadow-inner bg-slate-50">
                       <img
-                        src={viewingEntry.receiptUrl}
+                        src={viewingEntry.receiptPath ? viewingReceiptUrl || undefined : viewingEntry.receiptUrl}
                         alt="Receipt Evidence"
                         className="w-full h-auto max-h-[260px] object-contain cursor-zoom-in"
-                        onClick={() => window.open(viewingEntry.receiptUrl, '_blank')}
+                        onClick={() => window.open(viewingEntry.receiptPath ? viewingReceiptUrl || undefined : viewingEntry.receiptUrl || undefined, '_blank')}
                            />
                         </div>
                      </div>

@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import type { User } from 'firebase/auth';
-import { collection, query, getDocs, where, addDoc, doc, updateDoc, arrayUnion, deleteDoc, writeBatch } from 'firebase/firestore';
+import { collection, query, getDocs, where, addDoc, doc, updateDoc, arrayUnion, deleteDoc, writeBatch } from '../tenantFirestore';
 import { db } from '../firebase';
 import { invalidateCached } from '../referenceCache';
 import { Employee, SalaryHistory, StoreRental, MonthlyPayroll, MASTER_OUTLETS, getOutletName, YEAR_OPTIONS, MONTH_NAMES, istDateString } from '../types';

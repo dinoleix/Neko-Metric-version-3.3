@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { User } from 'firebase/auth';
-import { collection, query, getDocs, addDoc, doc, deleteDoc, updateDoc, where, orderBy } from 'firebase/firestore';
+import { collection, query, getDocs, addDoc, doc, deleteDoc, updateDoc, where, orderBy } from '../tenantFirestore';
 import { db } from '../firebase';
 import { getCachedCollection } from '../referenceCache';
 import { BankAccount, SalesLedgerEntry, BankTransaction, MASTER_OUTLETS, getOutletName, StoreRental } from '../types';

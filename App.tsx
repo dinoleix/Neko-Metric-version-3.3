@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef, useCallback, Suspense } from 'react';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import type { User } from 'firebase/auth';
-import { doc, getDoc, setDoc, collection, query, where, onSnapshot } from 'firebase/firestore';
+import { doc, getDoc, setDoc, collection, query, where, onSnapshot } from './tenantFirestore';
 import { auth, db } from './firebase';
 import { UserRole, UserProfile, UserGroup, BankAccount, getOutletName } from './types';
 import Login from './components/Login';
@@ -13,6 +13,7 @@ import {
 } from './moduleRegistry';
 import { resolveAllowedModules } from './moduleAccess';
 import { resolveTenantSession, type TenantSession } from './multitenantRuntime';
+import { setTenantFirestoreScope } from './tenantFirestore';
 import MultiTenantHome from './components/MultiTenantHome';
 import {
   LogOut,
@@ -30,6 +31,23 @@ import {
 
 const CrewTerminalComponent = MODULE_BY_ID.get('crew-terminal')!.Component;
 const MULTI_TENANT_BUILD = import.meta.env.MODE === 'multitenant-dev';
+
+const tenantRoleToAppRole = (role: TenantSession['membership']['role']): UserRole =>
+  role === 'owner' ? 'admin' : role;
+
+const profileFromTenantSession = (user: User, session: TenantSession): UserProfile => ({
+  uid: user.uid,
+  email: user.email || '',
+  role: tenantRoleToAppRole(session.membership.role),
+  createdAt: session.membership.createdAt,
+  tenantId: session.tenant.id,
+  // Keep the prior owner key as provenance for legacy IDs while all business
+  // reads and writes are scoped by the tenant-aware Firestore boundary.
+  ownerId: session.tenant.ownerUserId,
+  assignedOutlet: session.membership.outletIds.length === 1 && session.membership.outletIds[0] !== '*'
+    ? session.membership.outletIds[0]
+    : undefined,
+});
 
 const TabLoader: React.FC = () => (
   <div className="flex items-center justify-center py-24">
@@ -146,6 +164,7 @@ const App: React.FC = () => {
 
   const handleSignOut = useCallback(() => {
     clearLoginActivitySession();
+    if (MULTI_TENANT_BUILD) setTenantFirestoreScope(null);
     void signOut(auth);
   }, []);
 
@@ -178,7 +197,9 @@ const App: React.FC = () => {
       if (MULTI_TENANT_BUILD) {
         if (!u) {
           clearLoginActivitySession();
+          setTenantFirestoreScope(null);
           setUser(null);
+          setUserProfile(null);
           setTenantSession(null);
           setTenantError(null);
           setLoading(false);
@@ -191,10 +212,25 @@ const App: React.FC = () => {
         setLoading(true);
         try {
           const session = await resolveTenantSession(u.uid);
-          if (authResolution.current === resolution) setTenantSession(session);
+          if (authResolution.current === resolution) {
+            setTenantFirestoreScope({
+              tenantId: session.tenant.id,
+              userId: u.uid,
+              ownerUserId: session.tenant.ownerUserId,
+              role: session.membership.role,
+              outletIds: session.membership.outletIds,
+            });
+            const profile = profileFromTenantSession(u, session);
+            setTenantSession(session);
+            setUserProfile(profile);
+            const initial = landingModule(profile.role, resolveAllowedModules(profile, null));
+            if (initial) setActiveTab(initial);
+          }
         } catch (err) {
           console.error('[tenant] could not resolve signed-in account:', err);
           if (authResolution.current === resolution) {
+            setTenantFirestoreScope(null);
+            setUserProfile(null);
             setTenantError(err instanceof Error ? err.message : 'Could not load restaurant access. Please try again.');
           }
         } finally {
@@ -244,6 +280,7 @@ const App: React.FC = () => {
         }
       } else {
         clearLoginActivitySession();
+        if (MULTI_TENANT_BUILD) setTenantFirestoreScope(null);
         setUser(null);
         setUserProfile(null);
       }
@@ -308,7 +345,7 @@ const App: React.FC = () => {
     );
   }
 
-  if (MULTI_TENANT_BUILD && user) {
+  if (MULTI_TENANT_BUILD && user && tenantError) {
     return <MultiTenantHome user={user} session={tenantSession} error={tenantError} onSignOut={handleSignOut} />;
   }
 

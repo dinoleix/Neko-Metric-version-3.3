@@ -2,49 +2,230 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() { return request.auth != null; }
-    function membershipPath(tenantId) { return /databases/$(database)/documents/tenant_memberships/$(tenantId + '_' + request.auth.uid); }
-    function isMember(tenantId) { return signedIn() && exists(membershipPath(tenantId)) && get(membershipPath(tenantId)).data.status == 'active'; }
+    function membershipPath(tenantId) {
+      return /databases/$(database)/documents/tenant_memberships/$(tenantId + '_' + request.auth.uid);
+    }
+    function tenantPath(tenantId) {
+      return /databases/$(database)/documents/tenants/$(tenantId);
+    }
+    function hasMembership(tenantId) {
+      return signedIn() && exists(membershipPath(tenantId));
+    }
     function membership(tenantId) { return get(membershipPath(tenantId)).data; }
+    function isMember(tenantId) {
+      return hasMembership(tenantId)
+        && membership(tenantId).tenantId == tenantId
+        && membership(tenantId).userId == request.auth.uid
+        && membership(tenantId).status == 'active';
+    }
     function isOwner(tenantId) { return isMember(tenantId) && membership(tenantId).role == 'owner'; }
-    function canUseOutlet(tenantId, outletId) { return isMember(tenantId) && (isOwner(tenantId) || (membership(tenantId).role == 'manager' && membership(tenantId).outletIds.hasAny(['*'])) || membership(tenantId).outletIds.hasAny([outletId])); }
+    function isManager(tenantId) { return isMember(tenantId) && membership(tenantId).role == 'manager'; }
+    function hasAllOutlets(tenantId) {
+      return isManager(tenantId) && membership(tenantId).outletIds.hasAny(['*']);
+    }
+    function canUseOutlet(tenantId, outletId) {
+      return isOwner(tenantId)
+        || hasAllOutlets(tenantId)
+        || (isMember(tenantId) && membership(tenantId).outletIds.hasAny([outletId]));
+    }
+    function canAccessRecord(data) {
+      let tenantMembership = membership(data.tenantId);
+      let outletId = data.get('outletId', null);
+      return isMember(data.tenantId)
+        && (tenantMembership.role == 'owner'
+          || tenantMembership.role == 'manager' && tenantMembership.outletIds.hasAny(['*'])
+          || outletId != null && tenantMembership.outletIds.hasAny([outletId]));
+    }
+    function canReadTenantRecord(collectionName, data) {
+      let tenantMembership = membership(data.tenantId);
+      let outletId = data.get('outletId', null);
+      return isMember(data.tenantId)
+        && (tenantMembership.role == 'owner'
+          || tenantMembership.role == 'manager' && tenantMembership.outletIds.hasAny(['*'])
+          || outletId != null && tenantMembership.outletIds.hasAny([outletId])
+          || outletId == null && sharedCollection(collectionName));
+    }
     function tenantStable() { return request.resource.data.tenantId == resource.data.tenantId; }
+    function ownerAfterCreate(tenantId) {
+      return signedIn()
+        && existsAfter(tenantPath(tenantId))
+        && getAfter(tenantPath(tenantId)).data.ownerUserId == request.auth.uid
+        && existsAfter(membershipPath(tenantId))
+        && getAfter(membershipPath(tenantId)).data.tenantId == tenantId
+        && getAfter(membershipPath(tenantId)).data.userId == request.auth.uid
+        && getAfter(membershipPath(tenantId)).data.role == 'owner'
+        && getAfter(membershipPath(tenantId)).data.status == 'active';
+    }
+    function businessCollection(collectionName) {
+      return {
+        'bank_accounts': true, 'bank_statement_imports': true, 'bank_transactions': true,
+        'bill_counters': true, 'cash_flow_snapshots': true, 'cash_obligations': true,
+        'categorization_rules': true, 'category_settings': true, 'cogs_adjustments': true,
+        'crew_categories': true, 'crew_entries': true, 'daily_sales_logs': true, 'employees': true,
+        'events': true, 'expense_snapshots': true, 'expenses': true, 'fc_ingredients': true,
+        'fc_recipes': true, 'files': true, 'holidays': true, 'ingredient_controls': true,
+        'ingredient_movements': true, 'inventory_counts': true, 'inventory_items': true,
+        'item_costs': true, 'item_sales': true, 'item_snapshots': true, 'loan_profiles': true,
+        'login_activity': true, 'loyalty_campaign_drafts': true, 'loyalty_customers': true,
+        'loyalty_imports': true, 'loyalty_opening_balances': true, 'menu_normalization': true,
+        'menu_prices': true, 'monthly_payrolls': true, 'online_customers': true,
+        'online_order_details': true, 'pnl_snapshots': true, 'products': true, 'purchases': true,
+        'rentals': true, 'sales_analytics': true, 'sales_ledger': true, 'sales_snapshots': true,
+        'sales_summary': true, 'serving_options': true, 'sku_mappings': true,
+        'user_mappings': true, 'user_groups': true, 'vendors': true, 'waste_entries': true,
+        'weather': true
+      }.get(collectionName, false);
+    }
+    function ownerOnlyCollection(collectionName) {
+      return {
+        'bank_accounts': true, 'bank_statement_imports': true, 'category_settings': true,
+        'categorization_rules': true, 'crew_categories': true, 'employees': true,
+        'fc_ingredients': true, 'fc_recipes': true, 'files': true, 'holidays': true,
+        'loan_profiles': true, 'loyalty_campaign_drafts': true, 'loyalty_imports': true,
+        'loyalty_opening_balances': true, 'menu_normalization': true, 'monthly_payrolls': true,
+        'rentals': true, 'serving_options': true, 'sku_mappings': true, 'user_groups': true,
+        'user_mappings': true
+      }.get(collectionName, false);
+    }
+    function sharedCollection(collectionName) {
+      return {
+        'category_settings': true, 'crew_categories': true, 'fc_ingredients': true,
+        'fc_recipes': true, 'menu_normalization': true, 'menu_prices': true,
+        'products': true, 'serving_options': true, 'vendors': true
+      }.get(collectionName, false);
+    }
+    function managerCanWrite(collectionName, tenantId, data) {
+      let tenantMembership = membership(tenantId);
+      let outletId = data.get('outletId', null);
+      return isMember(tenantId)
+        && tenantMembership.role == 'manager'
+        && !ownerOnlyCollection(collectionName)
+        && (tenantMembership.outletIds.hasAny(['*'])
+          || outletId != null && tenantMembership.outletIds.hasAny([outletId]));
+    }
+    function crewCanCreate(collectionName, data) {
+      let tenantMembership = membership(data.tenantId);
+      let outletId = data.get('outletId', null);
+      return isMember(data.tenantId)
+        && tenantMembership.role == 'crew'
+        && {
+          'crew_entries': true, 'daily_sales_logs': true, 'waste_entries': true,
+          'bank_transactions': true, 'sales_ledger': true, 'tenant_test_records': true
+        }.get(collectionName, false)
+        && outletId != null
+        && tenantMembership.outletIds.hasAny([outletId])
+        && (data.get('createdBy', null) == request.auth.uid || data.get('userId', null) == request.auth.uid);
+    }
+    function crewCanUpdate(collectionName) {
+      let tenantMembership = membership(resource.data.tenantId);
+      let outletId = resource.data.get('outletId', null);
+      return isMember(resource.data.tenantId)
+        && tenantMembership.role == 'crew'
+        && {'crew_entries': true, 'daily_sales_logs': true, 'waste_entries': true}.get(collectionName, false)
+        && outletId != null
+        && tenantMembership.outletIds.hasAny([outletId])
+        && (resource.data.get('createdBy', null) == request.auth.uid
+          || resource.data.get('userId', null) == request.auth.uid)
+        && request.resource.data.tenantId == resource.data.tenantId
+        && request.resource.data.get('outletId', null) == resource.data.get('outletId', null)
+        && request.resource.data.get('userId', null) == resource.data.get('userId', null);
+    }
+    function crewCanUpdateBankAccount() {
+      let tenantMembership = membership(resource.data.tenantId);
+      return isMember(resource.data.tenantId)
+        && tenantMembership.role == 'crew'
+        && tenantMembership.outletIds.hasAny([resource.data.get('outletId', null)])
+        && request.resource.data.tenantId == resource.data.tenantId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['balance', 'updatedAt']);
+    }
 
     match /tenants/{tenantId} {
-      allow create: if signedIn() && request.resource.data.ownerUserId == request.auth.uid && request.resource.data.createdBy == request.auth.uid && request.resource.data.status == 'active';
+      allow create: if signedIn()
+        && request.resource.data.ownerUserId == request.auth.uid
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.status == 'active'
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.currency is string
+        && request.resource.data.timezone is string;
       allow read: if isMember(tenantId);
-      allow update: if isOwner(tenantId) && request.resource.data.ownerUserId == resource.data.ownerUserId;
+      allow update: if isOwner(tenantId)
+        && request.resource.data.ownerUserId == resource.data.ownerUserId
+        && request.resource.data.status == resource.data.status;
       allow delete: if false;
     }
+
     match /tenant_memberships/{membershipId} {
-      // A user must be able to discover their own membership before the app
-      // knows which tenant document to load. This does not expose other users'
-      // memberships; tenant members can also read records in their tenant.
       allow read: if signedIn() && resource.data.userId == request.auth.uid
         || isMember(resource.data.tenantId);
-      allow create: if signedIn() && request.resource.data.userId == request.auth.uid && request.resource.data.role == 'owner' && request.resource.data.status == 'active' && getAfter(/databases/$(database)/documents/tenants/$(request.resource.data.tenantId)).data.ownerUserId == request.auth.uid;
-      allow update, delete: if isOwner(resource.data.tenantId);
+      allow create: if signedIn()
+        && membershipId == request.resource.data.tenantId + '_' + request.resource.data.userId
+        && request.resource.data.status == 'active'
+        && request.resource.data.outletIds is list
+        && ((request.resource.data.userId == request.auth.uid
+            && request.resource.data.role == 'owner'
+            && ownerAfterCreate(request.resource.data.tenantId))
+          || (isOwner(request.resource.data.tenantId)
+            && request.resource.data.role in ['manager', 'crew', 'viewer']));
+      allow update: if isOwner(resource.data.tenantId)
+        && resource.data.role != 'owner'
+        && request.resource.data.tenantId == resource.data.tenantId
+        && request.resource.data.userId == resource.data.userId
+        && request.resource.data.role in ['manager', 'crew', 'viewer'];
+      allow delete: if isOwner(resource.data.tenantId) && resource.data.role != 'owner';
     }
+
     match /outlets/{outletId} {
+      allow read: if isMember(resource.data.tenantId);
+      allow create: if request.resource.data.tenantId is string
+        && request.resource.data.status == 'active'
+        && (isOwner(request.resource.data.tenantId) || ownerAfterCreate(request.resource.data.tenantId));
+      allow update: if isOwner(resource.data.tenantId) && tenantStable();
+      allow delete: if false;
+    }
+
+    match /tenant_settings/{settingId} {
       allow read: if isMember(resource.data.tenantId);
       allow create: if isOwner(request.resource.data.tenantId);
       allow update: if isOwner(resource.data.tenantId) && tenantStable();
       allow delete: if false;
     }
+
     match /tenant_test_records/{recordId} {
-      allow read: if isMember(resource.data.tenantId) && canUseOutlet(resource.data.tenantId, resource.data.outletId);
-      allow create: if canUseOutlet(request.resource.data.tenantId, request.resource.data.outletId);
-      allow update: if canUseOutlet(resource.data.tenantId, resource.data.outletId) && tenantStable() && request.resource.data.outletId == resource.data.outletId;
+      allow read: if canReadTenantRecord('tenant_test_records', resource.data);
+      allow create: if isOwner(request.resource.data.tenantId)
+        || isManager(request.resource.data.tenantId) && canAccessRecord(request.resource.data)
+        || crewCanCreate('tenant_test_records', request.resource.data);
+      allow update: if tenantStable() && canAccessRecord(resource.data)
+        && (isOwner(resource.data.tenantId) || isManager(resource.data.tenantId));
       allow delete: if isOwner(resource.data.tenantId);
     }
-    match /products/{productId} {
-      allow read: if isMember(resource.data.tenantId);
-      allow create: if isOwner(request.resource.data.tenantId)
-        && request.resource.data.createdBy == request.auth.uid
-        && request.resource.data.updatedBy == request.auth.uid;
-      allow update: if isOwner(resource.data.tenantId) && tenantStable()
-        && request.resource.data.createdBy == resource.data.createdBy
-        && request.resource.data.updatedBy == request.auth.uid;
-      allow delete: if isOwner(resource.data.tenantId);
+
+    match /{collectionName}/{documentId} {
+      allow read: if businessCollection(collectionName) && canReadTenantRecord(collectionName, resource.data);
+      allow create: if businessCollection(collectionName)
+        && request.resource.data.tenantId is string
+        && (collectionName == 'products'
+          ? isOwner(request.resource.data.tenantId)
+            && request.resource.data.createdBy == request.auth.uid
+            && request.resource.data.updatedBy == request.auth.uid
+          : isOwner(request.resource.data.tenantId) && canAccessRecord(request.resource.data)
+            || managerCanWrite(collectionName, request.resource.data.tenantId, request.resource.data)
+            || crewCanCreate(collectionName, request.resource.data));
+      allow update: if businessCollection(collectionName)
+        && tenantStable()
+        && canAccessRecord(resource.data)
+        && (collectionName == 'products'
+          ? isOwner(resource.data.tenantId)
+            && request.resource.data.createdBy == resource.data.createdBy
+            && request.resource.data.updatedBy == request.auth.uid
+          : isOwner(resource.data.tenantId)
+            || managerCanWrite(collectionName, resource.data.tenantId, request.resource.data)
+            || crewCanUpdate(collectionName)
+            || collectionName == 'bank_accounts' && crewCanUpdateBankAccount());
+      allow delete: if businessCollection(collectionName)
+        && (isOwner(resource.data.tenantId) && canAccessRecord(resource.data)
+          || managerCanWrite(collectionName, resource.data.tenantId, resource.data));
     }
   }
 }

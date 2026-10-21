@@ -1,8 +1,8 @@
 
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { type User } from 'firebase/auth';
-import { collection, addDoc, writeBatch, doc, setDoc, getDoc, increment, getDocs, query, where, arrayUnion, limit, runTransaction } from 'firebase/firestore';
-import { ref, uploadBytes } from 'firebase/storage';
+import { collection, addDoc, writeBatch, doc, setDoc, getDoc, increment, getDocs, query, where, arrayUnion, limit, runTransaction } from '../tenantFirestore';
+import { ref, uploadBytes } from '../tenantStorage';
 import { db, storage } from '../firebase';
 import { getCachedCollection } from '../referenceCache';
 import { parseCsvRecords } from '../csvParse';

@@ -1,5 +1,5 @@
 
-import { collection, query, where, getDocs, getDoc, setDoc, updateDoc, doc } from 'firebase/firestore';
+import { collection, query, where, getDocs, getDoc, setDoc, updateDoc, doc } from './tenantFirestore';
 import { db } from './firebase';
 import { CrewQtyMeta, DailyCounterEntry, MONTH_NAMES } from './types';
 

@@ -12,7 +12,7 @@ import {
   addDoc,
   updateDoc,
   increment
-} from 'firebase/firestore';
+} from '../tenantFirestore';
 import { db } from '../firebase';
 import { CashFlowSnapshot, PnLMonthlySnapshot, MONTH_NAMES, BankTransaction, LoanProfile, BankAccount, CashObligation } from '../types';
 import {

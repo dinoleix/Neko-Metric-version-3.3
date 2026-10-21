@@ -1,6 +1,6 @@
 
 import { WeatherData, WeatherForecast } from './types';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc } from './tenantFirestore';
 import { db } from './firebase';
 
 const API_KEY = import.meta.env.VITE_OPENWEATHER_API_KEY;

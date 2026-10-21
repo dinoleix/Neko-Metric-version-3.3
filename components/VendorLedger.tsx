@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import type { User } from 'firebase/auth';
-import { collection, query, where, getDocs, doc, writeBatch } from 'firebase/firestore';
+import { collection, query, where, getDocs, doc, writeBatch } from '../tenantFirestore';
 import { db } from '../firebase';
 import {
   BankTransaction, DailyCounterEntry, PurchaseRecord, Vendor, getOutletName,

@@ -17,6 +17,7 @@ export interface TenantMembership {
   id: string;
   tenantId: string;
   userId: string;
+  email?: string;
   role: TenantRole;
   outletIds: string[];
   status: TenantStatus;

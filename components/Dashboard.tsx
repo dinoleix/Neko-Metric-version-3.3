@@ -14,7 +14,7 @@ import {
   updateDoc,
   increment 
 } from '@firebase/firestore';
-import { ref, getDownloadURL, deleteObject } from '@firebase/storage';
+import { ref, getDownloadURL, deleteObject } from '../tenantStorage';
 import { db, storage } from '../firebase';
 import { 
   FileMetadata, 

@@ -1,5 +1,5 @@
 import type { User } from 'firebase/auth';
-import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
+import { doc, serverTimestamp, setDoc } from './tenantFirestore';
 import { db } from './firebase';
 import type { LoginActivityRecord, UserProfile } from './types';
 

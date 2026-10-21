@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import type { User } from 'firebase/auth';
-import { collection, query, getDocs, where, doc, setDoc, writeBatch } from 'firebase/firestore';
+import { collection, query, getDocs, where, doc, setDoc, writeBatch } from '../tenantFirestore';
 import { db } from '../firebase';
 import { getCachedCollection } from '../referenceCache';
 import {

@@ -1,5 +1,6 @@
-import { collection, query, where, getDocs } from 'firebase/firestore';
+import { collection, query, where, getDocs } from './tenantFirestore';
 import { db } from './firebase';
+import { getTenantFirestoreScope } from './tenantFirestore';
 
 // Session-level cache for slow-changing reference collections (rentals, item_costs,
 // sku_mappings, menu_normalization, serving_options, employees, monthly_payrolls).
@@ -10,7 +11,8 @@ const TTL_MS = 5 * 60 * 1000;
 const cache = new Map<string, { at: number; promise: Promise<any[]> }>();
 
 export function getCachedCollection<T = any>(coll: string, ownerId: string, field: 'userId' | 'ownerId' = 'userId', outletId?: string | null): Promise<T[]> {
-  const key = `${coll}:${ownerId}:${outletId || 'all'}`;
+  const tenantId = getTenantFirestoreScope()?.tenantId || 'legacy';
+  const key = `${tenantId}:${coll}:${ownerId}:${outletId || 'all'}`;
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.promise as Promise<T[]>;
 
@@ -31,8 +33,8 @@ export function getCachedCollection<T = any>(coll: string, ownerId: string, fiel
 
 // Call after writing to a cached collection so the next read is fresh.
 export function invalidateCached(coll: string, ownerId?: string) {
-  const prefix = ownerId ? `${coll}:${ownerId}` : `${coll}:`;
+  const scope = ownerId ? `:${coll}:${ownerId}:` : `:${coll}:`;
   for (const key of Array.from(cache.keys())) {
-    if (key.startsWith(prefix)) cache.delete(key);
+    if (key.includes(scope)) cache.delete(key);
   }
 }

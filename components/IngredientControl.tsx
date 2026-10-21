@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import type { User } from 'firebase/auth';
-import { addDoc, collection, doc, getDocs, query, setDoc, where } from 'firebase/firestore';
+import { addDoc, collection, doc, getDocs, query, setDoc, where } from '../tenantFirestore';
 import { db } from '../firebase';
 import {
   IngredientControlProfile, IngredientMovement, IngredientMovementType, InventoryCount,

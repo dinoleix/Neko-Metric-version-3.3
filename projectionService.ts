@@ -1,7 +1,7 @@
 
 import { Type } from "@google/genai";
 import { ai } from './geminiService';
-import { collection, query, where, getDocs, limit } from 'firebase/firestore';
+import { collection, query, where, getDocs, limit } from './tenantFirestore';
 import { db } from './firebase';
 import { SalesProjection, SalesMonthlySnapshot, DailySalesLog, Holiday, WeatherForecast, MONTH_NAMES, istDateString } from './types';
 import { fetchForecastFromAPI } from './weatherService';

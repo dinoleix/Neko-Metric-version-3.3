@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { doc, deleteDoc, deleteField, writeBatch } from 'firebase/firestore';
+import { doc, deleteDoc, deleteField, writeBatch } from '../tenantFirestore';
 import { db } from '../firebase';
 import {
   BankTransaction, CategorizationRule,

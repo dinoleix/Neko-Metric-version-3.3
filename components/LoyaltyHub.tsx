@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { User } from 'firebase/auth';
-import { collection, doc, getDoc, getDocs, query, setDoc, where, writeBatch } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, query, setDoc, where, writeBatch } from '../tenantFirestore';
 import { db } from '../firebase';
 import { parseCsvRecords } from '../csvParse';
 import type { LoyaltyImportSummary } from '../types';

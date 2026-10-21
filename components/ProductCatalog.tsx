@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import type { User } from 'firebase/auth';
-import { collection, getDocs, addDoc, doc, updateDoc, deleteDoc, query, where } from 'firebase/firestore';
+import { collection, getDocs, addDoc, doc, updateDoc, deleteDoc, query, where } from '../tenantFirestore';
 import { db } from '../firebase';
 import { Product, CREW_PURCHASE_CATEGORIES, CREW_EXPENSE_CATEGORIES } from '../types';
 import { X, Plus, Search, Edit2, Trash2, Tag, Loader2, Package, Check, Copy, AlertTriangle } from 'lucide-react';

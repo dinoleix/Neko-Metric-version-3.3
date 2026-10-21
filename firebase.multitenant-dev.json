@@ -1,1 +1,14 @@
-{"firestore":{"rules":"rules/firestore.multitenant.rules","indexes":"firestore.indexes.json"}}
+{
+  "firestore": {
+    "rules": "rules/firestore.multitenant.rules",
+    "indexes": "firestore.multitenant-dev.indexes.json"
+  },
+  "storage": {
+    "rules": "rules/storage.multitenant.rules"
+  },
+  "emulators": {
+    "firestore": {
+      "port": 8088
+    }
+  }
+}

@@ -16,9 +16,9 @@ import {
   increment,
   limit,
   deleteField
-} from 'firebase/firestore';
+} from '../tenantFirestore';
 import { db } from '../firebase';
-import { documentId } from 'firebase/firestore';
+import { documentId } from '../tenantFirestore';
 import CategoryRegistry from './CategoryRegistry';
 import { ai } from '../geminiService';
 import {

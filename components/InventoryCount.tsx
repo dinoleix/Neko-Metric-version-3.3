@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import type { User } from 'firebase/auth';
-import { collection, deleteDoc, doc, getDocs, query, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
+import { collection, deleteDoc, doc, getDocs, query, setDoc, updateDoc, where, writeBatch } from '../tenantFirestore';
 import { db } from '../firebase';
 import {
   InventoryBucket, InventoryCount as InventoryCountRecord, InventoryCountLine,

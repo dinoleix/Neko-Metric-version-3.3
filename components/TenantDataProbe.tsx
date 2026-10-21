@@ -7,7 +7,7 @@ import {
   getDocs,
   query,
   where,
-} from 'firebase/firestore';
+} from '../tenantFirestore';
 import { Check, LoaderCircle, Save, ShieldCheck } from 'lucide-react';
 import { db } from '../firebase';
 import type { TenantSession } from '../multitenantRuntime';

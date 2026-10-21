@@ -3,10 +3,11 @@ import type { User } from 'firebase/auth';
 import { MapPin, Users } from 'lucide-react';
 import LoginActivity from './LoginActivity';
 import UserManagement from './UserManagement';
+import TenantMembershipManager from './TenantMembershipManager';
 
 type Tab = 'users' | 'activity';
 
-const AccessAdministration: React.FC<{ user: User; dataOwnerId: string }> = ({ user, dataOwnerId }) => {
+const AccessAdministration: React.FC<{ user: User; dataOwnerId: string; tenantId?: string }> = ({ user, dataOwnerId, tenantId }) => {
   const [tab, setTab] = useState<Tab>('users');
 
   return (
@@ -29,7 +30,9 @@ const AccessAdministration: React.FC<{ user: User; dataOwnerId: string }> = ({ u
       </div>
 
       {tab === 'users'
-        ? <UserManagement user={user} dataOwnerId={dataOwnerId} />
+        ? tenantId
+          ? <TenantMembershipManager user={user} tenantId={tenantId} />
+          : <UserManagement user={user} dataOwnerId={dataOwnerId} />
         : <LoginActivity user={user} dataOwnerId={dataOwnerId} />}
     </div>
   );

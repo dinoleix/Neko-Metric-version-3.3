@@ -11,7 +11,7 @@
 // duplicated copies of its aggregation drifted apart.
 // ---------------------------------------------------------------------------
 
-import { collection, doc, writeBatch } from 'firebase/firestore';
+import { collection, doc, writeBatch } from './tenantFirestore';
 import { db } from './firebase';
 import { invalidateCached } from './referenceCache';
 import { Recipe, RecipeIngredient, ItemCost } from './types';

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { User } from 'firebase/auth';
-import { addDoc, collection, getDocs, query, where } from 'firebase/firestore';
+import { addDoc, collection, getDocs, query, where } from '../tenantFirestore';
 import { db } from '../firebase';
 import type { LoyaltyCustomer } from '../types';
 import {

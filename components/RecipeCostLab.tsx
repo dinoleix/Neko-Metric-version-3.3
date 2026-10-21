@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import type { User } from 'firebase/auth';
 import {
   collection, getDocs, addDoc, doc, updateDoc, deleteDoc, query, where, writeBatch,
-} from 'firebase/firestore';
+} from '../tenantFirestore';
 import { db } from '../firebase';
 import {
   RecipeIngredient, Recipe, RecipeComponent, RecipeKind, MeasureUnit,

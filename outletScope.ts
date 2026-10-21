@@ -1,4 +1,4 @@
-import { where, type QueryConstraint } from 'firebase/firestore';
+import { where, type QueryConstraint } from './tenantFirestore';
 import type { UserProfile } from './types';
 
 /** Empty means HQ/all-store access. Only managers use the scoped variant. */

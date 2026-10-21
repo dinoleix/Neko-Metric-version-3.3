@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import type { User } from 'firebase/auth';
-import { collection, getDocs, limit, orderBy, query, where, writeBatch } from 'firebase/firestore';
+import { collection, getDocs, limit, orderBy, query, where, writeBatch } from '../tenantFirestore';
 import { Clock3, ExternalLink, Loader2, MapPin, ShieldCheck, Trash2 } from 'lucide-react';
 import { db } from '../firebase';
 import type { LoginActivityRecord } from '../types';

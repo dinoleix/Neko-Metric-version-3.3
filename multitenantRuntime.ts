@@ -5,7 +5,7 @@ import {
   getDocs,
   query,
   where,
-} from 'firebase/firestore';
+} from './tenantFirestore';
 import type { Tenant, TenantMembership, TenantOutlet } from './tenantTypes';
 import { db } from './firebase';
 
@@ -15,16 +15,25 @@ export type TenantSession = {
   outlets: TenantOutlet[];
 };
 
+const wait = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds));
+
 /** Resolve the signed-in identity to exactly one active tenant for this session. */
 export async function resolveTenantSession(userId: string): Promise<TenantSession> {
   const membershipQuery = query(
     collection(db, 'tenant_memberships'),
     where('userId', '==', userId),
   );
-  const membershipSnapshot = await getDocs(membershipQuery);
-  const activeMemberships = membershipSnapshot.docs
-    .map(snapshot => ({ id: snapshot.id, ...snapshot.data() } as TenantMembership))
-    .filter(membership => membership.status === 'active');
+  let activeMemberships: TenantMembership[] = [];
+  // Auth can emit its signed-in event a moment before the atomic tenant signup
+  // batch is visible. Retry briefly so a new owner lands in the app cleanly.
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const membershipSnapshot = await getDocs(membershipQuery);
+    activeMemberships = membershipSnapshot.docs
+      .map(snapshot => ({ id: snapshot.id, ...snapshot.data() } as TenantMembership))
+      .filter(membership => membership.status === 'active');
+    if (activeMemberships.length > 0) break;
+    if (attempt < 4) await wait(300);
+  }
 
   if (activeMemberships.length === 0) {
     throw new Error('No active restaurant membership is linked to this account. Ask your platform administrator to invite you.');

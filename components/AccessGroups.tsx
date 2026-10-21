@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import {
   collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc, setDoc, writeBatch,
-} from 'firebase/firestore';
+} from '../tenantFirestore';
 import { db } from '../firebase';
 import { UserGroup, UserProfile, UserRole } from '../types';
 import { MODULES, MODULE_SECTIONS, ModuleId } from '../moduleRegistry';

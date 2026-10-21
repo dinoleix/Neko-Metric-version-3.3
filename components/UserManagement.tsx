@@ -1,20 +1,11 @@
 
 import React, { useState, useEffect } from 'react';
 import type { User } from 'firebase/auth';
-import { initializeApp, deleteApp, getApp } from 'firebase/app';
+import { initializeApp, deleteApp } from 'firebase/app';
 import { getAuth, createUserWithEmailAndPassword } from 'firebase/auth';
-import { collection, getDocs, getDoc, doc, setDoc, deleteDoc, query, where } from 'firebase/firestore';
-import { db } from '../firebase';
+import { collection, getDocs, getDoc, doc, setDoc, deleteDoc, query, where } from '../tenantFirestore';
+import { db, firebaseConfig } from '../firebase';
 // Reuse config for secondary instance
-import { auth as primaryAuth } from '../firebase';
-const firebaseConfig = {
-  apiKey: "AIzaSyB3j7skPl-ykXVLxFQEvCZLrQEYslc0e5w",
-  authDomain: "nekometrics-b38b9.firebaseapp.com",
-  projectId: "nekometrics-b38b9",
-  storageBucket: "nekometrics-b38b9.firebasestorage.app",
-  messagingSenderId: "330123207916",
-  appId: "1:330123207916:web:fb2f2a21e66229fe73f1c9"
-};
 
 import { UserProfile, UserRole, UserGroup, StoreRental, getOutletName } from '../types';
 import AccessGroups from './AccessGroups';

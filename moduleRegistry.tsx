@@ -206,7 +206,7 @@ export const MODULES: AppModule[] = [
     id: 'users', label: 'Access & Activity', icon: <ShieldHalf size={18} />,
     section: 'Operations', Component: AccessAdministration,
     defaultRoles: ['admin'], roleLocked: 'admin', sensitive: true,
-    render: ctx => <AccessAdministration user={ctx.user} dataOwnerId={ctx.dataOwnerId} />,
+    render: ctx => <AccessAdministration user={ctx.user} dataOwnerId={ctx.dataOwnerId} tenantId={ctx.userProfile.tenantId} />,
   },
   {
     id: 'data-control', label: 'Data Control', icon: <ShieldHalf size={18} />,

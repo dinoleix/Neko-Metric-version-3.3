@@ -72,6 +72,8 @@ export interface UserProfile {
   email: string;
   role: UserRole;
   createdAt: number;
+  /** Active tenant in the isolated multi-tenant build. */
+  tenantId?: string;
   assignedOutlet?: string;
   ownerId?: string;
   /**
@@ -142,6 +144,7 @@ export interface DailyCounterEntry {
   description: string;
   status: EntryStatus;
   receiptUrl?: string;
+  receiptPath?: string;
   billNumber?: string;
   vendorId?: string;
   vendorName?: string;

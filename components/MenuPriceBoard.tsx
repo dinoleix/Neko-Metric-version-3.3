@@ -12,7 +12,7 @@
 
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import type { User } from 'firebase/auth';
-import { collection, doc, writeBatch, getDocs, query, where } from 'firebase/firestore';
+import { collection, doc, writeBatch, getDocs, query, where } from '../tenantFirestore';
 import { db } from '../firebase';
 import { invalidateCached } from '../referenceCache';
 import { parseCsvRecords } from '../csvParse';

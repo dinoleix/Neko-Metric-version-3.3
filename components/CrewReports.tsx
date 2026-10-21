@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import type { User } from 'firebase/auth';
-import { collection, query, getDocs, where } from 'firebase/firestore';
+import { collection, query, getDocs, where } from '../tenantFirestore';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import {

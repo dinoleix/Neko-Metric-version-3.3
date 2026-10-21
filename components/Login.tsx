@@ -2,14 +2,18 @@
 import React, { useState } from 'react';
 import { 
   signInWithEmailAndPassword, 
+  createUserWithEmailAndPassword,
+  deleteUser,
+  signOut,
   GoogleAuthProvider,
   signInWithPopup
 } from 'firebase/auth';
-import { doc, setDoc, getDoc } from 'firebase/firestore';
+import { doc, setDoc, getDoc, writeBatch } from '../tenantFirestore';
 import { auth, db } from '../firebase';
 import { UserProfile } from '../types';
-import { Mail, Lock, LogIn } from 'lucide-react';
+import { Mail, Lock, LogIn, UserPlus } from 'lucide-react';
 import ThemeToggle from './ThemeToggle';
+import { tenantMembershipId } from '../tenantTypes';
 
 const Login: React.FC = () => {
   const multiTenantBuild = import.meta.env.MODE === 'multitenant-dev';
@@ -17,6 +21,9 @@ const Login: React.FC = () => {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [registering, setRegistering] = useState(false);
+  const [restaurantName, setRestaurantName] = useState('');
+  const [outletName, setOutletName] = useState('');
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -27,6 +34,49 @@ const Login: React.FC = () => {
       await signInWithEmailAndPassword(auth, email, password);
     } catch (err: any) {
       setError(err.message || 'Authentication failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!multiTenantBuild) return;
+    setLoading(true);
+    setError('');
+    let createdUser: Awaited<ReturnType<typeof createUserWithEmailAndPassword>>['user'] | null = null;
+    try {
+      const credential = await createUserWithEmailAndPassword(auth, email.trim(), password);
+      createdUser = credential.user;
+      const tenantId = crypto.randomUUID();
+      const outletId = crypto.randomUUID();
+      const now = Date.now();
+      const batch = writeBatch(db);
+      batch.set(doc(db, 'tenants', tenantId), {
+        name: restaurantName.trim(), status: 'active', currency: 'INR', timezone: 'Asia/Kolkata',
+        ownerUserId: createdUser.uid, createdBy: createdUser.uid, createdAt: now, updatedAt: now,
+      });
+      batch.set(doc(db, 'tenant_memberships', tenantMembershipId(tenantId, createdUser.uid)), {
+        tenantId, userId: createdUser.uid, email: createdUser.email || email.trim(), role: 'owner',
+        outletIds: ['*'], status: 'active', createdBy: createdUser.uid, createdAt: now, updatedAt: now,
+      });
+      batch.set(doc(db, 'outlets', outletId), {
+        tenantId, name: outletName.trim(), status: 'active', createdBy: createdUser.uid,
+        createdAt: now, updatedAt: now,
+      });
+      await batch.commit();
+    } catch (err: any) {
+      if (createdUser) {
+        try {
+          await deleteUser(createdUser);
+          await signOut(auth);
+        } catch (cleanupError) {
+          console.error('[tenant signup] cleanup after failed setup did not complete', cleanupError);
+        }
+      }
+      setError(err?.code === 'auth/email-already-in-use'
+        ? 'An account already exists for this email. Sign in or reset your password.'
+        : err.message || 'Could not create your restaurant account. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -68,10 +118,20 @@ const Login: React.FC = () => {
 
         <div className="bg-white rounded-3xl p-8 shadow-2xl">
           <h2 className="text-xl font-bold text-slate-800 mb-6">
-            Welcome back
+            {registering ? 'Create your restaurant account' : 'Welcome back'}
           </h2>
 
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={registering ? handleRegister : handleSubmit} className="space-y-4">
+            {registering && <>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Restaurant or business name</label>
+                <input type="text" required maxLength={100} value={restaurantName} onChange={e => setRestaurantName(e.target.value)} className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="Your restaurant group" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">First outlet name</label>
+                <input type="text" required maxLength={100} value={outletName} onChange={e => setOutletName(e.target.value)} className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="Main outlet" />
+              </div>
+            </>}
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">Email Address</label>
               <div className="relative">
@@ -115,12 +175,16 @@ const Login: React.FC = () => {
             >
               {loading ? 'Processing...' : (
                 <>
-                  <LogIn size={20} />
-                  Log In
+                  {registering ? <UserPlus size={20} /> : <LogIn size={20} />}
+                  {registering ? 'Create account' : 'Log In'}
                 </>
               )}
             </button>
           </form>
+
+          {multiTenantBuild && <button type="button" onClick={() => { setRegistering(!registering); setError(''); }} className="mt-5 w-full text-sm font-semibold text-indigo-700 hover:text-indigo-900">
+            {registering ? 'Already registered? Sign in' : 'Create a restaurant account'}
+          </button>}
 
           {!multiTenantBuild && <div className="mt-8 flex items-center gap-4 text-slate-400">
             <div className="flex-1 h-px bg-slate-200"></div>

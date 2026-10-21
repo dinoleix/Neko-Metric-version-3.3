@@ -1,13 +1,15 @@
 # Isolated multi-tenant development environment
 
-Created on 18 October 2026 and rechecked on 19 October 2026. This environment serves the isolated multi-tenant development app and uses no Green Neko production data, user accounts, or rules.
+Created on 18 October 2026 and rechecked on 21 October 2026. This environment serves the isolated multi-tenant development app and uses no Green Neko production data, user accounts, or rules.
 
 | Resource | Development value | Production impact |
 | --- | --- | --- |
 | Firebase project | `nekometrics-mt-dev-2026` | None |
 | Firebase web app | `NekoMetrics Multi-Tenant Dev Web` | None |
 | Firestore database | Default database provisioned in `nam5`; two synthetic tenants, owner memberships, and outlets seeded | None |
-| Firestore rules | Multi-tenant starter rules published | None |
+| Firestore rules | Tenant membership, outlet, role, and business collection rules; 9 emulator cases pass | None |
+| Firestore indexes | Dev-only index manifest adds tenant scope to the existing composite query shapes | None |
+| Firebase Storage | Tenant path helper and tenant storage rules are prepared; bucket availability/publication must be confirmed | None |
 | Firebase Authentication | Email/Password enabled for isolated test accounts | None |
 | Vercel project | `neko-metrics-multitenant-dev`; connected to `dinoleix/Neko-Metric-version-3.3`; first Production deployment from the isolated branch succeeded | None |
 | Vercel Firebase configuration | Six isolated `VITE_FIREBASE_*` variables scoped to Production and Preview | None |
@@ -29,13 +31,13 @@ Created on 18 October 2026 and rechecked on 19 October 2026. This environment se
 
 Both owners have active `owner` memberships. The accounts and all records above are synthetic and exist only in the isolated Firebase project. Passwords are user-chosen and are not stored in this repository. Do not import Green Neko production data.
 
-## Remaining multi-tenant application work
+## Current application scope and acceptance status
 
-The isolated app now has a runtime tenant entry path: it resolves the signed-in account's active membership, tenant, and accessible outlets, and renders a tenant-scoped preview. A dev-only data probe writes and reads synthetic notes scoped to the active tenant and outlet so the two demo accounts can be compared manually. Product Catalog is the first business module wired into this path and scopes records by `tenantId`; the matching Firestore rule is published to this isolated project. Live catalog acceptance is still pending with both demo tenants. The isolated login path does not create legacy `users` profiles or expose Google sign-in. Other business modules remain outside this path until their reads and writes are migrated to tenant-scoped collections.
+The dev build resolves the signed-in user's active membership, tenant and outlets, then opens the existing NekoMetrics modules through a tenant-aware Firestore boundary. Collection queries add `tenantId`; new writes inherit it. Isolated Firestore rules enforce tenant, outlet and role access. The dev login supports email/password signup that atomically creates a tenant, owner membership and first outlet. Owners can provision and manage tenant memberships. Existing production-only user profiles and Google sign-in are not used in the isolated path.
 
-The membership-discovery rule is published to `nekometrics-mt-dev-2026`; it lets a signed-in user discover only their own membership before loading the tenant. This rules update applies only to the isolated Firebase project. The latest preview deployment is Ready at `neko-metrics-multitenant-dev.vercel.app`.
+New tenant receipts use authenticated Storage reads and tenant/outlet paths; old receipt download URLs remain legacy bearer links if present in a tenant dataset. Do not migrate those links without converting the underlying object and validating access.
 
-Remaining work includes tenant-scoping the business collections and their queries/writes, migrating user/role and outlet authorization to tenant memberships, then running the two-tenant isolation acceptance against the isolated Firebase project.
+The local TypeScript check, `npm run build:multitenant`, and 9 Firestore emulator rules cases pass. The build emits an existing large-chunk warning. Before migration, still complete Firebase dev rules/index and Storage publication (if a dev bucket exists), verify the Vercel deployment, exercise both synthetic tenants plus owner/manager/crew/viewer accounts in the live preview, and reconcile all modules against synthetic fixtures. No Green Neko data has been imported; there is no migration script or production cutover approval yet. The dev instance is a migration rehearsal environment, not a migration-ready production cutover.
 
 ## Local development
 

@@ -1,0 +1,41 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function membershipPath(tenantId) {
+      return /databases/(default)/documents/tenant_memberships/$(tenantId + '_' + request.auth.uid);
+    }
+    function isMember(tenantId) {
+      return request.auth != null
+        && firestore.exists(membershipPath(tenantId))
+        && firestore.get(membershipPath(tenantId)).data.tenantId == tenantId
+        && firestore.get(membershipPath(tenantId)).data.userId == request.auth.uid
+        && firestore.get(membershipPath(tenantId)).data.status == 'active';
+    }
+    function membership(tenantId) { return firestore.get(membershipPath(tenantId)).data; }
+    function canUseOutlet(tenantId, outletId) {
+      return isMember(tenantId)
+        && (membership(tenantId).role == 'owner'
+          || membership(tenantId).role == 'manager' && membership(tenantId).outletIds.hasAny(['*'])
+          || membership(tenantId).outletIds.hasAny([outletId]));
+    }
+    function canUpload() {
+      return request.resource == null || request.resource.size < 50 * 1024 * 1024;
+    }
+
+    // Imported CSVs and business files are available only to tenant owners and
+    // HQ managers. The user UID is retained in the path for traceability.
+    match /tenants/{tenantId}/users/{userId}/files/{filePath=**} {
+      allow read, write: if isMember(tenantId)
+        && (membership(tenantId).role == 'owner'
+          || membership(tenantId).role == 'manager' && membership(tenantId).outletIds.hasAny(['*']))
+        && canUpload();
+    }
+
+    match /tenants/{tenantId}/outlets/{outletId}/receipts/{userId}/{fileName} {
+      allow read: if canUseOutlet(tenantId, outletId);
+      allow write: if canUseOutlet(tenantId, outletId)
+        && (membership(tenantId).role != 'crew' || userId == request.auth.uid)
+        && canUpload();
+    }
+  }
+}

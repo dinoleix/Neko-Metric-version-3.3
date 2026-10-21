@@ -8,7 +8,7 @@
 // so both call sites stay in sync instead of drifting apart.
 // ---------------------------------------------------------------------------
 
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc } from './tenantFirestore';
 import { db } from './firebase';
 import { getCachedCollection } from './referenceCache';
 import { ItemMonthlySnapshot, SkuMapping, MenuNormalization, MenuPrice, CategorySettings as CategorySettingsType } from './types';

@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import type { User } from 'firebase/auth';
-import { collection, query, getDocs, where, writeBatch, doc, setDoc, getDoc, increment, arrayUnion } from 'firebase/firestore';
+import { collection, query, getDocs, where, writeBatch, doc, setDoc, getDoc, increment, arrayUnion } from '../tenantFirestore';
 import { db } from '../firebase';
 import { getCachedCollection } from '../referenceCache';
 import { aggregateCrewEntries, emptyCrewAggregate, isReportable, rebuildCrewSnapshot } from '../crewSnapshotService';

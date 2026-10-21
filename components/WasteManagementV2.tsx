@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import type { User } from 'firebase/auth';
-import { collection, query, getDocs, where, doc, getDoc } from 'firebase/firestore';
+import { collection, query, getDocs, where, doc, getDoc } from '../tenantFirestore';
 import { db } from '../firebase';
 import { closingByBucket, openingByBucket, cogsBucketsOf } from '../pnlService';
 import { getCachedCollection } from '../referenceCache';
