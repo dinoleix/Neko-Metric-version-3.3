@@ -7,9 +7,9 @@ Created on 18 October 2026 and rechecked on 21 October 2026. This environment se
 | Firebase project | `nekometrics-mt-dev-2026` | None |
 | Firebase web app | `NekoMetrics Multi-Tenant Dev Web` | None |
 | Firestore database | Default database provisioned in `nam5`; two synthetic tenants, owner memberships, and outlets seeded | None |
-| Firestore rules | Tenant membership, outlet, role, and business collection rules; 9 emulator cases pass | None |
-| Firestore indexes | Dev-only index manifest adds tenant scope to the existing composite query shapes | None |
-| Firebase Storage | Tenant path helper and tenant storage rules are prepared; bucket availability/publication must be confirmed | None |
+| Firestore rules | Tenant membership, outlet, role, and business collection rules published; 9 emulator cases pass | None |
+| Firestore indexes | 38 dev indexes reconciled and published, including tenant-scoped query shapes | None |
+| Firebase Storage | Tenant path helper and rules are prepared; Storage API enabled, but bucket setup is pending a location choice | None |
 | Firebase Authentication | Email/Password enabled for isolated test accounts | None |
 | Vercel project | `neko-metrics-multitenant-dev`; connected to `dinoleix/Neko-Metric-version-3.3`; first Production deployment from the isolated branch succeeded | None |
 | Vercel Firebase configuration | Six isolated `VITE_FIREBASE_*` variables scoped to Production and Preview | None |
@@ -37,7 +37,7 @@ The dev build resolves the signed-in user's active membership, tenant and outlet
 
 New tenant receipts use authenticated Storage reads and tenant/outlet paths; old receipt download URLs remain legacy bearer links if present in a tenant dataset. Do not migrate those links without converting the underlying object and validating access.
 
-The local TypeScript check, `npm run build:multitenant`, and 9 Firestore emulator rules cases pass. The build emits an existing large-chunk warning. Before migration, still complete Firebase dev rules/index and Storage publication (if a dev bucket exists), verify the Vercel deployment, exercise both synthetic tenants plus owner/manager/crew/viewer accounts in the live preview, and reconcile all modules against synthetic fixtures. No Green Neko data has been imported; there is no migration script or production cutover approval yet. The dev instance is a migration rehearsal environment, not a migration-ready production cutover.
+The local TypeScript check, both app builds, and 9 Firestore emulator rules cases pass. The build emits an existing large-chunk warning. The new Firestore rules and dev-only indexes are published. Before migration, finish Storage bucket setup and rules publication, verify the current Vercel deployment, exercise both synthetic tenants plus owner/manager/crew/viewer accounts in the live preview, and reconcile all modules against synthetic fixtures. No Green Neko data has been imported; there is no migration script or production cutover approval yet. The dev instance is a migration rehearsal environment, not a migration-ready production cutover.
 
 ## Local development
 
