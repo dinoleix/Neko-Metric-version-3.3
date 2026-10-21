@@ -10,7 +10,8 @@ const locationStatusFor = (error: GeolocationPositionError): LoginActivityRecord
 
 /** Records at most once per browser tab session and never prevents sign-in. */
 export const recordLoginActivity = async (user: User, profile: UserProfile): Promise<void> => {
-  if (sessionStorage.getItem(SESSION_KEY) === user.uid) return;
+  const activitySessionKey = profile.tenantId ? `${SESSION_KEY}:${profile.tenantId}` : SESSION_KEY;
+  if (sessionStorage.getItem(activitySessionKey) === user.uid) return;
 
   const ownerId = profile.ownerId || user.uid;
   const activityId = `${user.uid}_${Date.now()}_${crypto.randomUUID()}`;
@@ -25,7 +26,7 @@ export const recordLoginActivity = async (user: User, profile: UserProfile): Pro
 
   const save = async (location: Pick<LoginActivityRecord, 'locationStatus' | 'latitude' | 'longitude' | 'accuracyMeters'>) => {
     await setDoc(doc(db, 'login_activity', activityId), { ...base, ...location });
-    sessionStorage.setItem(SESSION_KEY, user.uid);
+    sessionStorage.setItem(activitySessionKey, user.uid);
   };
 
   try {
@@ -56,5 +57,8 @@ export const recordLoginActivity = async (user: User, profile: UserProfile): Pro
 };
 
 export const clearLoginActivitySession = (): void => {
-  sessionStorage.removeItem(SESSION_KEY);
+  for (let index = sessionStorage.length - 1; index >= 0; index -= 1) {
+    const key = sessionStorage.key(index);
+    if (key === SESSION_KEY || key?.startsWith(`${SESSION_KEY}:`)) sessionStorage.removeItem(key);
+  }
 };

@@ -194,6 +194,7 @@ const App: React.FC = () => {
     setTenantPickerOpen(false);
     setTenantError(null);
     setUserProfile(profile);
+    void recordLoginActivity(accountUser, profile);
     const initial = landingModule(profile.role, resolveAllowedModules(profile, null));
     if (initial) setActiveTab(initial);
   };
