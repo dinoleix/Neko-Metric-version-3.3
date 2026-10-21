@@ -70,6 +70,13 @@ The collection names above are examples, not a complete migration scope. Use `CO
 
 Before sharing, replace emails, phone numbers, names, addresses, supplier/customer identifiers, account numbers, receipt URLs, image data, and free-text notes. Keep relationships internally consistent using fake IDs. Do not include authentication exports, access tokens, API keys, or unredacted documents.
 
-## Storage region decision
+## Storage setup status
 
-Storage has no bucket until its permanent location is selected. Choose a location before creating the bucket; the location cannot be changed afterward. Once chosen, publish the prepared tenant-scoped Storage rules and run the Storage emulator suite again. The app should not be considered receipt-ready until upload, read, and cross-tenant denial are verified against the live dev bucket.
+- Bucket: `gs://nekometrics-mt-dev-2026.firebasestorage.app`
+- Region: `asia-south1` (Mumbai; selected 2026-10-21)
+- Plan: Blaze (pay as you go)
+- Tenant-scoped Storage rules: deployed to the dev bucket on 2026-10-21.
+- Cross-service Firestore permission: attached to the dev Storage service account on 2026-10-21.
+- Emulator suite: passed after bucket creation on 2026-10-21 with Firebase CLI 15.30.1 and a temporary Temurin Java 21 runtime (3 Storage authorization tests passed).
+
+The app is not receipt-ready until the emulator suite passes and authorized upload/read plus cross-tenant and unassigned-outlet denial are verified against the live dev bucket.
