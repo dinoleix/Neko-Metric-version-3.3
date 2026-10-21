@@ -31,7 +31,7 @@ const Login: React.FC = () => {
     setError('');
     try {
       // Sign in with email and password only (registration moved to admin panel)
-      await signInWithEmailAndPassword(auth, email, password);
+      await signInWithEmailAndPassword(auth, email.trim(), password);
     } catch (err: any) {
       setError(err.message || 'Authentication failed');
     } finally {
@@ -42,6 +42,12 @@ const Login: React.FC = () => {
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!multiTenantBuild) return;
+    const normalizedRestaurantName = restaurantName.trim();
+    const normalizedOutletName = outletName.trim();
+    if (!normalizedRestaurantName || !normalizedOutletName) {
+      setError('Enter a restaurant name and first outlet name.');
+      return;
+    }
     setLoading(true);
     setError('');
     let createdUser: Awaited<ReturnType<typeof createUserWithEmailAndPassword>>['user'] | null = null;
@@ -53,7 +59,7 @@ const Login: React.FC = () => {
       const now = Date.now();
       const batch = writeBatch(db);
       batch.set(doc(db, 'tenants', tenantId), {
-        name: restaurantName.trim(), status: 'active', currency: 'INR', timezone: 'Asia/Kolkata',
+        name: normalizedRestaurantName, status: 'active', currency: 'INR', timezone: 'Asia/Kolkata',
         ownerUserId: createdUser.uid, createdBy: createdUser.uid, createdAt: now, updatedAt: now,
       });
       batch.set(doc(db, 'tenant_memberships', tenantMembershipId(tenantId, createdUser.uid)), {
@@ -61,7 +67,7 @@ const Login: React.FC = () => {
         outletIds: ['*'], status: 'active', createdBy: createdUser.uid, createdAt: now, updatedAt: now,
       });
       batch.set(doc(db, 'outlets', outletId), {
-        tenantId, name: outletName.trim(), status: 'active', createdBy: createdUser.uid,
+        tenantId, name: normalizedOutletName, status: 'active', createdBy: createdUser.uid,
         createdAt: now, updatedAt: now,
       });
       await batch.commit();
