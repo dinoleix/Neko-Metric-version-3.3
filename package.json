@@ -12,6 +12,7 @@
     "lint": "tsc --noEmit",
     "test:multitenant-rules": "firebase emulators:exec --only firestore --project demo-neko-multitenant --config firebase.multitenant-dev.json \"node --test tests/multitenant.rules.test.mjs\"",
     "test:multitenant-storage-rules": "firebase emulators:exec --only firestore,storage --project demo-neko-multitenant --config firebase.multitenant-dev.json \"node --test tests/multitenant.storage.test.mjs\"",
+    "test:multitenant-rehearsal-guard": "node --test tests/multitenant.rehearsal.guard.test.mjs",
     "rehearse:multitenant-migration": "firebase emulators:exec --only firestore --project demo-neko-migration-rehearsal --config firebase.multitenant-dev.json \"node scripts/multitenant-rehearsal.mjs\"",
     "test:rules": "firebase emulators:exec --only firestore --project demo-neko-rules --config firebase.test.json \"node --test tests/*.rules.test.mjs\""
   },

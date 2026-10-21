@@ -45,6 +45,8 @@ No migration may delete, rename or overwrite original production documents durin
 
 Run `npm run rehearse:multitenant-migration` to exercise additive migration, immutable legacy fields, outlet mapping, source and target checksums, retry manifests, exception reporting, replay idempotency, target collision protection and count/amount reconciliation against synthetic data. The current fixture spans 20 records across 19 collection shapes: 19 records migrate, one unknown outlet is reported, and replay adds no duplicates. The rehearsal also injects a target collision and target checksum tampering to prove both are detected without being overwritten. The script requires the local Firestore emulator and the exact `demo-neko-migration-rehearsal` project ID; it refuses to run against a live Firebase project. Its `rehearsal_source_*`, `rehearsal_target_*` and `rehearsal_manifest_*` collections are disposable emulator fixtures. This validates the safety mechanics only; collection-specific mappings and a production credentialed migration job still need review against an approved synthetic export.
 
+Run `npm run test:multitenant-rehearsal-guard` to verify the runner exits before connecting whenever the emulator endpoint is missing or the project ID is not the dedicated demo ID.
+
 ## 4. Reconciliation gates
 
 For each outlet and selected period, compare before and after:
