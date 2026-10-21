@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import assert from 'node:assert/strict';
 import { after, before, beforeEach, test } from 'node:test';
 import { initializeTestEnvironment, assertFails, assertSucceeds } from '@firebase/rules-unit-testing';
 import { collection, doc, getDoc, getDocs, query, setDoc, where, writeBatch } from 'firebase/firestore';
@@ -59,6 +60,8 @@ test('outlet managers, crew and viewers are restricted to assigned outlets', asy
     await assertSucceeds(getDoc(doc(dbFor(uid), 'tenant_test_records', 'a1-record')));
     await assertFails(getDoc(doc(dbFor(uid), 'tenant_test_records', 'a2-record')));
   }
+  await assertSucceeds(getDoc(doc(dbFor('manager-a1'), 'outlets', 'a1')));
+  await assertFails(getDoc(doc(dbFor('manager-a1'), 'outlets', 'a2')));
 });
 
 test('members cannot read or write records in another tenant', async () => {
@@ -76,6 +79,23 @@ test('tenant-scoped collection queries must prove their tenant and outlet scope'
   const crewDb = dbFor('crew');
   await assertSucceeds(getDocs(query(collection(crewDb, 'tenant_test_records'), where('tenantId', '==', 'a'), where('outletId', '==', 'a1'))));
   await assertFails(getDocs(query(collection(crewDb, 'tenant_test_records'), where('tenantId', '==', 'a'))));
+});
+
+test('a user can discover and open each of their own tenant memberships', async () => {
+  await env.withSecurityRulesDisabled(async context => {
+    const db = context.firestore();
+    const batch = writeBatch(db);
+    batch.set(doc(db, 'tenant_memberships', 'a_multi'), membership('a', 'multi', 'manager', ['*']));
+    batch.set(doc(db, 'tenant_memberships', 'b_multi'), membership('b', 'multi', 'manager', ['b1']));
+    await batch.commit();
+  });
+  const db = dbFor('multi');
+  const memberships = await getDocs(query(collection(db, 'tenant_memberships'), where('userId', '==', 'multi')));
+  assert.equal(memberships.size, 2);
+  await assertSucceeds(getDoc(doc(db, 'tenants', 'a')));
+  await assertSucceeds(getDoc(doc(db, 'tenants', 'b')));
+  await assertSucceeds(getDocs(query(collection(db, 'outlets'), where('tenantId', '==', 'a'))));
+  await assertSucceeds(getDoc(doc(db, 'outlets', 'b1')));
 });
 
 test('viewers are read-only and crew can only create records at an assigned outlet', async () => {

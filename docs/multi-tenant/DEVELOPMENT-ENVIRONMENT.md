@@ -7,7 +7,7 @@ Created on 18 October 2026 and rechecked on 21 October 2026. This environment se
 | Firebase project | `nekometrics-mt-dev-2026` | None |
 | Firebase web app | `NekoMetrics Multi-Tenant Dev Web` | None |
 | Firestore database | Default database provisioned in `nam5`; two synthetic tenants, owner memberships, and outlets seeded | None |
-| Firestore rules | Tenant membership, outlet, role, and business collection rules published; 9 emulator cases pass | None |
+| Firestore rules | Tenant membership, outlet, role, and business collection rules published; 11 emulator cases pass | None |
 | Firestore indexes | 39 dev indexes reconciled and published, including tenant-scoped query shapes | None |
 | Firebase Storage | Tenant path helper and rules are prepared; 3 emulator cases pass; Storage API enabled, but bucket setup is pending a location choice | None |
 | Firebase Authentication | Email/Password enabled for isolated test accounts | None |
@@ -33,11 +33,11 @@ Both owners have active `owner` memberships. The accounts and all records above 
 
 ## Current application scope and acceptance status
 
-The dev build resolves the signed-in user's active membership, tenant and outlets, then opens the existing NekoMetrics modules through a tenant-aware Firestore boundary. Collection queries add `tenantId`; new writes inherit it. Isolated Firestore rules enforce tenant, outlet and role access. The dev login supports email/password signup that atomically creates a tenant, owner membership and first outlet. Owners can provision and manage tenant memberships. Existing production-only user profiles and Google sign-in are not used in the isolated path.
+The dev build resolves the signed-in user's active memberships and tenant outlets, then opens the existing NekoMetrics modules through a tenant-aware Firestore boundary. Accounts with multiple memberships choose and switch their active restaurant. Collection queries add `tenantId`; new writes inherit it. Isolated Firestore rules enforce tenant, outlet and role access. The dev login supports email/password signup that atomically creates a tenant, owner membership and first outlet. Owners can provision and manage tenant memberships. Existing production-only user profiles and Google sign-in are not used in the isolated path.
 
 New tenant receipts use authenticated Storage reads and tenant/outlet paths; old receipt download URLs remain legacy bearer links if present in a tenant dataset. Do not migrate those links without converting the underlying object and validating access.
 
-The local TypeScript check, both app builds, 10 Firestore emulator cases, and 3 Storage emulator cases pass. The build emits an existing large-chunk warning. The new Firestore rules and dev-only indexes are published. Before migration, finish Storage bucket setup and rules publication, verify the current Vercel deployment, exercise both synthetic tenants plus owner/manager/crew/viewer accounts in the live preview, and reconcile all modules against synthetic fixtures. No Green Neko data has been imported; there is no migration script or production cutover approval yet. The dev instance is a migration rehearsal environment, not a migration-ready production cutover.
+The local TypeScript check, both app builds, 11 Firestore emulator cases, 3 Storage emulator cases, and the emulator-only migration rehearsal pass. The build emits an existing large-chunk warning. The new Firestore rules and dev-only indexes are published. Before a Green Neko rehearsal, finish Storage bucket setup and rules publication, verify the current Vercel deployment, exercise both synthetic tenants plus owner/manager/crew/viewer accounts in the live preview, then run the rehearsal with an approved synthetic export. No Green Neko data has been imported; the local rehearsal is a safeguard prototype, not the production migration job, and there is no production cutover approval.
 
 ## Local development
 

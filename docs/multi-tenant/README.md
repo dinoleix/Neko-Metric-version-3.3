@@ -35,7 +35,7 @@ The first tenant for production will be `green-neko`. Its technical ID must be g
 | `tenant_settings` | Business-specific report, import, financial-year and feature settings. |
 | `platform_users` | Optional platform-support role only. This must stay separate from a tenant membership. |
 
-A user can have more than one membership. A browser session has one **active tenant** at a time. Regular restaurant users receive one membership and never need a tenant switcher. Platform support users can switch tenants only through an explicit, audited support action.
+A user can have more than one membership. A browser session has one **active tenant** at a time. Users with multiple memberships choose a restaurant after sign-in and can switch from the app navigation; each switch resets the tenant-scoped module tree and Firestore context.
 
 ## Access model
 

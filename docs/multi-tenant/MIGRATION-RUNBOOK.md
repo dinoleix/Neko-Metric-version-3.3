@@ -40,6 +40,10 @@ The migration must be a trusted, resumable, idempotent job. It should:
 
 No migration may delete, rename or overwrite original production documents during its first pass.
 
+### Current synthetic safeguard
+
+Run `npm run rehearse:multitenant-migration` to exercise additive migration, immutable legacy fields, outlet mapping, checksums, retry manifests, exception reporting, replay idempotency and count/amount reconciliation against synthetic data. The script requires the local Firestore emulator and the exact `demo-neko-migration-rehearsal` project ID; it refuses to run against a live Firebase project. Its `rehearsal_source_*`, `rehearsal_target_*` and `rehearsal_manifest_*` collections are disposable emulator fixtures. This validates the safety mechanics only; collection-specific mappings and a production credentialed migration job still need review against an approved synthetic export.
+
 ## 4. Reconciliation gates
 
 For each outlet and selected period, compare before and after:

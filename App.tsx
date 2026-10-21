@@ -12,9 +12,10 @@ import {
   MODULES, MODULE_BY_ID, MODULE_SECTIONS, ModuleId, AppModule, landingModule,
 } from './moduleRegistry';
 import { resolveAllowedModules } from './moduleAccess';
-import { resolveTenantSession, type TenantSession } from './multitenantRuntime';
+import { resolveTenantSessions, type TenantSession } from './multitenantRuntime';
 import { setTenantFirestoreScope } from './tenantFirestore';
 import MultiTenantHome from './components/MultiTenantHome';
+import TenantPicker from './components/TenantPicker';
 import {
   LogOut,
   Cat,
@@ -27,6 +28,7 @@ import {
   Banknote,
   Menu,
   X,
+  Store,
 } from 'lucide-react';
 
 const CrewTerminalComponent = MODULE_BY_ID.get('crew-terminal')!.Component;
@@ -84,8 +86,10 @@ const AppSidebar: React.FC<{
   activeTab: ModuleId;
   onSelect: (id: ModuleId) => void;
   onSignOut: () => void;
+  tenantName?: string;
+  onSwitchTenant?: () => void;
   onClose?: () => void;
-}> = ({ user, userProfile, role, isReadOnly, allowed, activeTab, onSelect, onSignOut, onClose }) => (
+}> = ({ user, userProfile, role, isReadOnly, allowed, activeTab, onSelect, onSignOut, tenantName, onSwitchTenant, onClose }) => (
   <>
     <div className="p-5 md:p-6 flex items-center gap-3 border-b border-slate-800/70 md:border-0">
       <div className="h-11 w-14 overflow-hidden rounded-lg bg-black shadow-lg shadow-emerald-950/30">
@@ -114,6 +118,13 @@ const AppSidebar: React.FC<{
       })}
     </nav>
     <div className="p-4 border-t border-slate-800 mt-auto">
+      {tenantName && <div className="mb-3 rounded-xl bg-slate-800/50 px-3 py-2">
+        <p className="text-[9px] font-black uppercase tracking-widest text-slate-500">Active restaurant</p>
+        <p className="mt-1 truncate text-xs font-bold text-slate-200">{tenantName}</p>
+      </div>}
+      {onSwitchTenant && <button type="button" onClick={onSwitchTenant} className="mb-4 w-full flex items-center gap-3 rounded-xl px-4 py-3 text-sm font-bold text-emerald-300 hover:bg-emerald-400/10">
+        <Store size={16} /> <span>Switch restaurant</span>
+      </button>}
       <div className="mb-4">
         <p className="text-[9px] font-black text-slate-500 uppercase tracking-[0.18em] mb-2 px-1">Appearance</p>
         <ThemeToggle />
@@ -153,6 +164,8 @@ const App: React.FC = () => {
   const [primaryCashAccount, setPrimaryCashAccount] = useState<BankAccount | null>(null);
   const [primaryTenKAccount, setPrimaryTenKAccount] = useState<BankAccount | null>(null);
   const [tenantSession, setTenantSession] = useState<TenantSession | null>(null);
+  const [tenantSessions, setTenantSessions] = useState<TenantSession[]>([]);
+  const [tenantPickerOpen, setTenantPickerOpen] = useState(false);
   const [tenantError, setTenantError] = useState<string | null>(null);
   const authResolution = useRef(0);
 
@@ -167,6 +180,30 @@ const App: React.FC = () => {
     if (MULTI_TENANT_BUILD) setTenantFirestoreScope(null);
     void signOut(auth);
   }, []);
+
+  const activateTenantSession = (accountUser: User, session: TenantSession) => {
+    setTenantFirestoreScope({
+      tenantId: session.tenant.id,
+      userId: accountUser.uid,
+      ownerUserId: session.tenant.ownerUserId,
+      role: session.membership.role,
+      outletIds: session.membership.outletIds,
+    });
+    const profile = profileFromTenantSession(accountUser, session);
+    setTenantSession(session);
+    setTenantPickerOpen(false);
+    setTenantError(null);
+    setUserProfile(profile);
+    const initial = landingModule(profile.role, resolveAllowedModules(profile, null));
+    if (initial) setActiveTab(initial);
+  };
+
+  const beginTenantSwitch = () => {
+    setTenantFirestoreScope(null);
+    setTenantSession(null);
+    setUserProfile(null);
+    setTenantPickerOpen(true);
+  };
 
   const clearTimers = useCallback(() => {
     if (warnTimer.current) clearTimeout(warnTimer.current);
@@ -201,6 +238,8 @@ const App: React.FC = () => {
           setUser(null);
           setUserProfile(null);
           setTenantSession(null);
+          setTenantSessions([]);
+          setTenantPickerOpen(false);
           setTenantError(null);
           setLoading(false);
           return;
@@ -208,29 +247,27 @@ const App: React.FC = () => {
 
         setUser(u);
         setTenantSession(null);
+        setTenantSessions([]);
+        setTenantPickerOpen(false);
         setTenantError(null);
         setLoading(true);
         try {
-          const session = await resolveTenantSession(u.uid);
+          const sessions = await resolveTenantSessions(u.uid);
           if (authResolution.current === resolution) {
-            setTenantFirestoreScope({
-              tenantId: session.tenant.id,
-              userId: u.uid,
-              ownerUserId: session.tenant.ownerUserId,
-              role: session.membership.role,
-              outletIds: session.membership.outletIds,
-            });
-            const profile = profileFromTenantSession(u, session);
-            setTenantSession(session);
-            setUserProfile(profile);
-            const initial = landingModule(profile.role, resolveAllowedModules(profile, null));
-            if (initial) setActiveTab(initial);
+            setTenantSessions(sessions);
+            if (sessions.length === 1) activateTenantSession(u, sessions[0]);
+            else {
+              setTenantFirestoreScope(null);
+              setTenantPickerOpen(true);
+            }
           }
         } catch (err) {
           console.error('[tenant] could not resolve signed-in account:', err);
           if (authResolution.current === resolution) {
             setTenantFirestoreScope(null);
             setUserProfile(null);
+            setTenantSessions([]);
+            setTenantPickerOpen(false);
             setTenantError(err instanceof Error ? err.message : 'Could not load restaurant access. Please try again.');
           }
         } finally {
@@ -283,6 +320,9 @@ const App: React.FC = () => {
         if (MULTI_TENANT_BUILD) setTenantFirestoreScope(null);
         setUser(null);
         setUserProfile(null);
+        setTenantSession(null);
+        setTenantSessions([]);
+        setTenantPickerOpen(false);
       }
       setLoading(false);
     });
@@ -309,9 +349,11 @@ const App: React.FC = () => {
         if (!cancelled) setUserGroup(null);
       });
     return () => { cancelled = true; };
-  }, [userProfile?.groupId]);
+  }, [userProfile?.groupId, userProfile?.tenantId]);
 
   useEffect(() => {
+    setPrimaryCashAccount(null);
+    setPrimaryTenKAccount(null);
     if (!userProfile || userProfile.role !== 'crew') return;
     const ownerId = userProfile.ownerId || user?.uid;
     if (!ownerId) return;
@@ -347,6 +389,10 @@ const App: React.FC = () => {
 
   if (MULTI_TENANT_BUILD && user && tenantError) {
     return <MultiTenantHome user={user} session={tenantSession} error={tenantError} onSignOut={handleSignOut} />;
+  }
+
+  if (MULTI_TENANT_BUILD && user && tenantPickerOpen) {
+    return <TenantPicker user={user} sessions={tenantSessions} onSelect={session => activateTenantSession(user, session)} onSignOut={handleSignOut} />;
   }
 
   if (!user || !userProfile) return <Login />;
@@ -436,6 +482,9 @@ const App: React.FC = () => {
 
            <div className="flex flex-wrap items-center gap-3 md:gap-4">
               <ThemeToggle compact />
+              {tenantSessions.length > 1 && <button onClick={beginTenantSwitch} className="flex items-center gap-2 px-4 py-3 bg-emerald-500/10 text-emerald-300 rounded-2xl font-black text-[11px] uppercase tracking-widest border border-emerald-500/20 transition-all hover:bg-emerald-500 hover:text-white">
+                <Store size={16} /> Switch Restaurant
+              </button>}
               <div className="hidden lg:block text-right">
                  <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1">Authenticated As</p>
                  <p className="text-xs font-bold text-slate-300">{user.email}</p>
@@ -452,7 +501,7 @@ const App: React.FC = () => {
            <Suspense fallback={<TabLoader />}>
              {/* Same lazy component the registry holds, so crew and the admin's
                  Crew Terminal tab can never load two different builds of it. */}
-             <CrewTerminalComponent user={user} profile={userProfile} />
+             <CrewTerminalComponent key={tenantSession?.tenant.id} user={user} profile={userProfile} />
            </Suspense>
         </main>
       </div>
@@ -492,16 +541,16 @@ const App: React.FC = () => {
         <div className="md:hidden fixed inset-0 z-[100] flex">
           <button type="button" aria-label="Close menu" onClick={() => setMobileMenuOpen(false)} className="absolute inset-0 bg-slate-950/55 backdrop-blur-sm" />
           <aside className="relative z-10 w-[min(20rem,88vw)] h-full bg-slate-900 text-white flex flex-col overflow-y-auto shadow-2xl custom-scrollbar">
-            <AppSidebar user={user} userProfile={userProfile} role={role} isReadOnly={isReadOnly} allowed={allowed} activeTab={activeTab} onSelect={setActiveTab} onSignOut={handleSignOut} onClose={() => setMobileMenuOpen(false)} />
+            <AppSidebar user={user} userProfile={userProfile} role={role} isReadOnly={isReadOnly} allowed={allowed} activeTab={activeTab} onSelect={setActiveTab} onSignOut={handleSignOut} tenantName={tenantSession?.tenant.name} onSwitchTenant={tenantSessions.length > 1 ? beginTenantSwitch : undefined} onClose={() => setMobileMenuOpen(false)} />
           </aside>
         </div>
       )}
 
       <aside className="hidden md:flex w-64 bg-slate-900 text-white flex-shrink-0 flex-col sticky top-0 h-screen overflow-y-auto custom-scrollbar">
-        <AppSidebar user={user} userProfile={userProfile} role={role} isReadOnly={isReadOnly} allowed={allowed} activeTab={activeTab} onSelect={setActiveTab} onSignOut={handleSignOut} />
+        <AppSidebar user={user} userProfile={userProfile} role={role} isReadOnly={isReadOnly} allowed={allowed} activeTab={activeTab} onSelect={setActiveTab} onSignOut={handleSignOut} tenantName={tenantSession?.tenant.name} onSwitchTenant={tenantSessions.length > 1 ? beginTenantSwitch : undefined} />
       </aside>
 
-      <main className="flex-1 min-w-0 md:overflow-y-auto">
+      <main key={tenantSession?.tenant.id} className="flex-1 min-w-0 md:overflow-y-auto">
         <div className="max-w-7xl mx-auto p-4 sm:p-6 md:p-10">
           {isReadOnly && !activeModule?.suppressReadOnlyBanner && (
             <div className="bg-emerald-50 border border-emerald-100 p-4 rounded-xl flex items-center gap-3 mb-8">

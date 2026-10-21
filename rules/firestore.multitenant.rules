@@ -20,13 +20,15 @@ service cloud.firestore {
     }
     function isOwner(tenantId) { return isMember(tenantId) && membership(tenantId).role == 'owner'; }
     function isManager(tenantId) { return isMember(tenantId) && membership(tenantId).role == 'manager'; }
+    function canAccessOutlet(tenantId, outletId) {
+      let tenantMembership = membership(tenantId);
+      return isMember(tenantId)
+        && (tenantMembership.role == 'owner'
+          || tenantMembership.role == 'manager' && tenantMembership.outletIds.hasAny(['*'])
+          || tenantMembership.outletIds.hasAny([outletId]));
+    }
     function hasAllOutlets(tenantId) {
       return isManager(tenantId) && membership(tenantId).outletIds.hasAny(['*']);
-    }
-    function canUseOutlet(tenantId, outletId) {
-      return isOwner(tenantId)
-        || hasAllOutlets(tenantId)
-        || (isMember(tenantId) && membership(tenantId).outletIds.hasAny([outletId]));
     }
     function canAccessRecord(data) {
       let tenantMembership = membership(data.tenantId);
@@ -177,7 +179,7 @@ service cloud.firestore {
     }
 
     match /outlets/{outletId} {
-      allow read: if isMember(resource.data.tenantId);
+      allow read: if canAccessOutlet(resource.data.tenantId, outletId);
       allow create: if request.resource.data.tenantId is string
         && request.resource.data.status == 'active'
         && (isOwner(request.resource.data.tenantId) || ownerAfterCreate(request.resource.data.tenantId));

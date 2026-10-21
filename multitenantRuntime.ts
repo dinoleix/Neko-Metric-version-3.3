@@ -17,8 +17,8 @@ export type TenantSession = {
 
 const wait = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds));
 
-/** Resolve the signed-in identity to exactly one active tenant for this session. */
-export async function resolveTenantSession(userId: string): Promise<TenantSession> {
+/** Resolve every active tenant membership available to a signed-in identity. */
+export async function resolveTenantSessions(userId: string): Promise<TenantSession[]> {
   const membershipQuery = query(
     collection(db, 'tenant_memberships'),
     where('userId', '==', userId),
@@ -30,7 +30,7 @@ export async function resolveTenantSession(userId: string): Promise<TenantSessio
     const membershipSnapshot = await getDocs(membershipQuery);
     activeMemberships = membershipSnapshot.docs
       .map(snapshot => ({ id: snapshot.id, ...snapshot.data() } as TenantMembership))
-      .filter(membership => membership.status === 'active');
+      .filter(membership => membership.userId === userId && membership.status === 'active');
     if (activeMemberships.length > 0) break;
     if (attempt < 4) await wait(300);
   }
@@ -38,28 +38,26 @@ export async function resolveTenantSession(userId: string): Promise<TenantSessio
   if (activeMemberships.length === 0) {
     throw new Error('No active restaurant membership is linked to this account. Ask your platform administrator to invite you.');
   }
-  if (activeMemberships.length > 1) {
-    throw new Error('This account belongs to more than one restaurant. Multi-tenant switching is not enabled for this account yet.');
+  const sessions = await Promise.all(activeMemberships.map(async membership => {
+    const tenantSnapshot = await getDoc(doc(db, 'tenants', membership.tenantId));
+    if (!tenantSnapshot.exists()) return null;
+    const tenant = { id: tenantSnapshot.id, ...tenantSnapshot.data() } as Tenant;
+    if (tenant.status !== 'active') return null;
+
+    const membershipHasAllOutlets = membership.role === 'owner'
+      || membership.role === 'manager' && membership.outletIds.includes('*');
+    const outletSnapshots = membershipHasAllOutlets
+      ? (await getDocs(query(collection(db, 'outlets'), where('tenantId', '==', tenant.id)))).docs
+      : (await Promise.all(membership.outletIds.map(outletId => getDoc(doc(db, 'outlets', outletId)))))
+        .filter(snapshot => snapshot.exists() && snapshot.data().tenantId === tenant.id);
+    const outlets = outletSnapshots
+      .map(snapshot => ({ id: snapshot.id, ...snapshot.data() } as TenantOutlet))
+      .filter(outlet => outlet.status === 'active');
+    return { tenant, membership, outlets };
+  }));
+  const activeSessions = sessions.filter((session): session is TenantSession => session !== null);
+  if (activeSessions.length === 0) {
+    throw new Error('No active restaurant is linked to this account. Contact your platform administrator.');
   }
-
-  const membership = activeMemberships[0];
-  const tenantSnapshot = await getDoc(doc(db, 'tenants', membership.tenantId));
-  if (!tenantSnapshot.exists()) {
-    throw new Error('The restaurant linked to this account could not be found. Contact your platform administrator.');
-  }
-
-  const tenant = { id: tenantSnapshot.id, ...tenantSnapshot.data() } as Tenant;
-  if (tenant.status !== 'active') {
-    throw new Error('This restaurant account is currently suspended. Contact your platform administrator.');
-  }
-
-  const outletsSnapshot = await getDocs(query(
-    collection(db, 'outlets'),
-    where('tenantId', '==', tenant.id),
-  ));
-  const outlets = outletsSnapshot.docs
-    .map(snapshot => ({ id: snapshot.id, ...snapshot.data() } as TenantOutlet))
-    .filter(outlet => outlet.status === 'active');
-
-  return { tenant, membership, outlets };
+  return activeSessions;
 }
