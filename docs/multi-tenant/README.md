@@ -69,4 +69,4 @@ No role can access a record just because it knows an ID. Firestore rules must pr
 6. **Green Neko migration rehearsal** — idempotent migration plus reconciliation reports in the isolated environment.
 7. **Production cutover** — only after an approved backup, verified reconciliation and a rollback plan.
 
-See `COLLECTION-INVENTORY.md` and `MIGRATION-RUNBOOK.md` for the first deliverables.
+See `COLLECTION-INVENTORY.md` for scope, `DEV-ACCEPTANCE.md` for the live role and sample-data handoff, and `MIGRATION-RUNBOOK.md` for migration safeguards and reconciliation gates.
